@@ -1,0 +1,48 @@
+"use client";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/fetcher";
+
+export function usePayments() {
+  return useQuery({
+    queryKey: ["payments"],
+    queryFn: () => apiFetch("/api/payments"),
+  });
+}
+
+export function useCreatePayment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) =>
+      apiFetch("/api/payments", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["payments"] }),
+  });
+}
+
+export function usePaymentSummary() {
+  return useQuery({
+    queryKey: ["payments", "summary"],
+    queryFn: () => apiFetch("/api/payments/summary"),
+  });
+}
+
+export function useInvoices() {
+  return useQuery({
+    queryKey: ["invoices"],
+    queryFn: () => apiFetch("/api/invoices"),
+  });
+}
+
+export function useCreateInvoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) =>
+      apiFetch("/api/invoices", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["invoices"] }),
+  });
+}

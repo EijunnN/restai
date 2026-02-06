@@ -1,0 +1,507 @@
+"use client";
+
+import { useState } from "react";
+import { Card, CardContent } from "@restai/ui/components/card";
+import { Input } from "@restai/ui/components/input";
+import { Label } from "@restai/ui/components/label";
+import { Badge } from "@restai/ui/components/badge";
+import { Button } from "@restai/ui/components/button";
+import { Select } from "@restai/ui/components/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@restai/ui/components/dialog";
+import {
+  Search,
+  RefreshCw,
+  Plus,
+  DollarSign,
+  CreditCard,
+  Smartphone,
+  Banknote,
+  FileText,
+} from "lucide-react";
+import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import {
+  usePayments,
+  useCreatePayment,
+  usePaymentSummary,
+  useCreateInvoice,
+} from "@/hooks/use-payments";
+
+const methodLabels: Record<string, string> = {
+  cash: "Efectivo",
+  card: "Tarjeta",
+  yape: "Yape",
+  plin: "Plin",
+  transfer: "Transferencia",
+  other: "Otro",
+};
+
+const methodIcons: Record<string, React.ReactNode> = {
+  cash: <Banknote className="h-4 w-4" />,
+  card: <CreditCard className="h-4 w-4" />,
+  yape: <Smartphone className="h-4 w-4" />,
+  plin: <Smartphone className="h-4 w-4" />,
+  transfer: <DollarSign className="h-4 w-4" />,
+  other: <DollarSign className="h-4 w-4" />,
+};
+
+const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+  completed: { label: "Completado", variant: "default" },
+  pending: { label: "Pendiente", variant: "outline" },
+  refunded: { label: "Reembolsado", variant: "destructive" },
+};
+
+const allMethods = ["all", "cash", "card", "yape", "plin", "transfer", "other"];
+
+function Skeleton({ className }: { className?: string }) {
+  return <div className={`animate-pulse bg-muted rounded ${className ?? ""}`} />;
+}
+
+export default function PaymentsPage() {
+  const [search, setSearch] = useState("");
+  const [methodFilter, setMethodFilter] = useState("all");
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
+  const [selectedPayment, setSelectedPayment] = useState<any>(null);
+
+  // Payment form state
+  const [paymentForm, setPaymentForm] = useState({
+    orderId: "",
+    method: "cash",
+    amount: "",
+    reference: "",
+    tip: "",
+  });
+
+  // Invoice form state
+  const [invoiceForm, setInvoiceForm] = useState({
+    orderId: "",
+    type: "boleta",
+    customerName: "",
+    customerDocType: "dni",
+    customerDocNumber: "",
+  });
+
+  const { data, isLoading, error, refetch } = usePayments();
+  const { data: summary } = usePaymentSummary();
+  const createPayment = useCreatePayment();
+  const createInvoice = useCreateInvoice();
+
+  const payments: any[] = data ?? [];
+
+  const filteredPayments = payments.filter((p: any) => {
+    const matchesSearch =
+      (p.order_number || "").toLowerCase().includes(search.toLowerCase()) ||
+      (p.reference || "").toLowerCase().includes(search.toLowerCase());
+    const matchesMethod = methodFilter === "all" || p.method === methodFilter;
+    return matchesSearch && matchesMethod;
+  });
+
+  const summaryData = summary as any;
+
+  const getMethodTotal = (method: string) => {
+    if (!summaryData?.byMethod) return 0;
+    const found = summaryData.byMethod.find((m: any) => m.method === method);
+    return found?.total || 0;
+  };
+
+  const handleCreatePayment = async () => {
+    if (!paymentForm.orderId || !paymentForm.amount) return;
+    try {
+      await createPayment.mutateAsync({
+        orderId: paymentForm.orderId,
+        method: paymentForm.method,
+        amount: Math.round(parseFloat(paymentForm.amount) * 100),
+        reference: paymentForm.reference || undefined,
+        tip: paymentForm.tip ? Math.round(parseFloat(paymentForm.tip) * 100) : 0,
+      });
+      setPaymentDialogOpen(false);
+      setPaymentForm({ orderId: "", method: "cash", amount: "", reference: "", tip: "" });
+    } catch {}
+  };
+
+  const handleCreateInvoice = async () => {
+    if (!invoiceForm.orderId || !invoiceForm.customerName || !invoiceForm.customerDocNumber) return;
+    try {
+      await createInvoice.mutateAsync({
+        orderId: invoiceForm.orderId,
+        type: invoiceForm.type,
+        customerName: invoiceForm.customerName,
+        customerDocType: invoiceForm.customerDocType,
+        customerDocNumber: invoiceForm.customerDocNumber,
+      });
+      setInvoiceDialogOpen(false);
+      setInvoiceForm({
+        orderId: "",
+        type: "boleta",
+        customerName: "",
+        customerDocType: "dni",
+        customerDocNumber: "",
+      });
+    } catch {}
+  };
+
+  const openInvoiceForPayment = (payment: any) => {
+    setSelectedPayment(payment);
+    setInvoiceForm({
+      orderId: payment.order_id,
+      type: "boleta",
+      customerName: "",
+      customerDocType: "dni",
+      customerDocNumber: "",
+    });
+    setInvoiceDialogOpen(true);
+  };
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold">Pagos</h1>
+        </div>
+        <div className="p-4 rounded-lg border border-destructive/50 bg-destructive/5 flex items-center justify-between">
+          <p className="text-sm text-destructive">Error al cargar pagos: {(error as Error).message}</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Reintentar
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Pagos</h1>
+          <p className="text-muted-foreground">
+            {isLoading ? "Cargando..." : `${payments.length} pagos registrados`}
+          </p>
+        </div>
+        <Button onClick={() => setPaymentDialogOpen(true)}>
+          <Plus className="h-4 w-4 mr-2" />
+          Registrar Pago
+        </Button>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Total Ingresos</p>
+            <p className="text-xl font-bold">{formatCurrency(summaryData?.grandTotal || 0)}</p>
+            <p className="text-xs text-muted-foreground">{summaryData?.totalCount || 0} pagos hoy</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Banknote className="h-3 w-3" /> Efectivo
+            </div>
+            <p className="text-lg font-bold">{formatCurrency(getMethodTotal("cash"))}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <CreditCard className="h-3 w-3" /> Tarjeta
+            </div>
+            <p className="text-lg font-bold">{formatCurrency(getMethodTotal("card"))}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Smartphone className="h-3 w-3" /> Yape/Plin
+            </div>
+            <p className="text-lg font-bold">
+              {formatCurrency(getMethodTotal("yape") + getMethodTotal("plin"))}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Propinas</p>
+            <p className="text-lg font-bold">{formatCurrency(summaryData?.tipTotal || 0)}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Method filter pills */}
+      <div className="flex flex-wrap gap-2">
+        {allMethods.map((method) => (
+          <button
+            key={method}
+            onClick={() => setMethodFilter(method)}
+            className={cn(
+              "px-3 py-1 rounded-full text-sm transition-colors border",
+              methodFilter === method
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background text-muted-foreground border-border hover:bg-muted"
+            )}
+          >
+            {method === "all" ? "Todos" : methodLabels[method]}
+          </button>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Buscar por orden o referencia..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-9"
+        />
+      </div>
+
+      {/* Payment list table */}
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b bg-muted/50">
+                  <th className="text-left p-3 text-sm font-medium text-muted-foreground">Orden</th>
+                  <th className="text-left p-3 text-sm font-medium text-muted-foreground">Metodo</th>
+                  <th className="text-right p-3 text-sm font-medium text-muted-foreground">Monto</th>
+                  <th className="text-right p-3 text-sm font-medium text-muted-foreground hidden sm:table-cell">Propina</th>
+                  <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">Referencia</th>
+                  <th className="text-right p-3 text-sm font-medium text-muted-foreground hidden lg:table-cell">Fecha</th>
+                  <th className="text-center p-3 text-sm font-medium text-muted-foreground">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={i} className="border-b">
+                      <td className="p-3"><Skeleton className="h-4 w-20" /></td>
+                      <td className="p-3"><Skeleton className="h-4 w-16" /></td>
+                      <td className="p-3"><Skeleton className="h-4 w-16 ml-auto" /></td>
+                      <td className="p-3 hidden sm:table-cell"><Skeleton className="h-4 w-12 ml-auto" /></td>
+                      <td className="p-3 hidden md:table-cell"><Skeleton className="h-4 w-20" /></td>
+                      <td className="p-3 hidden lg:table-cell"><Skeleton className="h-4 w-24 ml-auto" /></td>
+                      <td className="p-3"><Skeleton className="h-6 w-16 mx-auto" /></td>
+                    </tr>
+                  ))
+                ) : filteredPayments.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-sm text-muted-foreground">
+                      {search || methodFilter !== "all" ? "No se encontraron pagos" : "No hay pagos registrados"}
+                    </td>
+                  </tr>
+                ) : (
+                  filteredPayments.map((payment: any) => (
+                    <tr key={payment.id} className="border-b last:border-0 hover:bg-muted/50 transition-colors">
+                      <td className="p-3 font-medium text-sm">{payment.order_number || "-"}</td>
+                      <td className="p-3 text-sm">
+                        <Badge variant="secondary" className="gap-1">
+                          {methodIcons[payment.method]}
+                          {methodLabels[payment.method] || payment.method}
+                        </Badge>
+                      </td>
+                      <td className="p-3 text-sm font-medium text-right">
+                        {formatCurrency(payment.amount || 0)}
+                      </td>
+                      <td className="p-3 text-sm text-muted-foreground text-right hidden sm:table-cell">
+                        {(payment.tip || 0) > 0 ? formatCurrency(payment.tip) : "-"}
+                      </td>
+                      <td className="p-3 text-sm text-muted-foreground hidden md:table-cell">
+                        {payment.reference || "-"}
+                      </td>
+                      <td className="p-3 text-sm text-muted-foreground text-right hidden lg:table-cell">
+                        {payment.created_at ? formatDate(payment.created_at) : "-"}
+                      </td>
+                      <td className="p-3 text-center">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openInvoiceForPayment(payment)}
+                        >
+                          <FileText className="h-3 w-3 mr-1" />
+                          Comprobante
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Create Payment Dialog */}
+      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Registrar Pago</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="orderId">ID de Orden</Label>
+              <Input
+                id="orderId"
+                placeholder="UUID de la orden"
+                value={paymentForm.orderId}
+                onChange={(e) => setPaymentForm({ ...paymentForm, orderId: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="method">Metodo de Pago</Label>
+              <Select
+                id="method"
+                value={paymentForm.method}
+                onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}
+              >
+                <option value="cash">Efectivo</option>
+                <option value="card">Tarjeta</option>
+                <option value="yape">Yape</option>
+                <option value="plin">Plin</option>
+                <option value="transfer">Transferencia</option>
+                <option value="other">Otro</option>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="amount">Monto (S/)</Label>
+                <Input
+                  id="amount"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  placeholder="0.00"
+                  value={paymentForm.amount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="tip">Propina (S/)</Label>
+                <Input
+                  id="tip"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={paymentForm.tip}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, tip: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="reference">Referencia</Label>
+              <Input
+                id="reference"
+                placeholder="Numero de operacion, etc."
+                value={paymentForm.reference}
+                onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaymentDialogOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleCreatePayment}
+              disabled={createPayment.isPending || !paymentForm.orderId || !paymentForm.amount}
+            >
+              {createPayment.isPending ? "Registrando..." : "Registrar Pago"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Invoice Dialog */}
+      <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Generar Comprobante</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="invoiceType">Tipo de Comprobante</Label>
+              <Select
+                id="invoiceType"
+                value={invoiceForm.type}
+                onChange={(e) => setInvoiceForm({ ...invoiceForm, type: e.target.value })}
+              >
+                <option value="boleta">Boleta</option>
+                <option value="factura">Factura</option>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="customerName">Nombre del Cliente</Label>
+              <Input
+                id="customerName"
+                placeholder="Nombre o razon social"
+                value={invoiceForm.customerName}
+                onChange={(e) => setInvoiceForm({ ...invoiceForm, customerName: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="docType">Tipo de Documento</Label>
+                <Select
+                  id="docType"
+                  value={invoiceForm.customerDocType}
+                  onChange={(e) =>
+                    setInvoiceForm({ ...invoiceForm, customerDocType: e.target.value })
+                  }
+                >
+                  <option value="dni">DNI</option>
+                  <option value="ruc">RUC</option>
+                  <option value="ce">CE</option>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="docNumber">Numero de Documento</Label>
+                <Input
+                  id="docNumber"
+                  placeholder={
+                    invoiceForm.customerDocType === "dni"
+                      ? "12345678"
+                      : invoiceForm.customerDocType === "ruc"
+                      ? "20123456789"
+                      : "AB1234567"
+                  }
+                  value={invoiceForm.customerDocNumber}
+                  onChange={(e) =>
+                    setInvoiceForm({ ...invoiceForm, customerDocNumber: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+            {createInvoice.isError && (
+              <p className="text-sm text-destructive">
+                {(createInvoice.error as Error).message}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInvoiceDialogOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleCreateInvoice}
+              disabled={
+                createInvoice.isPending ||
+                !invoiceForm.customerName ||
+                !invoiceForm.customerDocNumber
+              }
+            >
+              {createInvoice.isPending ? "Generando..." : "Generar Comprobante"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
