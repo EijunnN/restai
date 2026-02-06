@@ -15,6 +15,13 @@
       "when": 1770349825752,
       "tag": "0001_amazing_red_shift",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1770359473565,
+      "tag": "0002_hard_vivisector",
+      "breakpoints": true
     }
   ]
 }
