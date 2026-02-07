@@ -1,3 +1,5 @@
+CREATE TYPE "public"."coupon_status" AS ENUM('active', 'inactive', 'expired');--> statement-breakpoint
+CREATE TYPE "public"."coupon_type" AS ENUM('percentage', 'fixed', 'item_free', 'item_discount', 'category_discount', 'buy_x_get_y');--> statement-breakpoint
 CREATE TYPE "public"."discount_type" AS ENUM('percentage', 'fixed');--> statement-breakpoint
 CREATE TYPE "public"."doc_type" AS ENUM('dni', 'ruc', 'ce');--> statement-breakpoint
 CREATE TYPE "public"."inventory_movement_type" AS ENUM('purchase', 'consumption', 'waste', 'adjustment');--> statement-breakpoint
@@ -9,7 +11,7 @@ CREATE TYPE "public"."order_type" AS ENUM('dine_in', 'takeout', 'delivery');--> 
 CREATE TYPE "public"."payment_method" AS ENUM('cash', 'card', 'yape', 'plin', 'transfer', 'other');--> statement-breakpoint
 CREATE TYPE "public"."payment_status" AS ENUM('pending', 'completed', 'refunded');--> statement-breakpoint
 CREATE TYPE "public"."plan" AS ENUM('free', 'starter', 'pro', 'enterprise');--> statement-breakpoint
-CREATE TYPE "public"."session_status" AS ENUM('active', 'completed');--> statement-breakpoint
+CREATE TYPE "public"."session_status" AS ENUM('pending', 'active', 'completed', 'rejected');--> statement-breakpoint
 CREATE TYPE "public"."sunat_status" AS ENUM('pending', 'sent', 'accepted', 'rejected');--> statement-breakpoint
 CREATE TYPE "public"."table_status" AS ENUM('available', 'occupied', 'reserved', 'maintenance');--> statement-breakpoint
 CREATE TYPE "public"."user_role" AS ENUM('super_admin', 'org_admin', 'branch_manager', 'cashier', 'waiter', 'kitchen');--> statement-breakpoint
@@ -69,6 +71,28 @@ CREATE TABLE "users" (
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
+CREATE TABLE "spaces" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"branch_id" uuid NOT NULL,
+	"organization_id" uuid NOT NULL,
+	"name" varchar(255) NOT NULL,
+	"description" text,
+	"floor_number" integer DEFAULT 1 NOT NULL,
+	"is_active" boolean DEFAULT true NOT NULL,
+	"sort_order" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL,
+	CONSTRAINT "spaces_branch_name_unique" UNIQUE("branch_id","name")
+);
+--> statement-breakpoint
+CREATE TABLE "table_assignments" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"table_id" uuid NOT NULL,
+	"user_id" uuid NOT NULL,
+	"branch_id" uuid NOT NULL,
+	"organization_id" uuid NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "table_sessions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"table_id" uuid NOT NULL,
@@ -86,10 +110,13 @@ CREATE TABLE "tables" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"branch_id" uuid NOT NULL,
 	"organization_id" uuid NOT NULL,
+	"space_id" uuid,
 	"number" integer NOT NULL,
 	"capacity" integer DEFAULT 4 NOT NULL,
 	"qr_code" varchar(100) NOT NULL,
 	"status" "table_status" DEFAULT 'available' NOT NULL,
+	"position_x" integer DEFAULT 0 NOT NULL,
+	"position_y" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	CONSTRAINT "tables_qr_code_unique" UNIQUE("qr_code"),
 	CONSTRAINT "tables_branch_number_unique" UNIQUE("branch_id","number")
@@ -179,6 +206,7 @@ CREATE TABLE "orders" (
 	"discount" integer DEFAULT 0 NOT NULL,
 	"total" integer DEFAULT 0 NOT NULL,
 	"notes" text,
+	"inventory_deducted" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
@@ -330,16 +358,65 @@ CREATE TABLE "shifts" (
 	"notes" text
 );
 --> statement-breakpoint
+CREATE TABLE "coupon_assignments" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"coupon_id" uuid NOT NULL,
+	"customer_id" uuid NOT NULL,
+	"sent_at" timestamp DEFAULT now() NOT NULL,
+	"seen_at" timestamp,
+	"used_at" timestamp,
+	CONSTRAINT "uq_coupon_customer" UNIQUE("coupon_id","customer_id")
+);
+--> statement-breakpoint
+CREATE TABLE "coupon_redemptions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"coupon_id" uuid NOT NULL,
+	"customer_id" uuid,
+	"order_id" uuid,
+	"discount_applied" integer NOT NULL,
+	"redeemed_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "coupons" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"organization_id" uuid NOT NULL,
+	"code" varchar(50) NOT NULL,
+	"name" varchar(255) NOT NULL,
+	"description" text,
+	"type" "coupon_type" NOT NULL,
+	"status" "coupon_status" DEFAULT 'active' NOT NULL,
+	"discount_value" integer,
+	"menu_item_id" uuid,
+	"category_id" uuid,
+	"buy_quantity" integer,
+	"get_quantity" integer,
+	"min_order_amount" integer,
+	"max_discount_amount" integer,
+	"max_uses_total" integer,
+	"max_uses_per_customer" integer DEFAULT 1,
+	"current_uses" integer DEFAULT 0 NOT NULL,
+	"starts_at" timestamp,
+	"expires_at" timestamp,
+	"created_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 ALTER TABLE "branches" ADD CONSTRAINT "branches_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_branches" ADD CONSTRAINT "user_branches_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_branches" ADD CONSTRAINT "user_branches_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "users" ADD CONSTRAINT "users_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "spaces" ADD CONSTRAINT "spaces_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "spaces" ADD CONSTRAINT "spaces_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "table_assignments" ADD CONSTRAINT "table_assignments_table_id_tables_id_fk" FOREIGN KEY ("table_id") REFERENCES "public"."tables"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "table_assignments" ADD CONSTRAINT "table_assignments_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "table_assignments" ADD CONSTRAINT "table_assignments_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "table_assignments" ADD CONSTRAINT "table_assignments_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "table_sessions" ADD CONSTRAINT "table_sessions_table_id_tables_id_fk" FOREIGN KEY ("table_id") REFERENCES "public"."tables"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "table_sessions" ADD CONSTRAINT "table_sessions_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "table_sessions" ADD CONSTRAINT "table_sessions_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tables" ADD CONSTRAINT "tables_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tables" ADD CONSTRAINT "tables_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tables" ADD CONSTRAINT "tables_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "menu_categories" ADD CONSTRAINT "menu_categories_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "menu_categories" ADD CONSTRAINT "menu_categories_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "menu_item_modifier_groups" ADD CONSTRAINT "menu_item_modifier_groups_item_id_menu_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."menu_items"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -385,4 +462,8 @@ ALTER TABLE "payments" ADD CONSTRAINT "payments_organization_id_organizations_id
 ALTER TABLE "payments" ADD CONSTRAINT "payments_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shifts" ADD CONSTRAINT "shifts_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shifts" ADD CONSTRAINT "shifts_branch_id_branches_id_fk" FOREIGN KEY ("branch_id") REFERENCES "public"."branches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "shifts" ADD CONSTRAINT "shifts_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "shifts" ADD CONSTRAINT "shifts_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "coupon_assignments" ADD CONSTRAINT "coupon_assignments_coupon_id_coupons_id_fk" FOREIGN KEY ("coupon_id") REFERENCES "public"."coupons"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "coupon_assignments" ADD CONSTRAINT "coupon_assignments_customer_id_customers_id_fk" FOREIGN KEY ("customer_id") REFERENCES "public"."customers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "coupon_redemptions" ADD CONSTRAINT "coupon_redemptions_coupon_id_coupons_id_fk" FOREIGN KEY ("coupon_id") REFERENCES "public"."coupons"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "coupons" ADD CONSTRAINT "coupons_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;

@@ -4,6 +4,7 @@ import {
   varchar,
   text,
   integer,
+  boolean,
   timestamp,
 } from "drizzle-orm/pg-core";
 import {
@@ -41,6 +42,7 @@ export const orders = pgTable("orders", {
   discount: integer("discount").notNull().default(0),
   total: integer("total").notNull().default(0),
   notes: text("notes"),
+  inventory_deducted: boolean("inventory_deducted").default(false).notNull(),
   created_at: timestamp("created_at").defaultNow().notNull(),
   updated_at: timestamp("updated_at").defaultNow().notNull(),
 });

@@ -188,3 +188,61 @@ export function useEndSession() {
     },
   });
 }
+
+// --- Table History ---
+
+export function useTableHistory(tableId: string | null, from?: string, to?: string) {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ["tables", tableId, "history", from, to],
+    queryFn: () => apiFetch(`/api/tables/${tableId}/history${qs ? `?${qs}` : ""}`),
+    enabled: !!tableId,
+  });
+}
+
+// --- Table Assignments ---
+
+export function useTableAssignments(tableId: string | null) {
+  return useQuery({
+    queryKey: ["tables", tableId, "assignments"],
+    queryFn: () => apiFetch(`/api/tables/${tableId}/assignments`),
+    enabled: !!tableId,
+  });
+}
+
+export function useAssignWaiter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tableId, userId }: { tableId: string; userId: string }) =>
+      apiFetch(`/api/tables/${tableId}/assignments`, {
+        method: "POST",
+        body: JSON.stringify({ userId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    },
+  });
+}
+
+export function useRemoveAssignment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tableId, userId }: { tableId: string; userId: string }) =>
+      apiFetch(`/api/tables/${tableId}/assignments/${userId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    },
+  });
+}
+
+export function useMyAssignedTables() {
+  return useQuery({
+    queryKey: ["tables", "my-assignments"],
+    queryFn: () => apiFetch<{ table_id: string; table_number: number }[]>("/api/tables/my-assignments"),
+  });
+}

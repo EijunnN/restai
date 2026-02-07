@@ -12,9 +12,11 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@restai/ui/components/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@restai/ui/components/tabs";
+import { DatePicker } from "@restai/ui/components/date-picker";
 import {
   Plus,
   QrCode,
@@ -32,6 +34,12 @@ import {
   ZoomOut,
   RotateCcw,
   Grid3X3,
+  History,
+  UserPlus,
+  UserMinus,
+  Clock,
+  DollarSign,
+  ShoppingCart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -47,7 +55,13 @@ import {
   usePendingSessions,
   useApproveSession,
   useRejectSession,
+  useTableHistory,
+  useTableAssignments,
+  useAssignWaiter,
+  useRemoveAssignment,
 } from "@/hooks/use-tables";
+import { useStaffList } from "@/hooks/use-staff";
+import { useBranchSettings } from "@/hooks/use-settings";
 
 // --- QR Code SVG Generator ---
 
@@ -396,6 +410,11 @@ export default function TablesPage() {
   const [createSpaceDialog, setCreateSpaceDialog] = useState(false);
   const [editSpaceDialog, setEditSpaceDialog] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "table" | "space"; id: string; name: string } | null>(null);
+  const [historyDialog, setHistoryDialog] = useState<any>(null);
+  const [historyFrom, setHistoryFrom] = useState<string | undefined>();
+  const [historyTo, setHistoryTo] = useState<string | undefined>();
+  const [assignDialog, setAssignDialog] = useState<any>(null);
+  const [assignKey, setAssignKey] = useState(0);
 
   // Form states
   const [newTableNumber, setNewTableNumber] = useState("");
@@ -422,6 +441,17 @@ export default function TablesPage() {
   const approveSession = useApproveSession();
   const rejectSession = useRejectSession();
   const pendingSessions: any[] = pendingData ?? [];
+
+  // History & assignments
+  const { data: historyData, isLoading: historyLoading } = useTableHistory(historyDialog?.id, historyFrom, historyTo);
+  const { data: assignmentsData } = useTableAssignments(assignDialog?.id);
+  const assignWaiter = useAssignWaiter();
+  const removeAssignment = useRemoveAssignment();
+  const { data: staffData } = useStaffList();
+  const { data: branchSettingsData } = useBranchSettings();
+  const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
+  const waiters: any[] = (staffData ?? []).filter((s: any) => ["waiter", "branch_manager", "org_admin"].includes(s.role));
+  const assignments: any[] = assignmentsData ?? [];
 
   const spaces: any[] = spacesData ?? [];
   const allTables: any[] = tablesData?.tables ?? [];
@@ -763,7 +793,7 @@ export default function TablesPage() {
                             {table.capacity} personas
                           </p>
                         </div>
-                        <div className="flex gap-1">
+                        <div className="flex gap-1 flex-wrap">
                           <Button
                             variant="ghost"
                             size="sm"
@@ -773,6 +803,26 @@ export default function TablesPage() {
                           >
                             <QrCode className="h-4 w-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={() => { setHistoryFrom(undefined); setHistoryTo(undefined); setHistoryDialog(table); }}
+                            title="Historial"
+                          >
+                            <History className="h-4 w-4" />
+                          </Button>
+                          {waiterAssignmentEnabled && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0"
+                              onClick={() => { setAssignKey((k) => k + 1); setAssignDialog(table); }}
+                              title="Asignar mozos"
+                            >
+                              <UserPlus className="h-4 w-4" />
+                            </Button>
+                          )}
                           {table.status === "available" && (
                             <Button
                               variant="ghost"
@@ -1051,6 +1101,220 @@ export default function TablesPage() {
               {deleteTable.isPending || deleteSpace.isPending
                 ? "Eliminando..."
                 : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Table History Dialog */}
+      <Dialog open={!!historyDialog} onOpenChange={(open) => !open && setHistoryDialog(null)}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Historial - Mesa {historyDialog?.number}
+            </DialogTitle>
+            <DialogDescription>
+              Sesiones pasadas, pedidos e ingresos
+            </DialogDescription>
+          </DialogHeader>
+          {historyDialog && (
+            <div className="space-y-4">
+              {/* Date range filter */}
+              <div className="flex gap-3 items-end">
+                <div className="space-y-1 flex-1">
+                  <Label className="text-xs">Desde</Label>
+                  <DatePicker
+                    value={historyFrom}
+                    onChange={setHistoryFrom}
+                    placeholder="Fecha inicio"
+                  />
+                </div>
+                <div className="space-y-1 flex-1">
+                  <Label className="text-xs">Hasta</Label>
+                  <DatePicker
+                    value={historyTo}
+                    onChange={setHistoryTo}
+                    placeholder="Fecha fin"
+                  />
+                </div>
+                {(historyFrom || historyTo) && (
+                  <Button variant="ghost" size="sm" onClick={() => { setHistoryFrom(undefined); setHistoryTo(undefined); }}>
+                    Limpiar
+                  </Button>
+                )}
+              </div>
+
+              {/* Summary */}
+              {historyData && (
+                <div className="grid grid-cols-3 gap-3">
+                  <Card>
+                    <CardContent className="p-3 text-center">
+                      <DollarSign className="h-4 w-4 mx-auto mb-1 text-green-600" />
+                      <p className="text-lg font-bold">S/ {(historyData.summary.total_revenue / 100).toFixed(2)}</p>
+                      <p className="text-xs text-muted-foreground">Ingresos totales</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-3 text-center">
+                      <ShoppingCart className="h-4 w-4 mx-auto mb-1 text-blue-600" />
+                      <p className="text-lg font-bold">{historyData.summary.total_orders}</p>
+                      <p className="text-xs text-muted-foreground">Pedidos</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-3 text-center">
+                      <Clock className="h-4 w-4 mx-auto mb-1 text-orange-600" />
+                      <p className="text-lg font-bold">{historyData.summary.avg_duration_minutes} min</p>
+                      <p className="text-xs text-muted-foreground">Duracion promedio</p>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* Sessions list */}
+              {historyLoading ? (
+                <div className="space-y-3">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-16 w-full" />
+                  ))}
+                </div>
+              ) : historyData?.sessions.length === 0 ? (
+                <p className="text-center text-sm text-muted-foreground py-8">
+                  No hay sesiones registradas para esta mesa
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {historyData?.sessions.map((session: any) => (
+                    <Card key={session.id}>
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-sm">{session.customer_name}</span>
+                            <Badge variant="outline" className="text-xs">
+                              {session.status}
+                            </Badge>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(session.started_at).toLocaleDateString("es-PE", {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                          {session.duration_minutes !== null && (
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              {session.duration_minutes} min
+                            </span>
+                          )}
+                          <span className="flex items-center gap-1">
+                            <ShoppingCart className="h-3 w-3" />
+                            {session.order_count} pedidos
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <DollarSign className="h-3 w-3" />
+                            S/ {(session.total_revenue / 100).toFixed(2)}
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHistoryDialog(null)}>
+              Cerrar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Table Assignment Dialog */}
+      <Dialog open={!!assignDialog} onOpenChange={(open) => !open && setAssignDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Asignar Mozos - Mesa {assignDialog?.number}
+            </DialogTitle>
+            <DialogDescription>
+              Gestiona los mozos asignados a esta mesa
+            </DialogDescription>
+          </DialogHeader>
+          {assignDialog && (
+            <div className="space-y-4">
+              {/* Current assignments */}
+              <div>
+                <Label className="text-sm mb-2 block">Mozos asignados</Label>
+                {assignments.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-2">Ningun mozo asignado</p>
+                ) : (
+                  <div className="space-y-2">
+                    {assignments.map((a: any) => (
+                      <div
+                        key={a.id}
+                        className="flex items-center justify-between p-2 rounded-lg border"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium text-primary">
+                            {a.user_name?.charAt(0)?.toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium">{a.user_name}</p>
+                            <p className="text-xs text-muted-foreground">{a.user_role}</p>
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                          disabled={removeAssignment.isPending}
+                          onClick={() => removeAssignment.mutate({ tableId: assignDialog.id, userId: a.user_id })}
+                        >
+                          <UserMinus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Add waiter */}
+              <div>
+                <Label className="text-sm mb-2 block">Agregar mozo</Label>
+                <Select
+                  key={assignKey}
+                  onValueChange={(userId) => {
+                    assignWaiter.mutate(
+                      { tableId: assignDialog.id, userId },
+                      { onSuccess: () => setAssignKey((k) => k + 1) }
+                    );
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar mozo..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {waiters
+                      .filter((w: any) => !assignments.some((a: any) => a.user_id === w.id))
+                      .map((w: any) => (
+                        <SelectItem key={w.id} value={w.id}>
+                          {w.name} ({w.role})
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignDialog(null)}>
+              Cerrar
             </Button>
           </DialogFooter>
         </DialogContent>

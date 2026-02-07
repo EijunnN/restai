@@ -5,8 +5,11 @@ export type WsMessageType =
   | "order:item_status"
   | "order:cancelled"
   | "table:status"
+  | "table:call_waiter"
+  | "table:request_bill"
   | "session:started"
   | "session:ended"
+  | "session:pending"
   | "kitchen:alert"
   | "ping"
   | "pong";

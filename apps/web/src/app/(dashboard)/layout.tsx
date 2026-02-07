@@ -31,6 +31,7 @@ import { Button } from "@restai/ui/components/button";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import { cn } from "@/lib/utils";
 import { useOrgSettings, useBranches } from "@/hooks/use-settings";
+import { NotificationBell } from "@/components/notification-bell";
 
 interface NavGroup {
   label: string;
@@ -73,8 +74,26 @@ const navGroups: NavGroup[] = [
   },
 ];
 
-const allNavItems = navGroups.flatMap((g) => g.items);
-const mobileNavItems = allNavItems.slice(0, 5);
+// Role-based nav access map
+const roleNavAccess: Record<string, Set<string>> = {
+  org_admin: new Set(navGroups.flatMap((g) => g.items.map((i) => i.href))),
+  branch_manager: new Set(
+    navGroups.flatMap((g) => g.items.filter((i) => i.href !== "/settings").map((i) => i.href))
+  ),
+  cashier: new Set(["/", "/pos", "/orders", "/payments"]),
+  waiter: new Set(["/", "/pos", "/orders", "/tables", "/connections", "/kitchen"]),
+  kitchen: new Set(["/", "/kitchen"]),
+};
+
+function getFilteredNavGroups(role: string | undefined): NavGroup[] {
+  const allowed = roleNavAccess[role || ""] || roleNavAccess.org_admin;
+  return navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => allowed.has(item.href)),
+    }))
+    .filter((group) => group.items.length > 0);
+}
 
 function isActive(pathname: string, href: string) {
   return pathname === href || (href !== "/" && pathname.startsWith(href));
@@ -127,6 +146,10 @@ export default function DashboardLayout({
   };
 
   const orgName = org?.name || "RestAI";
+
+  const filteredNavGroups = getFilteredNavGroups(user.role);
+  const allFilteredItems = filteredNavGroups.flatMap((g) => g.items);
+  const mobileNavItems = allFilteredItems.slice(0, 5);
 
   return (
     <div className="h-screen flex overflow-hidden">
@@ -189,7 +212,7 @@ export default function DashboardLayout({
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-2 px-2">
-          {navGroups.map((group) => (
+          {filteredNavGroups.map((group) => (
             <div key={group.label} className="mb-1">
               {!collapsed && (
                 <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-3 pt-3 pb-1">
@@ -333,6 +356,7 @@ export default function DashboardLayout({
                   <span>{currentBranch.name}</span>
                 </div>
               )}
+              <NotificationBell />
               <div className="hidden md:flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">
                   {user.name}
@@ -402,7 +426,7 @@ export default function DashboardLayout({
 
               {/* Mobile nav */}
               <nav className="flex-1 overflow-y-auto py-2 px-2">
-                {navGroups.map((group) => (
+                {filteredNavGroups.map((group) => (
                   <div key={group.label} className="mb-1">
                     <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-3 pt-3 pb-1">
                       {group.label}

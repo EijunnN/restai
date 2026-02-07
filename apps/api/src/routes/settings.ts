@@ -67,14 +67,17 @@ settings.patch("/branch", requirePermission("settings:*"), async (c) => {
   if (body.currency !== undefined) updateData.currency = body.currency;
   if (body.settings !== undefined) updateData.settings = body.settings;
 
-  if (body.inventoryEnabled !== undefined) {
+  if (body.inventoryEnabled !== undefined || body.waiterTableAssignmentEnabled !== undefined) {
     // Fetch current settings to merge
     const [existing] = await db.select({ settings: schema.branches.settings })
       .from(schema.branches)
       .where(eq(schema.branches.id, tenant.branchId))
       .limit(1);
     const currentSettings = (existing?.settings as Record<string, unknown>) || {};
-    updateData.settings = { ...currentSettings, inventory_enabled: body.inventoryEnabled };
+    const merged = { ...currentSettings };
+    if (body.inventoryEnabled !== undefined) merged.inventory_enabled = body.inventoryEnabled;
+    if (body.waiterTableAssignmentEnabled !== undefined) merged.waiter_table_assignment_enabled = body.waiterTableAssignmentEnabled;
+    updateData.settings = merged;
   }
 
   const [updated] = await db.update(schema.branches)

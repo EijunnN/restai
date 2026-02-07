@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { tableStatusEnum, sessionStatusEnum } from "./enums";
 import { organizations, branches } from "./tenants";
+import { users } from "./auth";
 
 export const spaces = pgTable(
   "spaces",
@@ -58,6 +59,23 @@ export const tables = pgTable(
     unique("tables_branch_number_unique").on(table.branch_id, table.number),
   ],
 );
+
+export const tableAssignments = pgTable("table_assignments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  table_id: uuid("table_id")
+    .notNull()
+    .references(() => tables.id, { onDelete: "cascade" }),
+  user_id: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  branch_id: uuid("branch_id")
+    .notNull()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  organization_id: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  created_at: timestamp("created_at").defaultNow().notNull(),
+});
 
 export const tableSessions = pgTable("table_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),

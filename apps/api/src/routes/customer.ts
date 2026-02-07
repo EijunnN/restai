@@ -179,7 +179,7 @@ customer.post(
 
     await wsManager.publish(`branch:${branch.id}`, {
       type: "session:pending",
-      payload: { sessionId: session.id, tableNumber: table.number, customerName: body.customerName },
+      payload: { sessionId: session.id, tableId: table.id, tableNumber: table.number, customerName: body.customerName },
       timestamp: Date.now(),
     });
 
@@ -390,7 +390,7 @@ customer.post(
     // Broadcast pending session for staff approval
     await wsManager.publish(`branch:${branch.id}`, {
       type: "session:pending",
-      payload: { sessionId: session.id, tableNumber: table.number, customerName: body.customerName },
+      payload: { sessionId: session.id, tableId: table.id, tableNumber: table.number, customerName: body.customerName },
       timestamp: Date.now(),
     });
 
@@ -506,8 +506,39 @@ const customerAuth = async (c: any, next: any) => {
   }
 };
 
+// Middleware to validate that the customer's session is still active
+const requireActiveSession = async (c: any, next: any) => {
+  const user = c.get("user") as any;
+  const tableId = user.table;
+
+  const [session] = await db
+    .select({
+      id: schema.tableSessions.id,
+      status: schema.tableSessions.status,
+      customer_name: schema.tableSessions.customer_name,
+    })
+    .from(schema.tableSessions)
+    .where(
+      and(
+        eq(schema.tableSessions.table_id, tableId),
+        eq(schema.tableSessions.status, "active"),
+      ),
+    )
+    .limit(1);
+
+  if (!session) {
+    return c.json(
+      { success: false, error: { code: "SESSION_ENDED", message: "Tu sesión ha finalizado" } },
+      403,
+    );
+  }
+
+  c.set("session", session);
+  return next();
+};
+
 // GET /my-coupons - Get available coupons for current customer (customer auth)
-customer.get("/my-coupons", customerAuth, async (c) => {
+customer.get("/my-coupons", customerAuth, requireActiveSession, async (c) => {
   const user = c.get("user") as any;
   const customerId = user.customerId;
 
@@ -558,13 +589,13 @@ customer.get("/my-coupons", customerAuth, async (c) => {
 });
 
 // POST /orders - Create order (customer auth)
-customer.post("/orders", customerAuth, zValidator("json", createOrderSchema), async (c) => {
+customer.post("/orders", customerAuth, requireActiveSession, zValidator("json", createOrderSchema), async (c) => {
   const body = c.req.valid("json");
   const user = c.get("user") as any;
+  const session = c.get("session") as any;
 
   const branchId = user.branch;
   const organizationId = user.org;
-  const tableId = user.table;
 
   // Get menu items
   const menuItemIds = body.items.map((i) => i.menuItemId);
@@ -616,17 +647,8 @@ customer.post("/orders", customerAuth, zValidator("json", createOrderSchema), as
   const tax = Math.round(subtotal * taxRate / 10000);
   const total = subtotal + tax;
 
-  // Find active session
-  const [session] = await db
-    .select({ id: schema.tableSessions.id })
-    .from(schema.tableSessions)
-    .where(
-      and(
-        eq(schema.tableSessions.table_id, tableId),
-        eq(schema.tableSessions.status, "active"),
-      ),
-    )
-    .limit(1);
+  // Use customer_name from session if not provided in body
+  const customerName = body.customerName || session.customer_name;
 
   const orderNumber = generateOrderNumber();
 
@@ -635,12 +657,12 @@ customer.post("/orders", customerAuth, zValidator("json", createOrderSchema), as
     .values({
       organization_id: organizationId,
       branch_id: branchId,
-      table_session_id: session?.id || null,
+      table_session_id: session.id,
       customer_id: user.customerId || null,
       order_number: orderNumber,
       type: body.type,
       status: "pending",
-      customer_name: body.customerName,
+      customer_name: customerName,
       subtotal,
       tax,
       total,
@@ -708,6 +730,7 @@ customer.get("/orders/:id", customerAuth, zValidator("param", idParamSchema), as
 customer.post(
   "/validate-coupon",
   customerAuth,
+  requireActiveSession,
   zValidator("json", z.object({ code: z.string().min(1) })),
   async (c) => {
     const user = c.get("user") as any;
@@ -777,6 +800,7 @@ customer.post(
 customer.post(
   "/table-action",
   customerAuth,
+  requireActiveSession,
   zValidator(
     "json",
     z.object({
@@ -811,6 +835,7 @@ customer.post(
       type: eventType,
       payload: {
         tableSessionId,
+        tableId,
         tableNumber: table.number,
         action,
       },

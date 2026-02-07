@@ -31,6 +31,9 @@ interface ReceiptTicketData {
   total: number;
   paymentMethod?: string;
   customerName?: string;
+  docType?: "boleta_simple" | "boleta_electronica" | "factura";
+  docNumber?: string;
+  docHolderName?: string;
 }
 
 function formatCents(cents: number): string {
@@ -74,15 +77,8 @@ function buildKitchenTicketHtml(data: KitchenTicketData): string {
   <meta charset="utf-8">
   <title>Ticket Cocina - #${data.orderNumber}</title>
   <style>
-    @page { size: 80mm auto; margin: 2mm; }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Courier New', Courier, monospace; font-size: 12px; width: 76mm; color: #000; }
-    .center { text-align: center; }
-    .bold { font-weight: bold; }
-    .divider { border-top: 1px dashed #000; margin: 4px 0; }
+    ${thermalStyles(80)}
     .order-num { font-size: 28px; font-weight: bold; text-align: center; letter-spacing: 2px; }
-    table { width: 100%; border-collapse: collapse; }
-    td { vertical-align: top; }
   </style>
 </head>
 <body>
@@ -106,31 +102,68 @@ function buildKitchenTicketHtml(data: KitchenTicketData): string {
 </html>`;
 }
 
+function thermalStyles(widthMm: number = 80): string {
+  const contentWidth = widthMm - 4;
+  return `
+    @page { size: ${widthMm}mm auto; margin: 0; padding: 0; }
+    @media print {
+      html, body { width: ${widthMm}mm !important; margin: 0 !important; padding: 1mm 2mm !important; }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: ${contentWidth}mm; margin: 0; padding: 1mm 2mm; }
+    body { font-family: 'Courier New', Courier, monospace; font-size: 12px; color: #000; line-height: 1.3; }
+    .center { text-align: center; }
+    .bold { font-weight: bold; }
+    .divider { border-top: 1px dashed #000; margin: 3px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    td { vertical-align: top; }
+  `;
+}
+
 function buildReceiptTicketHtml(data: ReceiptTicketData): string {
   const itemsHtml = data.items
     .map(
       (item) =>
         `<tr>
           <td style="text-align:left;padding:1px 0;">${item.quantity}x ${item.name}</td>
-          <td style="text-align:right;padding:1px 0;">S/ ${formatCents(item.total)}</td>
+          <td style="text-align:right;padding:1px 0;white-space:nowrap;">S/ ${formatCents(item.total)}</td>
         </tr>`
     )
     .join("");
+
+  // Determine document title and customer info based on docType
+  let docTitle = "BOLETA DE VENTA";
+  let docInfoHtml = "";
+  if (data.docType === "boleta_electronica") {
+    docTitle = "BOLETA DE VENTA ELECTRONICA";
+    if (data.docNumber) {
+      docInfoHtml = `<div>DNI: ${data.docNumber}</div>`;
+    }
+    if (data.customerName) {
+      docInfoHtml += `<div>Cliente: ${data.customerName}</div>`;
+    }
+  } else if (data.docType === "factura") {
+    docTitle = "FACTURA";
+    if (data.docNumber) {
+      docInfoHtml = `<div>RUC: ${data.docNumber}</div>`;
+    }
+    if (data.docHolderName) {
+      docInfoHtml += `<div>Razon Social: ${data.docHolderName}</div>`;
+    }
+  } else {
+    // boleta_simple or default
+    if (data.customerName) {
+      docInfoHtml = `<div>Cliente: ${data.customerName}</div>`;
+    }
+  }
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Boleta - #${data.orderNumber}</title>
+  <title>${docTitle} - #${data.orderNumber}</title>
   <style>
-    @page { size: 80mm auto; margin: 2mm; }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Courier New', Courier, monospace; font-size: 11px; width: 76mm; color: #000; }
-    .center { text-align: center; }
-    .bold { font-weight: bold; }
-    .divider { border-top: 1px dashed #000; margin: 4px 0; }
-    table { width: 100%; border-collapse: collapse; }
-    td { vertical-align: top; }
+    ${thermalStyles(80)}
     .totals td { padding: 1px 0; }
   </style>
 </head>
@@ -139,10 +172,10 @@ function buildReceiptTicketHtml(data: ReceiptTicketData): string {
   ${data.ruc ? `<div class="center" style="font-size:10px;">RUC: ${data.ruc}</div>` : ""}
   ${data.address ? `<div class="center" style="font-size:10px;">${data.address}</div>` : ""}
   <div class="divider"></div>
-  <div class="center bold">BOLETA DE VENTA</div>
+  <div class="center bold">${docTitle}</div>
   <div class="center" style="font-size:10px;">${formatDateTime(data.createdAt)}</div>
   <div class="center">Orden: #${data.orderNumber}</div>
-  ${data.customerName ? `<div>Cliente: ${data.customerName}</div>` : ""}
+  ${docInfoHtml}
   <div class="divider"></div>
   <table>${itemsHtml}</table>
   <div class="divider"></div>
@@ -174,8 +207,9 @@ function printHtml(html: string) {
   iframe.style.position = "fixed";
   iframe.style.top = "-10000px";
   iframe.style.left = "-10000px";
-  iframe.style.width = "80mm";
+  iframe.style.width = "0";
   iframe.style.height = "0";
+  iframe.style.border = "none";
   document.body.appendChild(iframe);
 
   const doc = iframe.contentDocument || iframe.contentWindow?.document;

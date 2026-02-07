@@ -4,5 +4,6 @@ export type AppEnv = {
   Variables: {
     user: JwtPayload | CustomerJwtPayload;
     tenant: TenantContext;
+    session: { id: string; status: string; customer_name: string };
   };
 };

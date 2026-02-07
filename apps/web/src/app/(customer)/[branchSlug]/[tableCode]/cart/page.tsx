@@ -30,9 +30,37 @@ export default function CartPage({
   } = useCartStore();
   const customerToken = useCustomerStore((s) => s.token);
   const setOrderId = useCustomerStore((s) => s.setOrderId);
+  const clearSession = useCustomerStore((s) => s.clear);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  // Validate session on mount
+  useEffect(() => {
+    const token = customerToken || (typeof window !== "undefined" ? sessionStorage.getItem("customer_token") : null);
+    if (!token) {
+      clearSession();
+      router.replace(`/${branchSlug}/${tableCode}`);
+      return;
+    }
+    fetch(`http://localhost:3001/api/customer/${branchSlug}/${tableCode}/check-session`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((result) => {
+        if (result.success && result.data.hasSession && result.data.status === "active") {
+          setSessionChecked(true);
+        } else {
+          clearSession();
+          router.replace(`/${branchSlug}/${tableCode}`);
+        }
+      })
+      .catch(() => {
+        clearSession();
+        router.replace(`/${branchSlug}/${tableCode}`);
+      });
+  }, [branchSlug, tableCode, customerToken, clearSession, router]);
   const [couponOpen, setCouponOpen] = useState(false);
   const [couponCode, setCouponCode] = useState("");
   const [couponLoading, setCouponLoading] = useState(false);

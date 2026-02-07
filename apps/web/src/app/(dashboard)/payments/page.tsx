@@ -72,6 +72,12 @@ export default function PaymentsPage() {
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState<any>(null);
+  const [receiptDialogOpen, setReceiptDialogOpen] = useState(false);
+  const [receiptPayment, setReceiptPayment] = useState<any>(null);
+  const [receiptDocType, setReceiptDocType] = useState<"boleta_simple" | "boleta_electronica" | "factura">("boleta_simple");
+  const [receiptDocNumber, setReceiptDocNumber] = useState("");
+  const [receiptDocHolderName, setReceiptDocHolderName] = useState("");
+  const [receiptPrinting, setReceiptPrinting] = useState(false);
 
   // Payment form state
   const [paymentForm, setPaymentForm] = useState({
@@ -99,9 +105,26 @@ export default function PaymentsPage() {
   const { data: branchSettings } = useBranchSettings();
   const printReceipt = usePrintReceipt();
 
-  const handlePrintReceipt = async (payment: any) => {
+  const openReceiptDialog = (payment: any) => {
+    setReceiptPayment(payment);
+    setReceiptDocType("boleta_simple");
+    setReceiptDocNumber("");
+    setReceiptDocHolderName("");
+    setReceiptDialogOpen(true);
+  };
+
+  const isReceiptFormValid = () => {
+    if (receiptDocType === "boleta_simple") return true;
+    if (receiptDocType === "boleta_electronica") return /^\d{8}$/.test(receiptDocNumber);
+    if (receiptDocType === "factura") return /^\d{11}$/.test(receiptDocNumber) && receiptDocHolderName.trim().length > 0;
+    return false;
+  };
+
+  const handlePrintReceiptConfirm = async () => {
+    if (!receiptPayment || !isReceiptFormValid()) return;
+    setReceiptPrinting(true);
     try {
-      const orderDetail = await apiFetch(`/api/orders/${payment.order_id}`);
+      const orderDetail = await apiFetch(`/api/orders/${receiptPayment.order_id}`);
       const org = orgSettings as any;
       const branch = branchSettings as any;
       const orderData = orderDetail as any;
@@ -110,8 +133,8 @@ export default function PaymentsPage() {
         businessName: org?.name || "Restaurante",
         ruc: org?.settings?.ruc || undefined,
         address: branch?.address || undefined,
-        orderNumber: payment.order_number || orderData?.order_number || "",
-        createdAt: payment.created_at || new Date().toISOString(),
+        orderNumber: receiptPayment.order_number || orderData?.order_number || "",
+        createdAt: receiptPayment.created_at || new Date().toISOString(),
         items: items.map((i: any) => ({
           name: i.name,
           quantity: i.quantity,
@@ -121,21 +144,30 @@ export default function PaymentsPage() {
         subtotal: orderData?.subtotal ?? 0,
         tax: orderData?.tax ?? 0,
         total: orderData?.total ?? 0,
-        paymentMethod: payment.method,
+        paymentMethod: receiptPayment.method,
         customerName: orderData?.customer_name || undefined,
+        docType: receiptDocType,
+        docNumber: receiptDocType !== "boleta_simple" ? receiptDocNumber : undefined,
+        docHolderName: receiptDocType === "factura" ? receiptDocHolderName : undefined,
       });
     } catch {
       const org = orgSettings as any;
       printReceipt({
         businessName: org?.name || "Restaurante",
-        orderNumber: payment.order_number || "",
-        createdAt: payment.created_at || new Date().toISOString(),
+        orderNumber: receiptPayment.order_number || "",
+        createdAt: receiptPayment.created_at || new Date().toISOString(),
         items: [],
         subtotal: 0,
         tax: 0,
-        total: payment.amount ?? 0,
-        paymentMethod: payment.method,
+        total: receiptPayment.amount ?? 0,
+        paymentMethod: receiptPayment.method,
+        docType: receiptDocType,
+        docNumber: receiptDocType !== "boleta_simple" ? receiptDocNumber : undefined,
+        docHolderName: receiptDocType === "factura" ? receiptDocHolderName : undefined,
       });
+    } finally {
+      setReceiptPrinting(false);
+      setReceiptDialogOpen(false);
     }
   };
 
@@ -380,7 +412,7 @@ export default function PaymentsPage() {
                             variant="ghost"
                             size="sm"
                             className="h-8 w-8 p-0"
-                            onClick={() => handlePrintReceipt(payment)}
+                            onClick={() => openReceiptDialog(payment)}
                             title="Imprimir Boleta"
                           >
                             <Printer className="h-4 w-4" />
@@ -473,6 +505,87 @@ export default function PaymentsPage() {
               disabled={createPayment.isPending || !paymentForm.orderId || !paymentForm.amount}
             >
               {createPayment.isPending ? "Registrando..." : "Registrar Pago"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Receipt Type Dialog */}
+      <Dialog open={receiptDialogOpen} onOpenChange={setReceiptDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Imprimir Comprobante</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Tipo de Documento</Label>
+              <Select value={receiptDocType} onValueChange={(v) => {
+                setReceiptDocType(v as "boleta_simple" | "boleta_electronica" | "factura");
+                setReceiptDocNumber("");
+                setReceiptDocHolderName("");
+              }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar tipo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="boleta_simple">Boleta Simple</SelectItem>
+                  <SelectItem value="boleta_electronica">Boleta Electronica</SelectItem>
+                  <SelectItem value="factura">Factura</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {receiptDocType === "boleta_electronica" && (
+              <div className="space-y-2">
+                <Label htmlFor="receiptDni">DNI</Label>
+                <Input
+                  id="receiptDni"
+                  placeholder="12345678"
+                  maxLength={8}
+                  value={receiptDocNumber}
+                  onChange={(e) => setReceiptDocNumber(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                />
+                {receiptDocNumber.length > 0 && receiptDocNumber.length !== 8 && (
+                  <p className="text-xs text-destructive">El DNI debe tener 8 digitos</p>
+                )}
+              </div>
+            )}
+            {receiptDocType === "factura" && (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="receiptRuc">RUC</Label>
+                  <Input
+                    id="receiptRuc"
+                    placeholder="20123456789"
+                    maxLength={11}
+                    value={receiptDocNumber}
+                    onChange={(e) => setReceiptDocNumber(e.target.value.replace(/\D/g, "").slice(0, 11))}
+                  />
+                  {receiptDocNumber.length > 0 && receiptDocNumber.length !== 11 && (
+                    <p className="text-xs text-destructive">El RUC debe tener 11 digitos</p>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="receiptRazonSocial">Razon Social</Label>
+                  <Input
+                    id="receiptRazonSocial"
+                    placeholder="Nombre de la empresa"
+                    value={receiptDocHolderName}
+                    onChange={(e) => setReceiptDocHolderName(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiptDialogOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handlePrintReceiptConfirm}
+              disabled={receiptPrinting || !isReceiptFormValid()}
+            >
+              <Printer className="h-4 w-4 mr-2" />
+              {receiptPrinting ? "Imprimiendo..." : "Imprimir"}
             </Button>
           </DialogFooter>
         </DialogContent>

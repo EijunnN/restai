@@ -19,6 +19,12 @@ staff.use("*", requireBranch);
 // GET / - List staff for org with branch assignments
 staff.get("/", requirePermission("staff:read"), async (c) => {
   const tenant = c.get("tenant") as any;
+  const includeInactive = c.req.query("includeInactive") === "true";
+
+  const conditions = [eq(schema.users.organization_id, tenant.organizationId)];
+  if (!includeInactive) {
+    conditions.push(eq(schema.users.is_active, true));
+  }
 
   // Get all users in this org
   const users = await db
@@ -31,7 +37,7 @@ staff.get("/", requirePermission("staff:read"), async (c) => {
       created_at: schema.users.created_at,
     })
     .from(schema.users)
-    .where(eq(schema.users.organization_id, tenant.organizationId));
+    .where(and(...conditions));
 
   if (users.length === 0) {
     return c.json({ success: true, data: [] });
@@ -194,6 +200,50 @@ staff.patch(
         );
       }
     }
+
+    return c.json({ success: true, data: { id } });
+  },
+);
+
+// PATCH /:id/password - Change staff password
+staff.patch(
+  "/:id/password",
+  requirePermission("staff:update"),
+  zValidator("param", idParamSchema),
+  zValidator(
+    "json",
+    z.object({
+      password: z.string().min(8, "La contraseña debe tener al menos 8 caracteres").max(255),
+    }),
+  ),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const [user] = await db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(
+        and(
+          eq(schema.users.id, id),
+          eq(schema.users.organization_id, tenant.organizationId),
+        ),
+      );
+
+    if (!user) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Usuario no encontrado" } },
+        404,
+      );
+    }
+
+    const passwordHash = await hashPassword(body.password);
+
+    await db
+      .update(schema.users)
+      .set({ password_hash: passwordHash })
+      .where(eq(schema.users.id, id));
 
     return c.json({ success: true, data: { id } });
   },

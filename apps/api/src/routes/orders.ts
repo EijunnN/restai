@@ -398,7 +398,7 @@ orders.patch(
     }
 
     // Auto-deduct inventory when order is completed (if inventory tracking is enabled)
-    if (status === "completed") {
+    if (status === "completed" && !order.inventory_deducted) {
       try {
         // Check if inventory is enabled for this branch
         const [branchSettings] = await db
@@ -424,7 +424,7 @@ orders.patch(
             for (const ingredient of recipeIngredients) {
               const deductQty = parseFloat(ingredient.quantity_used) * orderItem.quantity;
 
-              // Deduct from inventory stock
+              // Deduct from inventory stock (allows negative stock)
               await db
                 .update(schema.inventoryItems)
                 .set({
@@ -444,6 +444,12 @@ orders.patch(
                 });
             }
           }
+
+          // Mark inventory as deducted to prevent double deduction
+          await db
+            .update(schema.orders)
+            .set({ inventory_deducted: true })
+            .where(eq(schema.orders.id, id));
         }
       } catch (_inventoryErr) {
         // Inventory errors should not fail order completion

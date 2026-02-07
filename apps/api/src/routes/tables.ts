@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { eq, and, isNull, desc, gte, lte, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createTableSchema,
@@ -566,6 +566,274 @@ tables.patch(
     });
 
     return c.json({ success: true, data: updated });
+  },
+);
+
+// GET /:id/history - Table history with sessions and orders
+tables.get(
+  "/:id/history",
+  requirePermission("tables:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+    const from = c.req.query("from");
+    const to = c.req.query("to");
+
+    // Verify table belongs to this branch
+    const [table] = await db
+      .select()
+      .from(schema.tables)
+      .where(
+        and(
+          eq(schema.tables.id, id),
+          eq(schema.tables.branch_id, tenant.branchId),
+        ),
+      )
+      .limit(1);
+
+    if (!table) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+        404,
+      );
+    }
+
+    // Build session query conditions
+    const sessionConditions = [
+      eq(schema.tableSessions.table_id, id),
+      eq(schema.tableSessions.branch_id, tenant.branchId),
+    ];
+
+    if (from) {
+      sessionConditions.push(gte(schema.tableSessions.started_at, new Date(from)));
+    }
+    if (to) {
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      sessionConditions.push(lte(schema.tableSessions.started_at, toDate));
+    }
+
+    const sessions = await db
+      .select()
+      .from(schema.tableSessions)
+      .where(and(...sessionConditions))
+      .orderBy(desc(schema.tableSessions.started_at))
+      .limit(100);
+
+    // Get orders for each session
+    const sessionIds = sessions.map((s) => s.id);
+    let sessionOrders: any[] = [];
+    if (sessionIds.length > 0) {
+      sessionOrders = await db
+        .select({
+          id: schema.orders.id,
+          table_session_id: schema.orders.table_session_id,
+          order_number: schema.orders.order_number,
+          total: schema.orders.total,
+          status: schema.orders.status,
+          created_at: schema.orders.created_at,
+        })
+        .from(schema.orders)
+        .where(
+          and(
+            eq(schema.orders.branch_id, tenant.branchId),
+            inArray(schema.orders.table_session_id, sessionIds),
+          ),
+        );
+    }
+
+    // Group orders by session
+    const ordersBySession = new Map<string, any[]>();
+    for (const order of sessionOrders) {
+      const key = order.table_session_id;
+      if (!ordersBySession.has(key)) ordersBySession.set(key, []);
+      ordersBySession.get(key)!.push(order);
+    }
+
+    // Build result
+    const sessionsWithOrders = sessions.map((s) => {
+      const orders = ordersBySession.get(s.id) || [];
+      const totalRevenue = orders.reduce((sum: number, o: any) => sum + o.total, 0);
+      const duration = s.ended_at
+        ? Math.round((new Date(s.ended_at).getTime() - new Date(s.started_at).getTime()) / 60000)
+        : null;
+      return {
+        ...s,
+        orders,
+        total_revenue: totalRevenue,
+        order_count: orders.length,
+        duration_minutes: duration,
+      };
+    });
+
+    // Summary
+    const totalRevenue = sessionsWithOrders.reduce((sum, s) => sum + s.total_revenue, 0);
+    const totalOrders = sessionsWithOrders.reduce((sum, s) => sum + s.order_count, 0);
+    const completedSessions = sessionsWithOrders.filter((s) => s.duration_minutes !== null);
+    const avgDuration = completedSessions.length > 0
+      ? Math.round(completedSessions.reduce((sum, s) => sum + s.duration_minutes!, 0) / completedSessions.length)
+      : 0;
+
+    return c.json({
+      success: true,
+      data: {
+        sessions: sessionsWithOrders,
+        summary: {
+          total_revenue: totalRevenue,
+          total_orders: totalOrders,
+          total_sessions: sessions.length,
+          avg_duration_minutes: avgDuration,
+        },
+      },
+    });
+  },
+);
+
+// GET /my-assignments - List tables assigned to the current user
+tables.get("/my-assignments", requirePermission("tables:read"), async (c) => {
+  const tenant = c.get("tenant") as any;
+  const user = c.get("user") as any;
+
+  const assignments = await db
+    .select({
+      table_id: schema.tableAssignments.table_id,
+      table_number: schema.tables.number,
+    })
+    .from(schema.tableAssignments)
+    .innerJoin(schema.tables, eq(schema.tableAssignments.table_id, schema.tables.id))
+    .where(
+      and(
+        eq(schema.tableAssignments.user_id, user.sub),
+        eq(schema.tableAssignments.branch_id, tenant.branchId),
+      ),
+    );
+
+  return c.json({ success: true, data: assignments });
+});
+
+// GET /:id/assignments - List assigned waiters for a table
+tables.get(
+  "/:id/assignments",
+  requirePermission("tables:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const assignments = await db
+      .select({
+        id: schema.tableAssignments.id,
+        table_id: schema.tableAssignments.table_id,
+        user_id: schema.tableAssignments.user_id,
+        created_at: schema.tableAssignments.created_at,
+        user_name: schema.users.name,
+        user_role: schema.users.role,
+      })
+      .from(schema.tableAssignments)
+      .innerJoin(schema.users, eq(schema.tableAssignments.user_id, schema.users.id))
+      .where(
+        and(
+          eq(schema.tableAssignments.table_id, id),
+          eq(schema.tableAssignments.branch_id, tenant.branchId),
+        ),
+      );
+
+    return c.json({ success: true, data: assignments });
+  },
+);
+
+// POST /:id/assignments - Assign waiter to table
+tables.post(
+  "/:id/assignments",
+  requirePermission("tables:update"),
+  zValidator("param", idParamSchema),
+  zValidator("json", z.object({ userId: z.string().uuid() })),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { userId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Check table exists
+    const [table] = await db
+      .select()
+      .from(schema.tables)
+      .where(
+        and(
+          eq(schema.tables.id, id),
+          eq(schema.tables.branch_id, tenant.branchId),
+        ),
+      )
+      .limit(1);
+
+    if (!table) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+        404,
+      );
+    }
+
+    // Check if already assigned
+    const [existing] = await db
+      .select()
+      .from(schema.tableAssignments)
+      .where(
+        and(
+          eq(schema.tableAssignments.table_id, id),
+          eq(schema.tableAssignments.user_id, userId),
+        ),
+      )
+      .limit(1);
+
+    if (existing) {
+      return c.json(
+        { success: false, error: { code: "CONFLICT", message: "El usuario ya esta asignado a esta mesa" } },
+        409,
+      );
+    }
+
+    const [assignment] = await db
+      .insert(schema.tableAssignments)
+      .values({
+        table_id: id,
+        user_id: userId,
+        branch_id: tenant.branchId,
+        organization_id: tenant.organizationId,
+      })
+      .returning();
+
+    return c.json({ success: true, data: assignment }, 201);
+  },
+);
+
+// DELETE /:id/assignments/:userId - Remove assignment
+tables.delete(
+  "/:id/assignments/:userId",
+  requirePermission("tables:update"),
+  async (c) => {
+    const id = c.req.param("id");
+    const userId = c.req.param("userId");
+    const tenant = c.get("tenant") as any;
+
+    const [deleted] = await db
+      .delete(schema.tableAssignments)
+      .where(
+        and(
+          eq(schema.tableAssignments.table_id, id),
+          eq(schema.tableAssignments.user_id, userId),
+          eq(schema.tableAssignments.branch_id, tenant.branchId),
+        ),
+      )
+      .returning();
+
+    if (!deleted) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Asignacion no encontrada" } },
+        404,
+      );
+    }
+
+    return c.json({ success: true, data: deleted });
   },
 );
 

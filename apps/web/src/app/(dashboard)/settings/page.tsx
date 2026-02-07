@@ -67,6 +67,7 @@ export default function SettingsPage() {
     timezone: "America/Lima",
     currency: "PEN",
     inventoryEnabled: false,
+    waiterTableAssignmentEnabled: false,
   });
 
   // Branch dialog state
@@ -101,6 +102,7 @@ export default function SettingsPage() {
         timezone: branchData.timezone || "America/Lima",
         currency: branchData.currency || "PEN",
         inventoryEnabled: branchData.settings?.inventory_enabled ?? false,
+        waiterTableAssignmentEnabled: branchData.settings?.waiter_table_assignment_enabled ?? false,
       });
     }
   }, [branchData]);
@@ -128,6 +130,7 @@ export default function SettingsPage() {
         timezone: branchForm.timezone,
         currency: branchForm.currency,
         inventoryEnabled: branchForm.inventoryEnabled,
+        waiterTableAssignmentEnabled: branchForm.waiterTableAssignmentEnabled,
       });
       toast.success("Sede actualizada correctamente");
     } catch (err: any) {
@@ -420,6 +423,31 @@ export default function SettingsPage() {
                       className={cn(
                         "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform",
                         branchForm.inventoryEnabled ? "translate-x-5" : "translate-x-0"
+                      )}
+                    />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border p-4">
+                  <div>
+                    <p className="text-sm font-medium">Asignacion de mozos a mesas</p>
+                    <p className="text-xs text-muted-foreground">
+                      Permite asignar mozos especificos a cada mesa
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={branchForm.waiterTableAssignmentEnabled}
+                    onClick={() => setBranchForm({ ...branchForm, waiterTableAssignmentEnabled: !branchForm.waiterTableAssignmentEnabled })}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+                      branchForm.waiterTableAssignmentEnabled ? "bg-primary" : "bg-muted"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform",
+                        branchForm.waiterTableAssignmentEnabled ? "translate-x-5" : "translate-x-0"
                       )}
                     />
                   </button>

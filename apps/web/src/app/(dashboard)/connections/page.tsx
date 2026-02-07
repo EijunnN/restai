@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@restai/ui/components/tabs";
 import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useSessions, useApproveSession, useRejectSession, useEndSession } from "@/hooks/use-tables";
+import { useSessions, useApproveSession, useRejectSession, useEndSession, useMyAssignedTables } from "@/hooks/use-tables";
+import { useBranchSettings } from "@/hooks/use-settings";
+import { useAuthStore } from "@/stores/auth-store";
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -28,7 +30,22 @@ export default function ConnectionsPage() {
   const rejectSession = useRejectSession();
   const endSession = useEndSession();
 
-  const sessionList: any[] = sessions ?? [];
+  // Waiter assignment filtering
+  const user = useAuthStore((s) => s.user);
+  const { data: branchSettingsData } = useBranchSettings();
+  const { data: myAssignedTables } = useMyAssignedTables();
+  const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
+  const isAdminOrManager = user?.role === "super_admin" || user?.role === "org_admin" || user?.role === "branch_manager";
+
+  const sessionList: any[] = useMemo(() => {
+    const all: any[] = sessions ?? [];
+    // If assignment filtering is disabled or user is admin/manager, show all
+    if (!waiterAssignmentEnabled || isAdminOrManager) return all;
+    // Filter to only sessions whose table is assigned to this waiter
+    const assignedTableIds = new Set((myAssignedTables ?? []).map((a: any) => a.table_id));
+    if (assignedTableIds.size === 0) return all; // No assignments = show all (fallback)
+    return all.filter((s: any) => assignedTableIds.has(s.table_id));
+  }, [sessions, waiterAssignmentEnabled, isAdminOrManager, myAssignedTables]);
 
   return (
     <div className="space-y-6">

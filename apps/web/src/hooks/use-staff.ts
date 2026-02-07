@@ -2,10 +2,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/fetcher";
 
-export function useStaffList() {
+export function useStaffList(includeInactive = false) {
   return useQuery({
-    queryKey: ["staff"],
-    queryFn: () => apiFetch("/api/staff"),
+    queryKey: ["staff", { includeInactive }],
+    queryFn: () => apiFetch(`/api/staff${includeInactive ? "?includeInactive=true" : ""}`),
   });
 }
 
@@ -35,6 +35,16 @@ export function useUpdateStaff() {
         body: JSON.stringify(data),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["staff"] }),
+  });
+}
+
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: ({ id, password }: { id: string; password: string }) =>
+      apiFetch(`/api/staff/${id}/password`, {
+        method: "PATCH",
+        body: JSON.stringify({ password }),
+      }),
   });
 }
 

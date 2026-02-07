@@ -48,6 +48,8 @@ export default function CustomerMenuPage({
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [sessionValid, setSessionValid] = useState<boolean | null>(null);
+  const clearSession = useCustomerStore((s) => s.clear);
 
   const getToken = () => {
     const storeToken = useCustomerStore.getState().token;
@@ -62,6 +64,31 @@ export default function CustomerMenuPage({
     if (typeof window !== "undefined") return sessionStorage.getItem("customer_session_id");
     return null;
   };
+
+  // Validate session is still active on mount
+  useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setSessionValid(false);
+      return;
+    }
+    fetch(`http://localhost:3001/api/customer/${branchSlug}/${tableCode}/check-session`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((result) => {
+        if (result.success && result.data.hasSession && result.data.status === "active") {
+          setSessionValid(true);
+        } else {
+          setSessionValid(false);
+          clearSession();
+        }
+      })
+      .catch(() => {
+        setSessionValid(false);
+        clearSession();
+      });
+  }, [branchSlug, tableCode, clearSession]);
 
   const handleTableAction = async (action: "request_bill" | "call_waiter") => {
     const token = getToken();
@@ -138,11 +165,26 @@ export default function CustomerMenuPage({
     return cartItem?.quantity || 0;
   };
 
-  if (loading) {
+  if (loading || sessionValid === null) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
         <p className="text-sm text-muted-foreground">Cargando menu...</p>
+      </div>
+    );
+  }
+
+  useEffect(() => {
+    if (sessionValid === false) {
+      router.replace(`/${branchSlug}/${tableCode}`);
+    }
+  }, [sessionValid, router, branchSlug, tableCode]);
+
+  if (sessionValid === false) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground">Redirigiendo...</p>
       </div>
     );
   }
