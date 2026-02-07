@@ -3,7 +3,7 @@ import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
-import { updateOrderItemStatusSchema, idParamSchema } from "@restai/validators";
+import { updateOrderItemStatusSchema, idParamSchema, kitchenQuerySchema } from "@restai/validators";
 import { ORDER_ITEM_STATUS_TRANSITIONS } from "@restai/config";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
@@ -17,8 +17,11 @@ kitchen.use("*", tenantMiddleware);
 kitchen.use("*", requireBranch);
 
 // GET /orders - Get active orders for branch kitchen display
-kitchen.get("/orders", requirePermission("orders:read"), async (c) => {
+kitchen.get("/orders", requirePermission("orders:read"), zValidator("query", kitchenQuerySchema), async (c) => {
   const tenant = c.get("tenant") as any;
+  const { status } = c.req.valid("query");
+
+  const statusList = status ? [status] : ["pending", "confirmed", "preparing", "ready"];
 
   const activeOrders = await db
     .select()
@@ -26,7 +29,7 @@ kitchen.get("/orders", requirePermission("orders:read"), async (c) => {
     .where(
       and(
         eq(schema.orders.branch_id, tenant.branchId),
-        inArray(schema.orders.status, ["pending", "confirmed", "preparing", "ready"]),
+        inArray(schema.orders.status, statusList as any),
       ),
     );
 

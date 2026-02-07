@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, isNull, desc, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, isNull, desc } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createTableSchema,
@@ -17,6 +17,7 @@ import { requirePermission } from "../middleware/rbac.js";
 import { generateQrCode } from "../lib/id.js";
 import { signCustomerToken } from "../lib/jwt.js";
 import { wsManager } from "../ws/manager.js";
+import * as sessionService from "../services/session.service.js";
 
 const tables = new Hono<AppEnv>();
 
@@ -291,18 +292,14 @@ tables.post(
       table: table.id,
     });
 
-    // Create session
-    const [session] = await db
-      .insert(schema.tableSessions)
-      .values({
-        table_id: table.id,
-        branch_id: tenant.branchId,
-        organization_id: tenant.organizationId,
-        customer_name: body.customerName,
-        customer_phone: body.customerPhone,
-        token: customerToken,
-      })
-      .returning();
+    const session = await sessionService.createSession({
+      tableId: table.id,
+      branchId: tenant.branchId,
+      organizationId: tenant.organizationId,
+      customerName: body.customerName,
+      customerPhone: body.customerPhone,
+      token: customerToken,
+    });
 
     // Set table to occupied
     await db
@@ -429,46 +426,29 @@ tables.patch(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
-    const [session] = await db
-      .select()
-      .from(schema.tableSessions)
-      .where(
-        and(
-          eq(schema.tableSessions.id, id),
-          eq(schema.tableSessions.branch_id, tenant.branchId),
-          eq(schema.tableSessions.status, "pending"),
-        ),
-      )
-      .limit(1);
+    try {
+      const result = await sessionService.approveSession({
+        sessionId: id,
+        branchId: tenant.branchId,
+      });
 
-    if (!session) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Sesion pendiente no encontrada" } },
-        404,
-      );
+      // Broadcast approval
+      await wsManager.publish(`branch:${tenant.branchId}`, {
+        type: "session:approved",
+        payload: { sessionId: id, tableId: result.tableId },
+        timestamp: Date.now(),
+      });
+
+      return c.json({ success: true, data: result.session });
+    } catch (e: any) {
+      if (e.message === "PENDING_SESSION_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Sesion pendiente no encontrada" } },
+          404,
+        );
+      }
+      throw e;
     }
-
-    // Approve session
-    const [updated] = await db
-      .update(schema.tableSessions)
-      .set({ status: "active" })
-      .where(eq(schema.tableSessions.id, id))
-      .returning();
-
-    // Set table to occupied
-    await db
-      .update(schema.tables)
-      .set({ status: "occupied" })
-      .where(eq(schema.tables.id, session.table_id));
-
-    // Broadcast approval
-    await wsManager.publish(`branch:${tenant.branchId}`, {
-      type: "session:approved",
-      payload: { sessionId: id, tableId: session.table_id },
-      timestamp: Date.now(),
-    });
-
-    return c.json({ success: true, data: updated });
   },
 );
 
@@ -480,39 +460,29 @@ tables.patch(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
-    const [session] = await db
-      .select()
-      .from(schema.tableSessions)
-      .where(
-        and(
-          eq(schema.tableSessions.id, id),
-          eq(schema.tableSessions.branch_id, tenant.branchId),
-          eq(schema.tableSessions.status, "pending"),
-        ),
-      )
-      .limit(1);
+    try {
+      const result = await sessionService.rejectSession({
+        sessionId: id,
+        branchId: tenant.branchId,
+      });
 
-    if (!session) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Sesion pendiente no encontrada" } },
-        404,
-      );
+      // Broadcast rejection
+      await wsManager.publish(`branch:${tenant.branchId}`, {
+        type: "session:rejected",
+        payload: { sessionId: id, tableId: result.tableId },
+        timestamp: Date.now(),
+      });
+
+      return c.json({ success: true, data: result.session });
+    } catch (e: any) {
+      if (e.message === "PENDING_SESSION_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Sesion pendiente no encontrada" } },
+          404,
+        );
+      }
+      throw e;
     }
-
-    const [updated] = await db
-      .update(schema.tableSessions)
-      .set({ status: "rejected" })
-      .where(eq(schema.tableSessions.id, id))
-      .returning();
-
-    // Broadcast rejection
-    await wsManager.publish(`branch:${tenant.branchId}`, {
-      type: "session:rejected",
-      payload: { sessionId: id, tableId: session.table_id },
-      timestamp: Date.now(),
-    });
-
-    return c.json({ success: true, data: updated });
   },
 );
 
@@ -525,47 +495,29 @@ tables.patch(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
-    // Find the session - must be active
-    const [session] = await db
-      .select()
-      .from(schema.tableSessions)
-      .where(
-        and(
-          eq(schema.tableSessions.id, id),
-          eq(schema.tableSessions.branch_id, tenant.branchId),
-          eq(schema.tableSessions.status, "active"),
-        ),
-      )
-      .limit(1);
+    try {
+      const result = await sessionService.endSession({
+        sessionId: id,
+        branchId: tenant.branchId,
+      });
 
-    if (!session) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Sesion activa no encontrada" } },
-        404,
-      );
+      // Broadcast session ended
+      await wsManager.publish(`branch:${tenant.branchId}`, {
+        type: "session:ended",
+        payload: { sessionId: id, tableId: result.tableId },
+        timestamp: Date.now(),
+      });
+
+      return c.json({ success: true, data: result.session });
+    } catch (e: any) {
+      if (e.message === "ACTIVE_SESSION_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Sesion activa no encontrada" } },
+          404,
+        );
+      }
+      throw e;
     }
-
-    // Set session to completed with ended_at timestamp
-    const [updated] = await db
-      .update(schema.tableSessions)
-      .set({ status: "completed", ended_at: new Date() })
-      .where(eq(schema.tableSessions.id, id))
-      .returning();
-
-    // Set table back to available
-    await db
-      .update(schema.tables)
-      .set({ status: "available" })
-      .where(eq(schema.tables.id, session.table_id));
-
-    // Broadcast session ended
-    await wsManager.publish(`branch:${tenant.branchId}`, {
-      type: "session:ended",
-      payload: { sessionId: id, tableId: session.table_id },
-      timestamp: Date.now(),
-    });
-
-    return c.json({ success: true, data: updated });
   },
 );
 
@@ -580,113 +532,24 @@ tables.get(
     const from = c.req.query("from");
     const to = c.req.query("to");
 
-    // Verify table belongs to this branch
-    const [table] = await db
-      .select()
-      .from(schema.tables)
-      .where(
-        and(
-          eq(schema.tables.id, id),
-          eq(schema.tables.branch_id, tenant.branchId),
-        ),
-      )
-      .limit(1);
+    try {
+      const data = await sessionService.getTableHistory({
+        tableId: id,
+        branchId: tenant.branchId,
+        from: from || undefined,
+        to: to || undefined,
+      });
 
-    if (!table) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
-        404,
-      );
-    }
-
-    // Build session query conditions
-    const sessionConditions = [
-      eq(schema.tableSessions.table_id, id),
-      eq(schema.tableSessions.branch_id, tenant.branchId),
-    ];
-
-    if (from) {
-      sessionConditions.push(gte(schema.tableSessions.started_at, new Date(from)));
-    }
-    if (to) {
-      const toDate = new Date(to);
-      toDate.setHours(23, 59, 59, 999);
-      sessionConditions.push(lte(schema.tableSessions.started_at, toDate));
-    }
-
-    const sessions = await db
-      .select()
-      .from(schema.tableSessions)
-      .where(and(...sessionConditions))
-      .orderBy(desc(schema.tableSessions.started_at))
-      .limit(100);
-
-    // Get orders for each session
-    const sessionIds = sessions.map((s) => s.id);
-    let sessionOrders: any[] = [];
-    if (sessionIds.length > 0) {
-      sessionOrders = await db
-        .select({
-          id: schema.orders.id,
-          table_session_id: schema.orders.table_session_id,
-          order_number: schema.orders.order_number,
-          total: schema.orders.total,
-          status: schema.orders.status,
-          created_at: schema.orders.created_at,
-        })
-        .from(schema.orders)
-        .where(
-          and(
-            eq(schema.orders.branch_id, tenant.branchId),
-            inArray(schema.orders.table_session_id, sessionIds),
-          ),
+      return c.json({ success: true, data });
+    } catch (e: any) {
+      if (e.message === "TABLE_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+          404,
         );
+      }
+      throw e;
     }
-
-    // Group orders by session
-    const ordersBySession = new Map<string, any[]>();
-    for (const order of sessionOrders) {
-      const key = order.table_session_id;
-      if (!ordersBySession.has(key)) ordersBySession.set(key, []);
-      ordersBySession.get(key)!.push(order);
-    }
-
-    // Build result
-    const sessionsWithOrders = sessions.map((s) => {
-      const orders = ordersBySession.get(s.id) || [];
-      const totalRevenue = orders.reduce((sum: number, o: any) => sum + o.total, 0);
-      const duration = s.ended_at
-        ? Math.round((new Date(s.ended_at).getTime() - new Date(s.started_at).getTime()) / 60000)
-        : null;
-      return {
-        ...s,
-        orders,
-        total_revenue: totalRevenue,
-        order_count: orders.length,
-        duration_minutes: duration,
-      };
-    });
-
-    // Summary
-    const totalRevenue = sessionsWithOrders.reduce((sum, s) => sum + s.total_revenue, 0);
-    const totalOrders = sessionsWithOrders.reduce((sum, s) => sum + s.order_count, 0);
-    const completedSessions = sessionsWithOrders.filter((s) => s.duration_minutes !== null);
-    const avgDuration = completedSessions.length > 0
-      ? Math.round(completedSessions.reduce((sum, s) => sum + s.duration_minutes!, 0) / completedSessions.length)
-      : 0;
-
-    return c.json({
-      success: true,
-      data: {
-        sessions: sessionsWithOrders,
-        summary: {
-          total_revenue: totalRevenue,
-          total_orders: totalOrders,
-          total_sessions: sessions.length,
-          avg_duration_minutes: avgDuration,
-        },
-      },
-    });
   },
 );
 

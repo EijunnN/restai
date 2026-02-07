@@ -15,19 +15,20 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-export function rateLimiter(maxRequests = 100, windowMs = 60_000) {
+export function rateLimiter(maxRequests = 100, windowMs = 60_000, prefix = "global") {
   return createMiddleware(async (c, next) => {
     const ip =
       c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
       c.req.header("x-real-ip") ||
       "unknown";
 
+    const key = `${prefix}:${ip}`;
     const now = Date.now();
-    let entry = store.get(ip);
+    let entry = store.get(key);
 
     if (!entry || entry.resetAt <= now) {
       entry = { count: 0, resetAt: now + windowMs };
-      store.set(ip, entry);
+      store.set(key, entry);
     }
 
     entry.count++;

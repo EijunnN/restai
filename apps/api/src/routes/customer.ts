@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   startSessionSchema,
@@ -10,9 +10,10 @@ import {
 } from "@restai/validators";
 import { z } from "zod";
 import { signCustomerToken, verifyAccessToken } from "../lib/jwt.js";
-import { generateOrderNumber } from "../lib/id.js";
 import { wsManager } from "../ws/manager.js";
-import { inArray } from "drizzle-orm";
+import { createCustomer } from "../services/customer.service.js";
+import { createOrder, OrderValidationError } from "../services/order.service.js";
+import * as sessionService from "../services/session.service.js";
 
 const customer = new Hono<AppEnv>();
 
@@ -141,41 +142,28 @@ customer.post(
       );
     }
 
-    // Create customer
-    const [customer_record] = await db.insert(schema.customers).values({
-      organization_id: branch.organization_id,
+    // Create customer + auto-enroll in loyalty
+    const { customer: customer_record } = await createCustomer({
+      organizationId: branch.organization_id,
       name: body.customerName,
       email: body.email,
       phone: body.customerPhone,
-      birth_date: body.birthDate,
-    }).returning();
-
-    // Auto-enroll in loyalty program if one exists
-    const [program] = await db.select().from(schema.loyaltyPrograms).where(and(eq(schema.loyaltyPrograms.organization_id, branch.organization_id), eq(schema.loyaltyPrograms.is_active, true))).limit(1);
-
-    if (program) {
-      const [lowestTier] = await db.select().from(schema.loyaltyTiers).where(eq(schema.loyaltyTiers.program_id, program.id)).orderBy(schema.loyaltyTiers.min_points).limit(1);
-
-      await db.insert(schema.customerLoyalty).values({
-        customer_id: customer_record.id,
-        program_id: program.id,
-        tier_id: lowestTier?.id || null,
-      });
-    }
+      birthDate: body.birthDate,
+    });
 
     // Create session with pending status
     const sessionId = crypto.randomUUID();
     const token = await signCustomerToken({ sub: sessionId, org: branch.organization_id, branch: branch.id, table: table.id, customerId: customer_record.id });
 
-    const [session] = await db.insert(schema.tableSessions).values({
-      table_id: table.id,
-      branch_id: branch.id,
-      organization_id: branch.organization_id,
-      customer_name: body.customerName,
-      customer_phone: body.customerPhone,
+    const session = await sessionService.createSession({
+      tableId: table.id,
+      branchId: branch.id,
+      organizationId: branch.organization_id,
+      customerName: body.customerName,
+      customerPhone: body.customerPhone,
       token,
       status: "pending",
-    }).returning();
+    });
 
     await wsManager.publish(`branch:${branch.id}`, {
       type: "session:pending",
@@ -374,18 +362,15 @@ customer.post(
     });
 
     // Create session with pending status
-    const [session] = await db
-      .insert(schema.tableSessions)
-      .values({
-        table_id: table.id,
-        branch_id: branch.id,
-        organization_id: branch.organization_id,
-        customer_name: body.customerName,
-        customer_phone: body.customerPhone,
-        token,
-        status: "pending",
-      })
-      .returning();
+    const session = await sessionService.createSession({
+      tableId: table.id,
+      branchId: branch.id,
+      organizationId: branch.organization_id,
+      customerName: body.customerName,
+      customerPhone: body.customerPhone,
+      token,
+      status: "pending",
+    });
 
     // Broadcast pending session for staff approval
     await wsManager.publish(`branch:${branch.id}`, {
@@ -597,83 +582,32 @@ customer.post("/orders", customerAuth, requireActiveSession, zValidator("json", 
   const branchId = user.branch;
   const organizationId = user.org;
 
-  // Get menu items
-  const menuItemIds = body.items.map((i) => i.menuItemId);
-  const menuItemsResult = await db
-    .select()
-    .from(schema.menuItems)
-    .where(inArray(schema.menuItems.id, menuItemIds));
-
-  const menuItemMap = new Map(menuItemsResult.map((mi) => [mi.id, mi]));
-
-  let subtotal = 0;
-  const orderItemsData: Array<{
-    menu_item_id: string;
-    name: string;
-    unit_price: number;
-    quantity: number;
-    total: number;
-    notes?: string;
-  }> = [];
-
-  for (const item of body.items) {
-    const menuItem = menuItemMap.get(item.menuItemId);
-    if (!menuItem || !menuItem.is_available) {
-      return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: `Item no disponible: ${item.menuItemId}` } },
-        400,
-      );
-    }
-    const itemTotal = menuItem.price * item.quantity;
-    subtotal += itemTotal;
-    orderItemsData.push({
-      menu_item_id: menuItem.id,
-      name: menuItem.name,
-      unit_price: menuItem.price,
-      quantity: item.quantity,
-      total: itemTotal,
-      notes: item.notes,
-    });
-  }
-
-  // Get tax rate
-  const [branch] = await db
-    .select({ tax_rate: schema.branches.tax_rate })
-    .from(schema.branches)
-    .where(eq(schema.branches.id, branchId))
-    .limit(1);
-
-  const taxRate = branch?.tax_rate || 1800;
-  const tax = Math.round(subtotal * taxRate / 10000);
-  const total = subtotal + tax;
-
   // Use customer_name from session if not provided in body
   const customerName = body.customerName || session.customer_name;
 
-  const orderNumber = generateOrderNumber();
-
-  const [order] = await db
-    .insert(schema.orders)
-    .values({
-      organization_id: organizationId,
-      branch_id: branchId,
-      table_session_id: session.id,
-      customer_id: user.customerId || null,
-      order_number: orderNumber,
+  let result;
+  try {
+    result = await createOrder({
+      organizationId,
+      branchId,
+      items: body.items,
       type: body.type,
-      status: "pending",
-      customer_name: customerName,
-      subtotal,
-      tax,
-      total,
+      customerName,
       notes: body.notes,
-    })
-    .returning();
+      tableSessionId: session.id,
+      customerId: user.customerId || null,
+    });
+  } catch (err) {
+    if (err instanceof OrderValidationError) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: err.message } },
+        400,
+      );
+    }
+    throw err;
+  }
 
-  const createdItems = await db
-    .insert(schema.orderItems)
-    .values(orderItemsData.map((item) => ({ order_id: order.id, ...item })))
-    .returning();
+  const { order, items: createdItems } = result;
 
   // Broadcast
   await wsManager.publish(`branch:${branchId}`, {

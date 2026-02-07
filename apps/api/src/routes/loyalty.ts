@@ -7,11 +7,14 @@ import {
   createLoyaltyProgramSchema,
   createCustomerSchema,
   idParamSchema,
+  customerSearchSchema,
 } from "@restai/validators";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { findOrCreateByPhone } from "../services/customer.service.js";
+import { redeemReward } from "../services/loyalty.service.js";
 
 const loyalty = new Hono<AppEnv>();
 
@@ -74,9 +77,9 @@ loyalty.get("/stats", requirePermission("loyalty:read"), async (c) => {
 // ---------------------------------------------------------------------------
 
 // GET /customers - List customers for org with optional search
-loyalty.get("/customers", requirePermission("customers:read"), async (c) => {
+loyalty.get("/customers", requirePermission("customers:read"), zValidator("query", customerSearchSchema), async (c) => {
   const tenant = c.get("tenant") as any;
-  const search = c.req.query("search");
+  const { search } = c.req.valid("query");
 
   const conditions = [
     eq(schema.customers.organization_id, tenant.organizationId),
@@ -132,78 +135,32 @@ loyalty.post(
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
-    // Check if customer exists by phone
     if (body.phone) {
-      const [existing] = await db
-        .select()
-        .from(schema.customers)
-        .where(
-          and(
-            eq(schema.customers.organization_id, tenant.organizationId),
-            eq(schema.customers.phone, body.phone),
-          ),
-        )
-        .limit(1);
-
-      if (existing) {
-        // Also get loyalty info
-        const [loyaltyInfo] = await db
-          .select()
-          .from(schema.customerLoyalty)
-          .where(eq(schema.customerLoyalty.customer_id, existing.id))
-          .limit(1);
-
-        return c.json({ success: true, data: { ...existing, loyalty: loyaltyInfo || null } });
-      }
-    }
-
-    const [customer] = await db
-      .insert(schema.customers)
-      .values({
-        organization_id: tenant.organizationId,
+      const result = await findOrCreateByPhone({
+        organizationId: tenant.organizationId,
+        phone: body.phone,
         name: body.name,
         email: body.email,
-        phone: body.phone,
-        birth_date: body.birthDate,
-      })
-      .returning();
+        birthDate: body.birthDate,
+      });
 
-    // Auto-enroll in active loyalty program
-    const [program] = await db
-      .select()
-      .from(schema.loyaltyPrograms)
-      .where(
-        and(
-          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
-          eq(schema.loyaltyPrograms.is_active, true),
-        ),
-      )
-      .limit(1);
+      if (!result.isNew) {
+        return c.json({ success: true, data: { ...result.customer, loyalty: result.loyalty } });
+      }
 
-    let loyaltyInfo = null;
-    if (program) {
-      // Find the lowest tier
-      const [baseTier] = await db
-        .select()
-        .from(schema.loyaltyTiers)
-        .where(eq(schema.loyaltyTiers.program_id, program.id))
-        .orderBy(schema.loyaltyTiers.min_points)
-        .limit(1);
-
-      const [enrollment] = await db
-        .insert(schema.customerLoyalty)
-        .values({
-          customer_id: customer.id,
-          program_id: program.id,
-          points_balance: 0,
-          total_points_earned: 0,
-          tier_id: baseTier?.id || null,
-        })
-        .returning();
-      loyaltyInfo = enrollment;
+      return c.json({ success: true, data: { ...result.customer, loyalty: result.loyalty } }, 201);
     }
 
-    return c.json({ success: true, data: { ...customer, loyalty: loyaltyInfo } }, 201);
+    // No phone — create without dedup
+    const { createCustomer } = await import("../services/customer.service.js");
+    const { customer, loyalty } = await createCustomer({
+      organizationId: tenant.organizationId,
+      name: body.name,
+      email: body.email,
+      birthDate: body.birthDate,
+    });
+
+    return c.json({ success: true, data: { ...customer, loyalty } }, 201);
   },
 );
 
@@ -657,78 +614,30 @@ loyalty.post(
     const { id } = c.req.valid("param");
     const { customerLoyaltyId, orderId } = c.req.valid("json");
 
-    // Get reward
-    const [reward] = await db
-      .select()
-      .from(schema.rewards)
-      .where(eq(schema.rewards.id, id))
-      .limit(1);
-
-    if (!reward || !reward.is_active) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Recompensa no encontrada" } },
-        404,
-      );
+    try {
+      const result = await redeemReward({ rewardId: id, customerLoyaltyId, orderId });
+      return c.json({ success: true, data: result }, 201);
+    } catch (err: any) {
+      if (err.message === "REWARD_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Recompensa no encontrada" } },
+          404,
+        );
+      }
+      if (err.message === "LOYALTY_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Registro de lealtad no encontrado" } },
+          404,
+        );
+      }
+      if (err.message === "INSUFFICIENT_POINTS") {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "Puntos insuficientes" } },
+          400,
+        );
+      }
+      throw err;
     }
-
-    // Get customer loyalty
-    const [cl] = await db
-      .select()
-      .from(schema.customerLoyalty)
-      .where(eq(schema.customerLoyalty.id, customerLoyaltyId))
-      .limit(1);
-
-    if (!cl) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Registro de lealtad no encontrado" } },
-        404,
-      );
-    }
-
-    if (cl.points_balance < reward.points_cost) {
-      return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: "Puntos insuficientes" } },
-        400,
-      );
-    }
-
-    // Deduct points
-    await db
-      .update(schema.customerLoyalty)
-      .set({ points_balance: cl.points_balance - reward.points_cost })
-      .where(eq(schema.customerLoyalty.id, customerLoyaltyId));
-
-    // Create transaction
-    await db.insert(schema.loyaltyTransactions).values({
-      customer_loyalty_id: customerLoyaltyId,
-      order_id: orderId,
-      points: -reward.points_cost,
-      type: "redeemed",
-      description: `Canje: ${reward.name}`,
-    });
-
-    // Create redemption record
-    const [redemption] = await db
-      .insert(schema.rewardRedemptions)
-      .values({
-        customer_loyalty_id: customerLoyaltyId,
-        reward_id: id,
-        order_id: orderId,
-      })
-      .returning();
-
-    return c.json({
-      success: true,
-      data: {
-        redemption,
-        discount: {
-          type: reward.discount_type,
-          value: reward.discount_value,
-        },
-        pointsDeducted: reward.points_cost,
-        newBalance: cl.points_balance - reward.points_cost,
-      },
-    }, 201);
   },
 );
 

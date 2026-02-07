@@ -1,4 +1,5 @@
 import { app } from "./app.js";
+import { logger } from "./lib/logger.js";
 import { wsManager } from "./ws/manager.js";
 import { handleWsMessage } from "./ws/handlers.js";
 
@@ -30,4 +31,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`RestAI API running on http://localhost:${port}`);
+logger.info("RestAI API running", { port, url: `http://localhost:${port}` });

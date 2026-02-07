@@ -202,6 +202,53 @@ export const idParamSchema = z.object({
   id: z.string().uuid(),
 });
 
+// Settings validators
+export const updateOrgSettingsSchema = z.object({
+  name: z.string().min(2).max(255).optional(),
+  logoUrl: z.string().url().nullable().optional(),
+  settings: z.record(z.unknown()).optional(),
+});
+
+export const updateBranchSettingsSchema = z.object({
+  name: z.string().min(2).max(255).optional(),
+  address: z.string().max(500).optional(),
+  phone: z.string().max(20).optional(),
+  taxRate: z.number().int().min(0).max(10000).optional(),
+  timezone: z.string().optional(),
+  currency: z.string().length(3).optional(),
+  settings: z.record(z.unknown()).optional(),
+  inventoryEnabled: z.boolean().optional(),
+  waiterTableAssignmentEnabled: z.boolean().optional(),
+});
+
+// Query validators for GET endpoints
+export const orderQuerySchema = z.object({
+  status: z.enum(["pending", "confirmed", "preparing", "ready", "served", "completed", "cancelled"]).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const inventoryQuerySchema = z.object({
+  categoryId: z.string().uuid().optional(),
+});
+
+export const movementQuerySchema = z.object({
+  itemId: z.string().uuid().optional(),
+});
+
+export const customerSearchSchema = z.object({
+  search: z.string().optional(),
+});
+
+export const couponQuerySchema = z.object({
+  status: z.enum(["active", "inactive", "expired"]).optional(),
+  type: z.enum(["percentage", "fixed", "item_free", "item_discount", "category_discount", "buy_x_get_y"]).optional(),
+});
+
+export const kitchenQuerySchema = z.object({
+  status: z.enum(["pending", "confirmed", "preparing", "ready"]).optional(),
+});
+
 // Export types inferred from schemas
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RegisterOrgInput = z.infer<typeof registerOrgSchema>;
@@ -227,3 +274,6 @@ export type ReportQueryInput = z.infer<typeof reportQuerySchema>;
 export type PaginationInput = z.infer<typeof paginationSchema>;
 export type UpdateModifierGroupInput = z.infer<typeof updateModifierGroupSchema>;
 export type UpdateModifierInput = z.infer<typeof updateModifierSchema>;
+export type UpdateOrgSettingsInput = z.infer<typeof updateOrgSettingsSchema>;
+export type UpdateBranchSettingsInput = z.infer<typeof updateBranchSettingsSchema>;
+export type OrderQueryInput = z.infer<typeof orderQuerySchema>;

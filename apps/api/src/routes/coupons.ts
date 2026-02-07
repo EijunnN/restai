@@ -3,7 +3,7 @@ import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
-import { idParamSchema } from "@restai/validators";
+import { idParamSchema, couponQuerySchema } from "@restai/validators";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware } from "../middleware/tenant.js";
@@ -50,20 +50,19 @@ const updateCouponSchema = z.object({
 });
 
 // GET / - List coupons for org
-coupons.get("/", requirePermission("loyalty:read"), async (c) => {
+coupons.get("/", requirePermission("loyalty:read"), zValidator("query", couponQuerySchema), async (c) => {
   const tenant = c.get("tenant") as any;
-  const statusFilter = c.req.query("status");
-  const typeFilter = c.req.query("type");
+  const { status: statusFilter, type: typeFilter } = c.req.valid("query");
 
   const conditions: any[] = [
     eq(schema.coupons.organization_id, tenant.organizationId),
   ];
 
-  if (statusFilter && ["active", "inactive", "expired"].includes(statusFilter)) {
+  if (statusFilter) {
     conditions.push(eq(schema.coupons.status, statusFilter as any));
   }
 
-  if (typeFilter && ["percentage", "fixed", "item_free", "item_discount", "category_discount", "buy_x_get_y"].includes(typeFilter)) {
+  if (typeFilter) {
     conditions.push(eq(schema.coupons.type, typeFilter as any));
   }
 

@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
+import { zValidator } from "@hono/zod-validator";
 import { db, schema } from "@restai/db";
 import { eq } from "drizzle-orm";
+import { updateOrgSettingsSchema, updateBranchSettingsSchema } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
@@ -21,9 +23,9 @@ settings.get("/org", async (c) => {
 });
 
 // PATCH /org
-settings.patch("/org", requirePermission("org:update"), async (c) => {
+settings.patch("/org", requirePermission("org:update"), zValidator("json", updateOrgSettingsSchema), async (c) => {
   const tenant = c.get("tenant") as any;
-  const body = await c.req.json();
+  const body = c.req.valid("json");
 
   const updateData: any = { updated_at: new Date() };
   if (body.name !== undefined) updateData.name = body.name;
@@ -52,12 +54,12 @@ settings.get("/branch", async (c) => {
 });
 
 // PATCH /branch
-settings.patch("/branch", requirePermission("settings:*"), async (c) => {
+settings.patch("/branch", requirePermission("settings:*"), zValidator("json", updateBranchSettingsSchema), async (c) => {
   const tenant = c.get("tenant") as any;
   if (!tenant.branchId) {
     return c.json({ success: false, error: { code: "BAD_REQUEST", message: "Branch ID requerido" } }, 400);
   }
-  const body = await c.req.json();
+  const body = c.req.valid("json");
   const updateData: any = { updated_at: new Date() };
   if (body.name !== undefined) updateData.name = body.name;
   if (body.address !== undefined) updateData.address = body.address;

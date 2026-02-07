@@ -36,7 +36,9 @@ app.use("*", cors({ origin: ["http://localhost:3000"], credentials: true }));
 app.use("*", secureHeaders());
 app.use("*", logger());
 app.onError(errorHandler);
-app.use("*", rateLimiter());
+app.use("*", rateLimiter(100, 60_000, "global"));
+app.use("/api/auth/*", rateLimiter(20, 60_000, "auth"));
+app.use("/api/customer/*", rateLimiter(30, 60_000, "customer"));
 
 // Public routes
 app.route("/health", health);

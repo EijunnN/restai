@@ -7,11 +7,13 @@ import {
   createInventoryItemSchema,
   createInventoryMovementSchema,
   idParamSchema,
+  movementQuerySchema,
 } from "@restai/validators";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { recordMovement, InventoryItemNotFoundError } from "../services/inventory.service.js";
 
 const inventory = new Hono<AppEnv>();
 
@@ -222,59 +224,33 @@ inventory.post(
     const body = c.req.valid("json");
     const user = c.get("user") as any;
 
-    // Update stock
-    const [item] = await db
-      .select()
-      .from(schema.inventoryItems)
-      .where(eq(schema.inventoryItems.id, body.itemId))
-      .limit(1);
-
-    if (!item) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
-        404,
-      );
-    }
-
-    const currentStock = parseFloat(item.current_stock);
-    let newStock = currentStock;
-
-    if (body.type === "purchase") {
-      newStock += body.quantity;
-    } else if (body.type === "consumption" || body.type === "waste") {
-      newStock -= body.quantity;
-    } else {
-      // adjustment
-      newStock += body.quantity;
-    }
-
-    // Create movement
-    const [movement] = await db
-      .insert(schema.inventoryMovements)
-      .values({
-        item_id: body.itemId,
+    try {
+      const movement = await recordMovement({
+        itemId: body.itemId,
         type: body.type,
-        quantity: String(body.quantity),
+        quantity: body.quantity,
         reference: body.reference,
         notes: body.notes,
-        created_by: user.sub,
-      })
-      .returning();
+        createdBy: user.sub,
+      });
 
-    // Update stock
-    await db
-      .update(schema.inventoryItems)
-      .set({ current_stock: String(newStock) })
-      .where(eq(schema.inventoryItems.id, body.itemId));
-
-    return c.json({ success: true, data: movement }, 201);
+      return c.json({ success: true, data: movement }, 201);
+    } catch (err) {
+      if (err instanceof InventoryItemNotFoundError) {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
+          404,
+        );
+      }
+      throw err;
+    }
   },
 );
 
 // GET /movements
-inventory.get("/movements", requirePermission("inventory:read"), async (c) => {
+inventory.get("/movements", requirePermission("inventory:read"), zValidator("query", movementQuerySchema), async (c) => {
   const tenant = c.get("tenant") as any;
-  const itemId = c.req.query("itemId");
+  const { itemId } = c.req.valid("query");
 
   // Get items for this branch first
   const branchItems = await db
