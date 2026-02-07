@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, inArray, gte, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, gte, sql, getTableColumns } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createOrderSchema,
@@ -27,6 +27,9 @@ orders.use("*", requireBranch);
 orders.get("/", requirePermission("orders:read"), async (c) => {
   const tenant = c.get("tenant") as any;
   const status = c.req.query("status");
+  const page = Math.max(1, parseInt(c.req.query("page") || "1", 10));
+  const limit = Math.min(100, Math.max(1, parseInt(c.req.query("limit") || "20", 10)));
+  const offset = (page - 1) * limit;
 
   const conditions = [
     eq(schema.orders.branch_id, tenant.branchId),
@@ -37,14 +40,47 @@ orders.get("/", requirePermission("orders:read"), async (c) => {
     conditions.push(eq(schema.orders.status, status as any));
   }
 
-  const result = await db
-    .select()
-    .from(schema.orders)
-    .where(and(...conditions))
-    .orderBy(desc(schema.orders.created_at))
-    .limit(50);
+  const whereClause = and(...conditions);
 
-  return c.json({ success: true, data: result });
+  const [result, countResult] = await Promise.all([
+    db
+      .select({
+        ...getTableColumns(schema.orders),
+        item_count: sql<number>`(SELECT COUNT(*)::int FROM order_items WHERE order_items.order_id = ${schema.orders.id})`,
+        total_paid: sql<number>`COALESCE((SELECT SUM(amount)::int FROM payments WHERE payments.order_id = ${schema.orders.id} AND payments.status = 'completed'), 0)`,
+        table_number: schema.tables.number,
+      })
+      .from(schema.orders)
+      .leftJoin(schema.tableSessions, eq(schema.orders.table_session_id, schema.tableSessions.id))
+      .leftJoin(schema.tables, eq(schema.tableSessions.table_id, schema.tables.id))
+      .where(whereClause)
+      .orderBy(desc(schema.orders.created_at))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(schema.orders)
+      .where(whereClause),
+  ]);
+
+  const total = countResult[0]?.count ?? 0;
+
+  const enriched = result.map((order) => {
+    const paid = order.total_paid ?? 0;
+    const orderTotal = order.total ?? 0;
+    const paymentStatus = paid >= orderTotal && orderTotal > 0
+      ? "paid"
+      : paid > 0
+        ? "partial"
+        : "unpaid";
+    return { ...order, payment_status: paymentStatus };
+  });
+
+  return c.json({
+    success: true,
+    data: enriched,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
 });
 
 // POST / - Create order
@@ -361,41 +397,52 @@ orders.patch(
       }
     }
 
-    // Auto-deduct inventory when order is completed
+    // Auto-deduct inventory when order is completed (if inventory tracking is enabled)
     if (status === "completed") {
       try {
-        const orderItemsList = await db
-          .select()
-          .from(schema.orderItems)
-          .where(eq(schema.orderItems.order_id, id));
+        // Check if inventory is enabled for this branch
+        const [branchSettings] = await db
+          .select({ settings: schema.branches.settings })
+          .from(schema.branches)
+          .where(eq(schema.branches.id, tenant.branchId))
+          .limit(1);
 
-        for (const orderItem of orderItemsList) {
-          const recipeIngredients = await db
+        const inventoryEnabled = (branchSettings?.settings as any)?.inventory_enabled;
+
+        if (inventoryEnabled) {
+          const orderItemsList = await db
             .select()
-            .from(schema.recipeIngredients)
-            .where(eq(schema.recipeIngredients.menu_item_id, orderItem.menu_item_id));
+            .from(schema.orderItems)
+            .where(eq(schema.orderItems.order_id, id));
 
-          for (const ingredient of recipeIngredients) {
-            const deductQty = parseFloat(ingredient.quantity_used) * orderItem.quantity;
+          for (const orderItem of orderItemsList) {
+            const recipeIngredients = await db
+              .select()
+              .from(schema.recipeIngredients)
+              .where(eq(schema.recipeIngredients.menu_item_id, orderItem.menu_item_id));
 
-            // Deduct from inventory stock
-            await db
-              .update(schema.inventoryItems)
-              .set({
-                current_stock: sql`(${schema.inventoryItems.current_stock}::numeric - ${deductQty})::text`,
-              })
-              .where(eq(schema.inventoryItems.id, ingredient.inventory_item_id));
+            for (const ingredient of recipeIngredients) {
+              const deductQty = parseFloat(ingredient.quantity_used) * orderItem.quantity;
 
-            // Record consumption movement
-            await db
-              .insert(schema.inventoryMovements)
-              .values({
-                item_id: ingredient.inventory_item_id,
-                type: "consumption",
-                quantity: String(deductQty),
-                reference: updated.order_number,
-                notes: `Auto-consumo: ${orderItem.name} x${orderItem.quantity}`,
-              });
+              // Deduct from inventory stock
+              await db
+                .update(schema.inventoryItems)
+                .set({
+                  current_stock: sql`(${schema.inventoryItems.current_stock}::numeric - ${deductQty})::text`,
+                })
+                .where(eq(schema.inventoryItems.id, ingredient.inventory_item_id));
+
+              // Record consumption movement
+              await db
+                .insert(schema.inventoryMovements)
+                .values({
+                  item_id: ingredient.inventory_item_id,
+                  type: "consumption",
+                  quantity: String(deductQty),
+                  reference: updated.order_number,
+                  notes: `Auto-consumo: ${orderItem.name} x${orderItem.quantity}`,
+                });
+            }
           }
         }
       } catch (_inventoryErr) {

@@ -422,6 +422,62 @@ customer.get("/:branchSlug/:tableCode/session-status/:sessionId", async (c) => {
   return c.json({ success: true, data: session });
 });
 
+// GET /:branchSlug/menu/items/:itemId/modifiers - Get modifier groups for item (public)
+customer.get("/:branchSlug/menu/items/:itemId/modifiers", async (c) => {
+  const branchSlug = c.req.param("branchSlug");
+  const itemId = c.req.param("itemId");
+
+  // Verify branch exists
+  const [branch] = await db
+    .select({ id: schema.branches.id })
+    .from(schema.branches)
+    .where(eq(schema.branches.slug, branchSlug))
+    .limit(1);
+
+  if (!branch) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: "Sucursal no encontrada" } },
+      404,
+    );
+  }
+
+  // Get linked modifier groups for this item
+  const links = await db
+    .select()
+    .from(schema.menuItemModifierGroups)
+    .where(eq(schema.menuItemModifierGroups.item_id, itemId));
+
+  if (links.length === 0) {
+    return c.json({ success: true, data: [] });
+  }
+
+  const groupIds = links.map((l) => l.group_id);
+  const groups = await db
+    .select()
+    .from(schema.modifierGroups)
+    .where(
+      groupIds.length === 1
+        ? eq(schema.modifierGroups.id, groupIds[0])
+        : inArray(schema.modifierGroups.id, groupIds),
+    );
+
+  const allModifiers = await db
+    .select()
+    .from(schema.modifiers)
+    .where(
+      groupIds.length === 1
+        ? eq(schema.modifiers.group_id, groupIds[0])
+        : inArray(schema.modifiers.group_id, groupIds),
+    );
+
+  const result = groups.map((g) => ({
+    ...g,
+    modifiers: allModifiers.filter((m) => m.group_id === g.id && m.is_available),
+  }));
+
+  return c.json({ success: true, data: result });
+});
+
 // Customer auth middleware for order routes
 const customerAuth = async (c: any, next: any) => {
   const header = c.req.header("Authorization");
@@ -449,6 +505,57 @@ const customerAuth = async (c: any, next: any) => {
     );
   }
 };
+
+// GET /my-coupons - Get available coupons for current customer (customer auth)
+customer.get("/my-coupons", customerAuth, async (c) => {
+  const user = c.get("user") as any;
+  const customerId = user.customerId;
+
+  if (!customerId) {
+    return c.json({ success: true, data: [] });
+  }
+
+  // Get coupons assigned to this customer that are still active
+  const assigned = await db
+    .select({
+      id: schema.coupons.id,
+      code: schema.coupons.code,
+      name: schema.coupons.name,
+      description: schema.coupons.description,
+      type: schema.coupons.type,
+      discount_value: schema.coupons.discount_value,
+      min_order_amount: schema.coupons.min_order_amount,
+      max_discount_amount: schema.coupons.max_discount_amount,
+      expires_at: schema.coupons.expires_at,
+    })
+    .from(schema.couponAssignments)
+    .innerJoin(
+      schema.coupons,
+      eq(schema.couponAssignments.coupon_id, schema.coupons.id),
+    )
+    .where(
+      and(
+        eq(schema.couponAssignments.customer_id, customerId),
+        eq(schema.coupons.status, "active"),
+      ),
+    );
+
+  // Mark as seen
+  if (assigned.length > 0) {
+    const couponIds = assigned.map((a) => a.id);
+    await db
+      .update(schema.couponAssignments)
+      .set({ seen_at: new Date() })
+      .where(
+        and(
+          eq(schema.couponAssignments.customer_id, customerId),
+          inArray(schema.couponAssignments.coupon_id, couponIds),
+        ),
+      );
+  }
+
+  return c.json({ success: true, data: assigned });
+});
 
 // POST /orders - Create order (customer auth)
 customer.post("/orders", customerAuth, zValidator("json", createOrderSchema), async (c) => {
@@ -529,6 +636,7 @@ customer.post("/orders", customerAuth, zValidator("json", createOrderSchema), as
       organization_id: organizationId,
       branch_id: branchId,
       table_session_id: session?.id || null,
+      customer_id: user.customerId || null,
       order_number: orderNumber,
       type: body.type,
       status: "pending",
@@ -595,5 +703,122 @@ customer.get("/orders/:id", customerAuth, zValidator("param", idParamSchema), as
 
   return c.json({ success: true, data: { ...order, items } });
 });
+
+// POST /validate-coupon - Validate coupon code (customer auth)
+customer.post(
+  "/validate-coupon",
+  customerAuth,
+  zValidator("json", z.object({ code: z.string().min(1) })),
+  async (c) => {
+    const user = c.get("user") as any;
+    const { code } = c.req.valid("json");
+
+    const [coupon] = await db
+      .select()
+      .from(schema.coupons)
+      .where(
+        and(
+          eq(schema.coupons.organization_id, user.org),
+          eq(schema.coupons.code, code.toUpperCase()),
+        ),
+      )
+      .limit(1);
+
+    if (!coupon) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cupon no encontrado" } },
+        404,
+      );
+    }
+
+    if (coupon.status !== "active") {
+      return c.json(
+        { success: false, error: { code: "INVALID", message: "El cupon no esta activo" } },
+        400,
+      );
+    }
+
+    const now = new Date();
+    if (coupon.starts_at && now < coupon.starts_at) {
+      return c.json(
+        { success: false, error: { code: "INVALID", message: "El cupon aun no esta vigente" } },
+        400,
+      );
+    }
+    if (coupon.expires_at && now > coupon.expires_at) {
+      return c.json(
+        { success: false, error: { code: "INVALID", message: "El cupon ha expirado" } },
+        400,
+      );
+    }
+    if (coupon.max_uses_total && coupon.current_uses >= coupon.max_uses_total) {
+      return c.json(
+        { success: false, error: { code: "INVALID", message: "El cupon ha alcanzado el limite de usos" } },
+        400,
+      );
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        id: coupon.id,
+        code: coupon.code,
+        name: coupon.name,
+        type: coupon.type,
+        discount_value: coupon.discount_value,
+        min_order_amount: coupon.min_order_amount,
+        max_discount_amount: coupon.max_discount_amount,
+      },
+    });
+  },
+);
+
+// POST /table-action - Request bill or call waiter (customer auth)
+customer.post(
+  "/table-action",
+  customerAuth,
+  zValidator(
+    "json",
+    z.object({
+      action: z.enum(["request_bill", "call_waiter"]),
+      tableSessionId: z.string().min(1),
+    }),
+  ),
+  async (c) => {
+    const user = c.get("user") as any;
+    const { action, tableSessionId } = c.req.valid("json");
+    const branchId = user.branch;
+    const tableId = user.table;
+
+    // Get table number for the notification
+    const [table] = await db
+      .select({ number: schema.tables.number })
+      .from(schema.tables)
+      .where(eq(schema.tables.id, tableId))
+      .limit(1);
+
+    if (!table) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+        404,
+      );
+    }
+
+    const eventType = action === "request_bill" ? "table:request_bill" : "table:call_waiter";
+    const message = action === "request_bill" ? "La cuenta ha sido solicitada" : "El mozo ha sido llamado";
+
+    await wsManager.publish(`branch:${branchId}`, {
+      type: eventType,
+      payload: {
+        tableSessionId,
+        tableNumber: table.number,
+        action,
+      },
+      timestamp: Date.now(),
+    });
+
+    return c.json({ success: true, data: { message } });
+  },
+);
 
 export { customer };

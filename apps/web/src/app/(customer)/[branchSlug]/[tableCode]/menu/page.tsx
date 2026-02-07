@@ -8,7 +8,7 @@ import { Badge } from "@restai/ui/components/badge";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency, cn } from "@/lib/utils";
-import { ShoppingCart, Plus, Minus, Loader2, ImageOff, UtensilsCrossed } from "lucide-react";
+import { ShoppingCart, Plus, Minus, Loader2, ImageOff, UtensilsCrossed, Receipt, Bell } from "lucide-react";
 
 interface MenuItem {
   id: string;
@@ -47,6 +47,42 @@ export default function CustomerMenuPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  const getToken = () => {
+    const storeToken = useCustomerStore.getState().token;
+    if (storeToken) return storeToken;
+    if (typeof window !== "undefined") return sessionStorage.getItem("customer_token");
+    return null;
+  };
+
+  const getSessionId = () => {
+    const storeSessionId = useCustomerStore.getState().sessionId;
+    if (storeSessionId) return storeSessionId;
+    if (typeof window !== "undefined") return sessionStorage.getItem("customer_session_id");
+    return null;
+  };
+
+  const handleTableAction = async (action: "request_bill" | "call_waiter") => {
+    const token = getToken();
+    const sessionId = getSessionId();
+    if (!token || !sessionId) return;
+    try {
+      setActionLoading(action);
+      await fetch("http://localhost:3001/api/customer/table-action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action, tableSessionId: sessionId }),
+      });
+    } catch {
+      // silently fail - best effort notification
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   useEffect(() => {
     async function fetchMenu() {
@@ -131,7 +167,7 @@ export default function CustomerMenuPage({
     menuItems.filter((i) => i.category_id === catId && i.is_available);
 
   return (
-    <div className="relative pb-24">
+    <div className="relative pb-32">
       {/* Category tabs */}
       <div className="sticky top-[49px] z-30 bg-background/95 backdrop-blur border-b border-border">
         <div className="flex overflow-x-auto no-scrollbar gap-2 p-3">
@@ -272,24 +308,50 @@ export default function CustomerMenuPage({
         ))}
       </div>
 
-      {/* Floating cart button */}
-      {itemCount > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/95 backdrop-blur border-t border-border">
+      {/* Floating action bar + cart */}
+      <div className="fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur border-t border-border">
+        {/* Action buttons */}
+        <div className="flex gap-2 px-4 pt-3 pb-2 max-w-lg mx-auto">
           <Button
-            className="w-full max-w-lg mx-auto flex items-center justify-between h-14 text-base px-5"
-            onClick={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
+            variant="outline"
+            size="sm"
+            className="flex-1 h-9 text-xs gap-1.5"
+            disabled={actionLoading !== null}
+            onClick={() => handleTableAction("request_bill")}
           >
-            <div className="flex items-center gap-3">
-              <ShoppingCart className="h-5 w-5" />
-              <Badge variant="secondary" className="bg-primary-foreground/20 text-primary-foreground font-bold">
-                {itemCount}
-              </Badge>
-            </div>
-            <span className="font-semibold">Ver Carrito</span>
-            <span className="font-bold">{formatCurrency(cartTotal)}</span>
+            <Receipt className="h-3.5 w-3.5" />
+            {actionLoading === "request_bill" ? "Enviando..." : "Pedir la Cuenta"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 h-9 text-xs gap-1.5"
+            disabled={actionLoading !== null}
+            onClick={() => handleTableAction("call_waiter")}
+          >
+            <Bell className="h-3.5 w-3.5" />
+            {actionLoading === "call_waiter" ? "Enviando..." : "Llamar al Mozo"}
           </Button>
         </div>
-      )}
+        {/* Cart button */}
+        {itemCount > 0 && (
+          <div className="px-4 pb-4">
+            <Button
+              className="w-full max-w-lg mx-auto flex items-center justify-between h-14 text-base px-5"
+              onClick={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
+            >
+              <div className="flex items-center gap-3">
+                <ShoppingCart className="h-5 w-5" />
+                <Badge variant="secondary" className="bg-primary-foreground/20 text-primary-foreground font-bold">
+                  {itemCount}
+                </Badge>
+              </div>
+              <span className="font-semibold">Ver Carrito</span>
+              <span className="font-bold">{formatCurrency(cartTotal)}</span>
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

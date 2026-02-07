@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@restai/ui/components/dialog";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import { Search, UserPlus, Mail, Clock, RefreshCw, LogIn, LogOut } from "lucide-react";
 import { useStaffList, useCreateStaff, useShifts, useCreateShift, useEndShift } from "@/hooks/use-staff";
 import { useAuthStore } from "@/stores/auth-store";
@@ -196,15 +196,17 @@ export default function StaffPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>Rol</Label>
-                  <Select
-                    value={form.role}
-                    onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  >
-                    <option value="org_admin">Admin</option>
-                    <option value="branch_manager">Gerente</option>
-                    <option value="cashier">Cajero</option>
-                    <option value="waiter">Mesero</option>
-                    <option value="kitchen">Cocina</option>
+                  <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar rol" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="org_admin">Admin</SelectItem>
+                      <SelectItem value="branch_manager">Gerente</SelectItem>
+                      <SelectItem value="cashier">Cajero</SelectItem>
+                      <SelectItem value="waiter">Mesero</SelectItem>
+                      <SelectItem value="kitchen">Cocina</SelectItem>
+                    </SelectContent>
                   </Select>
                 </div>
                 <Button

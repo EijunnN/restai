@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Card, CardContent } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@restai/ui/components/tabs";
-import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw } from "lucide-react";
+import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSessions, useApproveSession, useRejectSession, useEndSession } from "@/hooks/use-tables";
 
@@ -22,6 +22,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: any }> 
 
 export default function ConnectionsPage() {
   const [tab, setTab] = useState("pending");
+  const [mutatingId, setMutatingId] = useState<string | null>(null);
   const { data: sessions, isLoading, refetch } = useSessions(tab === "all" ? undefined : tab);
   const approveSession = useApproveSession();
   const rejectSession = useRejectSession();
@@ -92,18 +93,27 @@ export default function ConnectionsPage() {
                           </span>
                           {session.status === "pending" && (
                             <div className="flex gap-1 ml-2">
-                              <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={rejectSession.isPending} onClick={() => rejectSession.mutate(session.id)}>
-                                <X className="h-4 w-4" />
+                              <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={mutatingId === session.id} onClick={() => {
+                                setMutatingId(session.id);
+                                rejectSession.mutate(session.id, { onSettled: () => setMutatingId(null) });
+                              }}>
+                                {mutatingId === session.id && rejectSession.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
                               </Button>
-                              <Button size="sm" disabled={approveSession.isPending} onClick={() => approveSession.mutate(session.id)}>
-                                <Check className="h-4 w-4 mr-1" />
+                              <Button size="sm" disabled={mutatingId === session.id} onClick={() => {
+                                setMutatingId(session.id);
+                                approveSession.mutate(session.id, { onSettled: () => setMutatingId(null) });
+                              }}>
+                                {mutatingId === session.id && approveSession.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Check className="h-4 w-4 mr-1" />}
                                 Aceptar
                               </Button>
                             </div>
                           )}
                           {session.status === "active" && (
-                            <Button size="sm" variant="outline" className="ml-2" disabled={endSession.isPending} onClick={() => endSession.mutate(session.id)}>
-                              <X className="h-4 w-4 mr-1" />
+                            <Button size="sm" variant="outline" className="ml-2" disabled={mutatingId === session.id} onClick={() => {
+                              setMutatingId(session.id);
+                              endSession.mutate(session.id, { onSettled: () => setMutatingId(null) });
+                            }}>
+                              {mutatingId === session.id && endSession.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <X className="h-4 w-4 mr-1" />}
                               Terminar
                             </Button>
                           )}

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { idParamSchema } from "@restai/validators";
 import { z } from "zod";
@@ -330,6 +330,83 @@ coupons.post(
         max_discount_amount: coupon.max_discount_amount,
       },
     });
+  },
+);
+
+// POST /assign - Assign coupon to customers (admin)
+coupons.post(
+  "/assign",
+  requirePermission("loyalty:create"),
+  zValidator(
+    "json",
+    z.object({
+      couponId: z.string().uuid(),
+      customerIds: z.array(z.string().uuid()).min(1).max(100),
+    }),
+  ),
+  async (c) => {
+    const { couponId, customerIds } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Verify coupon belongs to org
+    const [coupon] = await db
+      .select({ id: schema.coupons.id })
+      .from(schema.coupons)
+      .where(
+        and(
+          eq(schema.coupons.id, couponId),
+          eq(schema.coupons.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!coupon) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cupon no encontrado" } },
+        404,
+      );
+    }
+
+    const values = customerIds.map((customerId) => ({
+      coupon_id: couponId,
+      customer_id: customerId,
+    }));
+
+    await db
+      .insert(schema.couponAssignments)
+      .values(values)
+      .onConflictDoNothing();
+
+    return c.json({ success: true, data: { assigned: customerIds.length } }, 201);
+  },
+);
+
+// GET /:id/assignments - List assignments for a coupon (admin)
+coupons.get(
+  "/:id/assignments",
+  requirePermission("loyalty:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+
+    const assignments = await db
+      .select({
+        id: schema.couponAssignments.id,
+        customer_id: schema.couponAssignments.customer_id,
+        customer_name: schema.customers.name,
+        customer_phone: schema.customers.phone,
+        sent_at: schema.couponAssignments.sent_at,
+        seen_at: schema.couponAssignments.seen_at,
+        used_at: schema.couponAssignments.used_at,
+      })
+      .from(schema.couponAssignments)
+      .leftJoin(
+        schema.customers,
+        eq(schema.couponAssignments.customer_id, schema.customers.id),
+      )
+      .where(eq(schema.couponAssignments.coupon_id, id));
+
+    return c.json({ success: true, data: assignments });
   },
 );
 

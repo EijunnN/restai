@@ -5,9 +5,11 @@ import {
   text,
   integer,
   timestamp,
+  unique,
 } from "drizzle-orm/pg-core";
 import { couponTypeEnum, couponStatusEnum } from "./enums";
 import { organizations } from "./tenants";
+import { customers } from "./loyalty";
 
 export const coupons = pgTable("coupons", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -33,6 +35,23 @@ export const coupons = pgTable("coupons", {
   expires_at: timestamp("expires_at"),
   created_at: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const couponAssignments = pgTable(
+  "coupon_assignments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    coupon_id: uuid("coupon_id")
+      .notNull()
+      .references(() => coupons.id, { onDelete: "cascade" }),
+    customer_id: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    sent_at: timestamp("sent_at").defaultNow().notNull(),
+    seen_at: timestamp("seen_at"),
+    used_at: timestamp("used_at"),
+  },
+  (t) => [unique("uq_coupon_customer").on(t.coupon_id, t.customer_id)],
+);
 
 export const couponRedemptions = pgTable("coupon_redemptions", {
   id: uuid("id").primaryKey().defaultRandom(),

@@ -6,7 +6,7 @@ import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { Badge } from "@restai/ui/components/badge";
 import { Button } from "@restai/ui/components/button";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Tabs,
   TabsList,
@@ -40,6 +40,7 @@ import {
   useRecipe,
   useCreateRecipe,
 } from "@/hooks/use-inventory";
+import { useBranchSettings } from "@/hooks/use-settings";
 import { toast } from "sonner";
 
 const movementTypeLabels: Record<
@@ -137,18 +138,20 @@ function CreateItemDialog({
             <div className="space-y-2">
               <Label htmlFor="itemUnit">Unidad</Label>
               <Select
-                id="itemUnit"
                 value={form.unit}
-                onChange={(e) =>
-                  setForm({ ...form, unit: e.target.value })
-                }
+                onValueChange={(v) => setForm({ ...form, unit: v })}
               >
-                <option value="kg">Kilogramos (kg)</option>
-                <option value="g">Gramos (g)</option>
-                <option value="lt">Litros (lt)</option>
-                <option value="ml">Mililitros (ml)</option>
-                <option value="und">Unidades (und)</option>
-                <option value="paq">Paquetes (paq)</option>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar unidad..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="kg">Kilogramos (kg)</SelectItem>
+                  <SelectItem value="g">Gramos (g)</SelectItem>
+                  <SelectItem value="lt">Litros (lt)</SelectItem>
+                  <SelectItem value="ml">Mililitros (ml)</SelectItem>
+                  <SelectItem value="und">Unidades (und)</SelectItem>
+                  <SelectItem value="paq">Paquetes (paq)</SelectItem>
+                </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
@@ -224,7 +227,7 @@ function CreateMovementDialog({
 }) {
   const createMovement = useCreateMovement();
   const [form, setForm] = useState({
-    itemId: "",
+    itemId: "none",
     type: "purchase",
     quantity: "",
     reference: "",
@@ -233,7 +236,7 @@ function CreateMovementDialog({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.itemId || !form.quantity) return;
+    if (!form.itemId || form.itemId === "none" || !form.quantity) return;
     try {
       await createMovement.mutateAsync({
         itemId: form.itemId,
@@ -243,7 +246,7 @@ function CreateMovementDialog({
         notes: form.notes || undefined,
       });
       setForm({
-        itemId: "",
+        itemId: "none",
         type: "purchase",
         quantity: "",
         reference: "",
@@ -266,35 +269,38 @@ function CreateMovementDialog({
           <div className="space-y-2">
             <Label htmlFor="movItem">Item *</Label>
             <Select
-              id="movItem"
               value={form.itemId}
-              onChange={(e) =>
-                setForm({ ...form, itemId: e.target.value })
-              }
+              onValueChange={(v) => setForm({ ...form, itemId: v })}
             >
-              <option value="">Seleccionar item...</option>
-              {items.map((item: any) => (
-                <option key={item.id} value={item.id}>
-                  {item.name} ({item.unit}) - Stock:{" "}
-                  {parseFloat(item.current_stock).toFixed(2)}
-                </option>
-              ))}
+              <SelectTrigger>
+                <SelectValue placeholder="Seleccionar item..." />
+              </SelectTrigger>
+              <SelectContent>
+                {items.map((item: any) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.name} ({item.unit}) - Stock:{" "}
+                    {parseFloat(item.current_stock).toFixed(2)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="movType">Tipo</Label>
               <Select
-                id="movType"
                 value={form.type}
-                onChange={(e) =>
-                  setForm({ ...form, type: e.target.value })
-                }
+                onValueChange={(v) => setForm({ ...form, type: v })}
               >
-                <option value="purchase">Compra</option>
-                <option value="consumption">Consumo</option>
-                <option value="waste">Merma</option>
-                <option value="adjustment">Ajuste</option>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar tipo..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="purchase">Compra</SelectItem>
+                  <SelectItem value="consumption">Consumo</SelectItem>
+                  <SelectItem value="waste">Merma</SelectItem>
+                  <SelectItem value="adjustment">Ajuste</SelectItem>
+                </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
@@ -341,7 +347,7 @@ function CreateMovementDialog({
             <Button
               type="submit"
               disabled={
-                createMovement.isPending || !form.itemId || !form.quantity
+                createMovement.isPending || !form.itemId || form.itemId === "none" || !form.quantity
               }
             >
               {createMovement.isPending
@@ -447,22 +453,25 @@ function CreateRecipeDialog({
             {form.ingredients.map((ing, index) => (
               <div key={index} className="flex gap-2 items-center">
                 <Select
-                  className="flex-1"
-                  value={ing.inventoryItemId}
-                  onChange={(e) =>
+                  value={ing.inventoryItemId || "none"}
+                  onValueChange={(v) =>
                     updateIngredient(
                       index,
                       "inventoryItemId",
-                      e.target.value
+                      v === "none" ? "" : v
                     )
                   }
                 >
-                  <option value="">Seleccionar item...</option>
-                  {items.map((item: any) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name} ({item.unit})
-                    </option>
-                  ))}
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="Seleccionar item..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {items.map((item: any) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name} ({item.unit})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
                 <Input
                   className="w-24"
@@ -881,6 +890,9 @@ export default function InventoryPage() {
   const [newMovementOpen, setNewMovementOpen] = useState(false);
   const [recipeDialogOpen, setRecipeDialogOpen] = useState(false);
 
+  const { data: branchData } = useBranchSettings();
+  const inventoryEnabled = branchData?.settings?.inventory_enabled ?? false;
+
   const {
     data: itemsData,
     isLoading,
@@ -893,6 +905,31 @@ export default function InventoryPage() {
   const items: any[] = itemsData ?? [];
   const movements: any[] = movementsData ?? [];
   const alerts: any[] = alertsData ?? [];
+
+  if (!inventoryEnabled && branchData) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Inventario</h1>
+          <p className="text-muted-foreground">
+            Control de stock y recetas
+          </p>
+        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <Package className="h-12 w-12 text-muted-foreground mb-4" />
+            <p className="text-lg font-medium mb-2">Inventario desactivado</p>
+            <p className="text-sm text-muted-foreground text-center max-w-md mb-4">
+              El control de inventario no esta activado para esta sede. Puedes activarlo desde la configuracion de la sede.
+            </p>
+            <Button variant="outline" onClick={() => window.location.href = "/settings"}>
+              Ir a Configuracion
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (error) {
     return (

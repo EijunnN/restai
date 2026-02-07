@@ -1,11 +1,43 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/fetcher";
+import { useAuthStore } from "@/stores/auth-store";
 
 interface OrderFilters {
   status?: string;
   page?: number;
   limit?: number;
+}
+
+interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+interface OrdersResponse {
+  orders: any[];
+  pagination: Pagination;
+}
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+async function fetchOrdersWithPagination(path: string): Promise<OrdersResponse> {
+  const { accessToken, selectedBranchId } = useAuthStore.getState();
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...(selectedBranchId ? { "x-branch-id": selectedBranchId } : {}),
+    },
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error?.message || "Error desconocido");
+  return {
+    orders: json.data ?? [],
+    pagination: json.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 },
+  };
 }
 
 export function useOrders(filters?: OrderFilters) {
@@ -15,9 +47,9 @@ export function useOrders(filters?: OrderFilters) {
   if (filters?.limit) params.set("limit", String(filters.limit));
   const qs = params.toString();
 
-  return useQuery({
+  return useQuery<OrdersResponse>({
     queryKey: ["orders", filters],
-    queryFn: () => apiFetch(`/api/orders${qs ? `?${qs}` : ""}`),
+    queryFn: () => fetchOrdersWithPagination(`/api/orders${qs ? `?${qs}` : ""}`),
     refetchInterval: 5000,
   });
 }

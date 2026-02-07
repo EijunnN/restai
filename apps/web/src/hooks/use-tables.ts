@@ -97,7 +97,26 @@ export function useUpdateTablePosition() {
         method: "PATCH",
         body: JSON.stringify({ x, y }),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["tables"] }),
+    onMutate: async ({ id, x, y }) => {
+      await qc.cancelQueries({ queryKey: ["tables"] });
+      const previous = qc.getQueryData(["tables"]);
+      qc.setQueryData(["tables"], (old: any) => {
+        if (!old?.tables) return old;
+        return {
+          ...old,
+          tables: old.tables.map((t: any) =>
+            t.id === id ? { ...t, position_x: x, position_y: y } : t
+          ),
+        };
+      });
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["tables"], context.previous);
+      }
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tables"] }),
   });
 }
 

@@ -6,7 +6,7 @@ import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { Badge } from "@restai/ui/components/badge";
 import { Button } from "@restai/ui/components/button";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Dialog,
   DialogContent,
@@ -23,6 +23,7 @@ import {
   Smartphone,
   Banknote,
   FileText,
+  Printer,
 } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import {
@@ -31,6 +32,9 @@ import {
   usePaymentSummary,
   useCreateInvoice,
 } from "@/hooks/use-payments";
+import { useOrgSettings, useBranchSettings } from "@/hooks/use-settings";
+import { usePrintReceipt } from "@/components/print-ticket";
+import { apiFetch } from "@/lib/fetcher";
 
 const methodLabels: Record<string, string> = {
   cash: "Efectivo",
@@ -91,6 +95,49 @@ export default function PaymentsPage() {
   const { data: summary } = usePaymentSummary();
   const createPayment = useCreatePayment();
   const createInvoice = useCreateInvoice();
+  const { data: orgSettings } = useOrgSettings();
+  const { data: branchSettings } = useBranchSettings();
+  const printReceipt = usePrintReceipt();
+
+  const handlePrintReceipt = async (payment: any) => {
+    try {
+      const orderDetail = await apiFetch(`/api/orders/${payment.order_id}`);
+      const org = orgSettings as any;
+      const branch = branchSettings as any;
+      const orderData = orderDetail as any;
+      const items = orderData?.items || [];
+      printReceipt({
+        businessName: org?.name || "Restaurante",
+        ruc: org?.settings?.ruc || undefined,
+        address: branch?.address || undefined,
+        orderNumber: payment.order_number || orderData?.order_number || "",
+        createdAt: payment.created_at || new Date().toISOString(),
+        items: items.map((i: any) => ({
+          name: i.name,
+          quantity: i.quantity,
+          unit_price: i.unit_price,
+          total: i.total,
+        })),
+        subtotal: orderData?.subtotal ?? 0,
+        tax: orderData?.tax ?? 0,
+        total: orderData?.total ?? 0,
+        paymentMethod: payment.method,
+        customerName: orderData?.customer_name || undefined,
+      });
+    } catch {
+      const org = orgSettings as any;
+      printReceipt({
+        businessName: org?.name || "Restaurante",
+        orderNumber: payment.order_number || "",
+        createdAt: payment.created_at || new Date().toISOString(),
+        items: [],
+        subtotal: 0,
+        tax: 0,
+        total: payment.amount ?? 0,
+        paymentMethod: payment.method,
+      });
+    }
+  };
 
   const payments: any[] = data ?? [];
 
@@ -320,14 +367,25 @@ export default function PaymentsPage() {
                         {payment.created_at ? formatDate(payment.created_at) : "-"}
                       </td>
                       <td className="p-3 text-center">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openInvoiceForPayment(payment)}
-                        >
-                          <FileText className="h-3 w-3 mr-1" />
-                          Comprobante
-                        </Button>
+                        <div className="flex items-center justify-center gap-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openInvoiceForPayment(payment)}
+                          >
+                            <FileText className="h-3 w-3 mr-1" />
+                            Comprobante
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                            onClick={() => handlePrintReceipt(payment)}
+                            title="Imprimir Boleta"
+                          >
+                            <Printer className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -356,17 +414,18 @@ export default function PaymentsPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="method">Metodo de Pago</Label>
-              <Select
-                id="method"
-                value={paymentForm.method}
-                onChange={(e) => setPaymentForm({ ...paymentForm, method: e.target.value })}
-              >
-                <option value="cash">Efectivo</option>
-                <option value="card">Tarjeta</option>
-                <option value="yape">Yape</option>
-                <option value="plin">Plin</option>
-                <option value="transfer">Transferencia</option>
-                <option value="other">Otro</option>
+              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar metodo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Efectivo</SelectItem>
+                  <SelectItem value="card">Tarjeta</SelectItem>
+                  <SelectItem value="yape">Yape</SelectItem>
+                  <SelectItem value="plin">Plin</SelectItem>
+                  <SelectItem value="transfer">Transferencia</SelectItem>
+                  <SelectItem value="other">Otro</SelectItem>
+                </SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -428,13 +487,14 @@ export default function PaymentsPage() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="invoiceType">Tipo de Comprobante</Label>
-              <Select
-                id="invoiceType"
-                value={invoiceForm.type}
-                onChange={(e) => setInvoiceForm({ ...invoiceForm, type: e.target.value })}
-              >
-                <option value="boleta">Boleta</option>
-                <option value="factura">Factura</option>
+              <Select value={invoiceForm.type} onValueChange={(v) => setInvoiceForm({ ...invoiceForm, type: v })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar tipo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="boleta">Boleta</SelectItem>
+                  <SelectItem value="factura">Factura</SelectItem>
+                </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
@@ -449,16 +509,15 @@ export default function PaymentsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="docType">Tipo de Documento</Label>
-                <Select
-                  id="docType"
-                  value={invoiceForm.customerDocType}
-                  onChange={(e) =>
-                    setInvoiceForm({ ...invoiceForm, customerDocType: e.target.value })
-                  }
-                >
-                  <option value="dni">DNI</option>
-                  <option value="ruc">RUC</option>
-                  <option value="ce">CE</option>
+                <Select value={invoiceForm.customerDocType} onValueChange={(v) => setInvoiceForm({ ...invoiceForm, customerDocType: v })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Tipo doc." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="dni">DNI</SelectItem>
+                    <SelectItem value="ruc">RUC</SelectItem>
+                    <SelectItem value="ce">CE</SelectItem>
+                  </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">

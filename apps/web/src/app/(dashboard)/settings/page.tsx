@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@rest
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { Button } from "@restai/ui/components/button";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +15,7 @@ import {
   DialogFooter,
 } from "@restai/ui/components/dialog";
 import { RefreshCw, Building2, MapPin, Upload, Plus, Pencil, Store } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useOrgSettings, useBranchSettings, useUpdateOrg, useUpdateBranch, useBranches, useCreateBranch, useUpdateBranchById } from "@/hooks/use-settings";
 import { useUploadImage } from "@/hooks/use-uploads";
 import { toast } from "sonner";
@@ -65,6 +66,7 @@ export default function SettingsPage() {
     taxRate: "18.00",
     timezone: "America/Lima",
     currency: "PEN",
+    inventoryEnabled: false,
   });
 
   // Branch dialog state
@@ -98,6 +100,7 @@ export default function SettingsPage() {
         taxRate: ((branchData.tax_rate || 1800) / 100).toFixed(2),
         timezone: branchData.timezone || "America/Lima",
         currency: branchData.currency || "PEN",
+        inventoryEnabled: branchData.settings?.inventory_enabled ?? false,
       });
     }
   }, [branchData]);
@@ -124,6 +127,7 @@ export default function SettingsPage() {
         taxRate: taxRateNum,
         timezone: branchForm.timezone,
         currency: branchForm.currency,
+        inventoryEnabled: branchForm.inventoryEnabled,
       });
       toast.success("Sede actualizada correctamente");
     } catch (err: any) {
@@ -262,7 +266,7 @@ export default function SettingsPage() {
                       <img
                         src={orgForm.logoUrl}
                         alt="Logo"
-                        className="h-16 w-16 rounded-lg object-cover border"
+                        className="h-24 w-24 rounded-lg object-cover border"
                       />
                     )}
                     <div className="flex flex-col gap-2">
@@ -354,27 +358,29 @@ export default function SettingsPage() {
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="branchTimezone">Zona Horaria</Label>
-                    <Select
-                      id="branchTimezone"
-                      value={branchForm.timezone}
-                      onChange={(e) => setBranchForm({ ...branchForm, timezone: e.target.value })}
-                    >
-                      {TIMEZONES.map((tz) => (
-                        <option key={tz} value={tz}>{tz}</option>
-                      ))}
+                    <Label>Zona Horaria</Label>
+                    <Select value={branchForm.timezone} onValueChange={(v) => setBranchForm({ ...branchForm, timezone: v })}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona zona horaria" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TIMEZONES.map((tz) => (
+                          <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                        ))}
+                      </SelectContent>
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="branchCurrency">Moneda</Label>
-                    <Select
-                      id="branchCurrency"
-                      value={branchForm.currency}
-                      onChange={(e) => setBranchForm({ ...branchForm, currency: e.target.value })}
-                    >
-                      <option value="PEN">PEN (Soles)</option>
-                      <option value="USD">USD (Dolares)</option>
-                      <option value="EUR">EUR (Euros)</option>
+                    <Label>Moneda</Label>
+                    <Select value={branchForm.currency} onValueChange={(v) => setBranchForm({ ...branchForm, currency: v })}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona moneda" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="PEN">PEN (Soles)</SelectItem>
+                        <SelectItem value="USD">USD (Dolares)</SelectItem>
+                        <SelectItem value="EUR">EUR (Euros)</SelectItem>
+                      </SelectContent>
                     </Select>
                   </div>
                 </div>
@@ -392,6 +398,31 @@ export default function SettingsPage() {
                   <p className="text-xs text-muted-foreground">
                     Ingresa el porcentaje (ej: 18.00 para 18%)
                   </p>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border p-4">
+                  <div>
+                    <p className="text-sm font-medium">Control de Inventario</p>
+                    <p className="text-xs text-muted-foreground">
+                      Activa el seguimiento de stock y recetas
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={branchForm.inventoryEnabled}
+                    onClick={() => setBranchForm({ ...branchForm, inventoryEnabled: !branchForm.inventoryEnabled })}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+                      branchForm.inventoryEnabled ? "bg-primary" : "bg-muted"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform",
+                        branchForm.inventoryEnabled ? "translate-x-5" : "translate-x-0"
+                      )}
+                    />
+                  </button>
                 </div>
                 <Button onClick={handleBranchSave} disabled={updateBranch.isPending}>
                   {updateBranch.isPending ? "Guardando..." : "Guardar Cambios"}

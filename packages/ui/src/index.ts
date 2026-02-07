@@ -21,8 +21,18 @@ export type { LabelProps } from "./components/label";
 export { Badge, badgeVariants } from "./components/badge";
 export type { BadgeProps } from "./components/badge";
 
-export { Select, SelectOption } from "./components/select";
-export type { SelectProps, SelectOptionProps } from "./components/select";
+export {
+  Select,
+  SelectGroup,
+  SelectValue,
+  SelectTrigger,
+  SelectContent,
+  SelectItem,
+  SelectLabel,
+  SelectSeparator,
+  NativeSelect,
+} from "./components/select";
+export type { NativeSelectProps } from "./components/select";
 
 export {
   Dialog,
@@ -56,3 +66,16 @@ export {
   TabsTrigger,
   TabsContent,
 } from "./components/tabs";
+
+export {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+  PopoverAnchor,
+} from "./components/popover";
+
+export { Calendar } from "./components/calendar";
+export type { CalendarProps } from "./components/calendar";
+
+export { DatePicker } from "./components/date-picker";
+export type { DatePickerProps } from "./components/date-picker";

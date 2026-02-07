@@ -11,9 +11,10 @@ import {
 } from "@restai/ui/components/card";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
+import { DatePicker } from "@restai/ui/components/date-picker";
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Tabs,
   TabsList,
@@ -42,6 +43,7 @@ import {
   Ticket,
   Copy,
   Tag,
+  Send,
 } from "lucide-react";
 import {
   useLoyaltyStats,
@@ -62,6 +64,8 @@ import {
   useCreateCoupon,
   useUpdateCoupon,
   useDeleteCoupon,
+  useCouponAssignments,
+  useAssignCoupon,
 } from "@/hooks/use-coupons";
 import { formatCurrency } from "@/lib/utils";
 import { toast } from "sonner";
@@ -242,7 +246,7 @@ function CreateCustomerDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor="cust-birth">Fecha de nacimiento</Label>
-            <Input id="cust-birth" type="date" value={form.birthDate} onChange={(e) => setForm((p) => ({ ...p, birthDate: e.target.value }))} />
+            <DatePicker id="cust-birth" value={form.birthDate} onChange={(d) => setForm((p) => ({ ...p, birthDate: d ?? "" }))} />
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
@@ -505,9 +509,14 @@ function CreateRewardDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor="rwd-dtype">Tipo de descuento</Label>
-            <Select id="rwd-dtype" value={form.discountType} onChange={(e) => setForm((p) => ({ ...p, discountType: e.target.value as "percentage" | "fixed" }))}>
-              <option value="percentage">Porcentaje (%)</option>
-              <option value="fixed">Monto fijo (centimos)</option>
+            <Select value={form.discountType} onValueChange={(v) => setForm((p) => ({ ...p, discountType: v as "percentage" | "fixed" }))}>
+              <SelectTrigger>
+                <SelectValue placeholder="Tipo de descuento" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="percentage">Porcentaje (%)</SelectItem>
+                <SelectItem value="fixed">Monto fijo (centimos)</SelectItem>
+              </SelectContent>
             </Select>
           </div>
           <div className="space-y-2">
@@ -646,13 +655,18 @@ function CreateCouponDialog({
           {/* Type */}
           <div className="space-y-2">
             <Label htmlFor="cpn-type">Tipo de cupon</Label>
-            <Select id="cpn-type" value={form.type} onChange={(e) => setForm((p) => ({ ...p, type: e.target.value }))}>
-              <option value="percentage">Porcentaje de descuento (%)</option>
-              <option value="fixed">Monto fijo de descuento</option>
-              <option value="item_free">Item gratis</option>
-              <option value="item_discount">Descuento en item especifico</option>
-              <option value="category_discount">Descuento en categoria</option>
-              <option value="buy_x_get_y">Compra X lleva Y</option>
+            <Select value={form.type} onValueChange={(v) => setForm((p) => ({ ...p, type: v }))}>
+              <SelectTrigger>
+                <SelectValue placeholder="Tipo de cupon" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="percentage">Porcentaje de descuento (%)</SelectItem>
+                <SelectItem value="fixed">Monto fijo de descuento</SelectItem>
+                <SelectItem value="item_free">Item gratis</SelectItem>
+                <SelectItem value="item_discount">Descuento en item especifico</SelectItem>
+                <SelectItem value="category_discount">Descuento en categoria</SelectItem>
+                <SelectItem value="buy_x_get_y">Compra X lleva Y</SelectItem>
+              </SelectContent>
             </Select>
           </div>
 
@@ -1180,19 +1194,179 @@ function RewardsTab() {
 }
 
 // ---------------------------------------------------------------------------
+// Assign Coupon Dialog
+// ---------------------------------------------------------------------------
+function AssignCouponDialog({
+  open,
+  onOpenChange,
+  coupon,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  coupon: any;
+}) {
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [timer, setTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const assignCoupon = useAssignCoupon();
+
+  const { data: customersData, isLoading: customersLoading } = useLoyaltyCustomers(debouncedSearch || undefined);
+  const { data: assignmentsData } = useCouponAssignments(coupon?.id || "");
+
+  const customers: any[] = customersData ?? [];
+  const assignments: any[] = assignmentsData ?? [];
+  const assignedCustomerIds = new Set(assignments.map((a: any) => a.customer_id));
+
+  function handleSearch(val: string) {
+    setSearch(val);
+    if (timer) clearTimeout(timer);
+    const t = setTimeout(() => setDebouncedSearch(val), 300);
+    setTimer(t);
+  }
+
+  function toggleCustomer(id: string) {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  function handleAssign() {
+    if (selectedIds.length === 0) return;
+    assignCoupon.mutate(
+      { couponId: coupon.id, customerIds: selectedIds },
+      {
+        onSuccess: () => {
+          setSelectedIds([]);
+          toast.success(`Cupon asignado a ${selectedIds.length} cliente(s)`);
+          onOpenChange(false);
+        },
+        onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Asignar Cupon: {coupon?.code}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar clientes..."
+              value={search}
+              onChange={(e) => handleSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          {/* Already assigned */}
+          {assignments.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground mb-2">
+                Ya asignados ({assignments.length}):
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {assignments.map((a: any) => (
+                  <span
+                    key={a.id}
+                    className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground"
+                  >
+                    {a.customer_name || "Sin nombre"}
+                    {a.seen_at && " (visto)"}
+                    {a.used_at && " (usado)"}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Customer list */}
+          <div className="max-h-60 overflow-y-auto border border-border rounded-lg">
+            {customersLoading ? (
+              <div className="p-4 text-center text-sm text-muted-foreground">
+                Cargando...
+              </div>
+            ) : customers.length === 0 ? (
+              <div className="p-4 text-center text-sm text-muted-foreground">
+                {debouncedSearch ? "Sin resultados" : "No hay clientes"}
+              </div>
+            ) : (
+              customers.map((cust: any) => {
+                const alreadyAssigned = assignedCustomerIds.has(cust.id);
+                const isSelected = selectedIds.includes(cust.id);
+                return (
+                  <button
+                    key={cust.id}
+                    disabled={alreadyAssigned}
+                    onClick={() => toggleCustomer(cust.id)}
+                    className={`w-full flex items-center justify-between p-3 text-left border-b border-border last:border-0 transition-colors ${
+                      alreadyAssigned
+                        ? "opacity-50 cursor-not-allowed bg-muted/30"
+                        : isSelected
+                          ? "bg-primary/10"
+                          : "hover:bg-muted/50"
+                    }`}
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{cust.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {cust.phone || cust.email || "Sin contacto"}
+                      </p>
+                    </div>
+                    {alreadyAssigned ? (
+                      <span className="text-xs text-muted-foreground">Asignado</span>
+                    ) : isSelected ? (
+                      <CheckCircle2 className="h-4 w-4 text-primary" />
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {selectedIds.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {selectedIds.length} cliente(s) seleccionado(s)
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleAssign}
+            disabled={assignCoupon.isPending || selectedIds.length === 0}
+          >
+            {assignCoupon.isPending
+              ? "Asignando..."
+              : `Asignar (${selectedIds.length})`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Coupons Tab
 // ---------------------------------------------------------------------------
 function CouponsTab() {
-  const [statusFilter, setStatusFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const { data, isLoading, error, refetch } = useCoupons({
-    status: statusFilter || undefined,
-    type: typeFilter || undefined,
+    status: statusFilter === "all" ? undefined : statusFilter,
+    type: typeFilter === "all" ? undefined : typeFilter,
   });
   const deleteCoupon = useDeleteCoupon();
   const updateCoupon = useUpdateCoupon();
   const [showCreate, setShowCreate] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [assignCoupon, setAssignCoupon] = useState<any>(null);
 
   const couponsList: any[] = data ?? [];
 
@@ -1247,20 +1421,30 @@ function CouponsTab() {
     <div className="space-y-4">
       {/* Filters + Create */}
       <div className="flex flex-wrap gap-2 items-center">
-        <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-40">
-          <option value="">Todos los estados</option>
-          <option value="active">Activos</option>
-          <option value="inactive">Inactivos</option>
-          <option value="expired">Expirados</option>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Todos los estados" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todos los estados</SelectItem>
+            <SelectItem value="active">Activos</SelectItem>
+            <SelectItem value="inactive">Inactivos</SelectItem>
+            <SelectItem value="expired">Expirados</SelectItem>
+          </SelectContent>
         </Select>
-        <Select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-48">
-          <option value="">Todos los tipos</option>
-          <option value="percentage">Porcentaje</option>
-          <option value="fixed">Monto fijo</option>
-          <option value="item_free">Item gratis</option>
-          <option value="item_discount">Descuento en item</option>
-          <option value="category_discount">Descuento en categoria</option>
-          <option value="buy_x_get_y">Compra X lleva Y</option>
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-48">
+            <SelectValue placeholder="Todos los tipos" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todos los tipos</SelectItem>
+            <SelectItem value="percentage">Porcentaje</SelectItem>
+            <SelectItem value="fixed">Monto fijo</SelectItem>
+            <SelectItem value="item_free">Item gratis</SelectItem>
+            <SelectItem value="item_discount">Descuento en item</SelectItem>
+            <SelectItem value="category_discount">Descuento en categoria</SelectItem>
+            <SelectItem value="buy_x_get_y">Compra X lleva Y</SelectItem>
+          </SelectContent>
         </Select>
         <div className="ml-auto">
           <Button onClick={() => setShowCreate(true)}>
@@ -1311,6 +1495,13 @@ function CouponsTab() {
                       )}
                     </div>
                     <div className="flex gap-1 shrink-0">
+                      <button
+                        onClick={() => setAssignCoupon(coupon)}
+                        className="p-1.5 rounded hover:bg-muted"
+                        title="Asignar a clientes"
+                      >
+                        <Send className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                      </button>
                       <button
                         onClick={() => handleToggleStatus(coupon)}
                         className="p-1.5 rounded hover:bg-muted"
@@ -1364,6 +1555,14 @@ function CouponsTab() {
       )}
 
       <CreateCouponDialog open={showCreate} onOpenChange={setShowCreate} />
+
+      {assignCoupon && (
+        <AssignCouponDialog
+          open={!!assignCoupon}
+          onOpenChange={(v) => { if (!v) setAssignCoupon(null); }}
+          coupon={assignCoupon}
+        />
+      )}
 
       {/* Delete confirmation */}
       <Dialog open={!!deleteConfirm} onOpenChange={(v) => { if (!v) setDeleteConfirm(null); }}>

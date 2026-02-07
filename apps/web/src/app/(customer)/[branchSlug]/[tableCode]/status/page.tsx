@@ -13,6 +13,8 @@ import {
   UtensilsCrossed,
   RefreshCcw,
   Loader2,
+  Receipt,
+  Bell,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -76,6 +78,7 @@ export default function OrderStatusPage({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const getToken = useCallback(() => {
     if (storeToken) return storeToken;
@@ -92,6 +95,34 @@ export default function OrderStatusPage({
     }
     return null;
   }, [storeOrderId]);
+
+  const getSessionId = useCallback(() => {
+    const storeSessionId = useCustomerStore.getState().sessionId;
+    if (storeSessionId) return storeSessionId;
+    if (typeof window !== "undefined") return sessionStorage.getItem("customer_session_id");
+    return null;
+  }, []);
+
+  const handleTableAction = useCallback(async (action: "request_bill" | "call_waiter") => {
+    const token = getToken();
+    const sessionId = getSessionId();
+    if (!token || !sessionId) return;
+    try {
+      setActionLoading(action);
+      await fetch("http://localhost:3001/api/customer/table-action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action, tableSessionId: sessionId }),
+      });
+    } catch {
+      // silently fail
+    } finally {
+      setActionLoading(null);
+    }
+  }, [getToken, getSessionId]);
 
   const fetchOrder = useCallback(async () => {
     const orderId = getOrderId();
@@ -125,8 +156,6 @@ export default function OrderStatusPage({
 
   useEffect(() => {
     fetchOrder();
-    const interval = setInterval(fetchOrder, 5000);
-    return () => clearInterval(interval);
   }, [fetchOrder]);
 
   if (loading) {
@@ -250,7 +279,11 @@ export default function OrderStatusPage({
             setRefreshing(false);
           }}
         >
-          <RefreshCcw className={cn("h-4 w-4 mr-2", refreshing && "animate-spin")} />
+          {refreshing ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <RefreshCcw className="h-4 w-4 mr-2" />
+          )}
           {refreshing ? "Actualizando..." : "Actualizar"}
         </Button>
         <Link href={`/${branchSlug}/${tableCode}/menu`} className="flex-1">
@@ -258,6 +291,28 @@ export default function OrderStatusPage({
             Pedir Mas
           </Button>
         </Link>
+      </div>
+
+      {/* Table action buttons */}
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          className="flex-1 gap-2"
+          disabled={actionLoading !== null}
+          onClick={() => handleTableAction("request_bill")}
+        >
+          <Receipt className="h-4 w-4" />
+          {actionLoading === "request_bill" ? "Enviando..." : "Pedir la Cuenta"}
+        </Button>
+        <Button
+          variant="outline"
+          className="flex-1 gap-2"
+          disabled={actionLoading !== null}
+          onClick={() => handleTableAction("call_waiter")}
+        >
+          <Bell className="h-4 w-4" />
+          {actionLoading === "call_waiter" ? "Enviando..." : "Llamar al Mozo"}
+        </Button>
       </div>
     </div>
   );

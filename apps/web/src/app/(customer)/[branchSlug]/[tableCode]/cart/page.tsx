@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
 import { Card, CardContent } from "@restai/ui/components/card";
@@ -8,7 +8,7 @@ import { Input } from "@restai/ui/components/input";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency } from "@/lib/utils";
-import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X } from "lucide-react";
+import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown } from "lucide-react";
 
 const TAX_RATE = 1800; // 18% IGV
 
@@ -38,6 +38,24 @@ export default function CartPage({
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponError, setCouponError] = useState<string | null>(null);
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number } | null>(null);
+  const [availableCoupons, setAvailableCoupons] = useState<any[]>([]);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    async function fetchCoupons() {
+      try {
+        const res = await fetch("http://localhost:3001/api/customer/my-coupons", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (data.success && data.data?.length > 0) {
+          setAvailableCoupons(data.data);
+        }
+      } catch {}
+    }
+    fetchCoupons();
+  }, []);
 
   const subtotal = getSubtotal();
   const tax = getTax(TAX_RATE);
@@ -57,7 +75,7 @@ export default function CartPage({
       setCouponLoading(true);
       setCouponError(null);
       const token = getToken();
-      const res = await fetch("http://localhost:3001/api/coupons/validate", {
+      const res = await fetch("http://localhost:3001/api/customer/validate-coupon", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -121,6 +139,7 @@ export default function CartPage({
               modifierId: m.modifierId,
             })),
           })),
+          ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}),
         }),
       });
 
@@ -255,11 +274,53 @@ export default function CartPage({
           >
             <Ticket className="h-4 w-4 text-primary" />
             Tengo un cupon
-            <span className="ml-auto text-xs text-muted-foreground">{couponOpen ? "Cerrar" : "Abrir"}</span>
+            {appliedCoupon && (
+              <span className="text-[10px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">
+                Aplicado
+              </span>
+            )}
+            <ChevronDown
+              className={`h-4 w-4 ml-auto text-muted-foreground transition-transform duration-200 ${
+                couponOpen ? "rotate-180" : ""
+              }`}
+            />
           </button>
 
-          {couponOpen && (
-            <div className="mt-3 space-y-2">
+          <div
+            className="grid transition-[grid-template-rows] duration-200 ease-in-out"
+            style={{ gridTemplateRows: couponOpen ? "1fr" : "0fr" }}
+          >
+            <div className="overflow-hidden">
+            <div className="pt-3 space-y-2">
+              {availableCoupons.length > 0 && !appliedCoupon && (
+                <div className="space-y-2 mb-3">
+                  <p className="text-xs font-medium text-muted-foreground">Cupones disponibles:</p>
+                  {availableCoupons.map((coupon: any) => (
+                    <button
+                      key={coupon.id}
+                      onClick={() => {
+                        setAppliedCoupon({
+                          code: coupon.code,
+                          name: coupon.name,
+                          type: coupon.type,
+                          discount_value: coupon.discount_value || 0,
+                        });
+                      }}
+                      className="w-full flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
+                    >
+                      <div>
+                        <p className="text-sm font-medium">{coupon.name}</p>
+                        <p className="text-xs text-muted-foreground font-mono">{coupon.code}</p>
+                      </div>
+                      <span className="text-sm font-bold text-primary">
+                        {coupon.type === "percentage"
+                          ? `${coupon.discount_value}%`
+                          : formatCurrency(coupon.discount_value || 0)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {appliedCoupon ? (
                 <div className="flex items-center justify-between rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
                   <div className="flex items-center gap-2">
@@ -297,7 +358,8 @@ export default function CartPage({
                 </>
               )}
             </div>
-          )}
+            </div>
+          </div>
         </CardContent>
       </Card>
 

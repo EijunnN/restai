@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/
 import { Badge } from "@restai/ui/components/badge";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Dialog,
   DialogContent,
@@ -192,6 +192,8 @@ function FloorPlannerView({ tables }: { tables: any[] }) {
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [panOffsetStart, setPanOffsetStart] = useState({ x: 0, y: 0 });
   const [showGrid, setShowGrid] = useState(true);
+  // Track positions of recently dragged tables to prevent snap-back
+  const [localPositions, setLocalPositions] = useState<Record<string, { x: number; y: number }>>({});
   const updatePosition = useUpdateTablePosition();
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -235,23 +237,35 @@ function FloorPlannerView({ tables }: { tables: any[] }) {
       setIsPanning(false);
     }
     if (dragging) {
-      // Save final position
-      updatePosition.mutate({
-        id: dragging,
-        x: Math.round(dragTablePos.x),
-        y: Math.round(dragTablePos.y),
-      });
+      const finalX = Math.round(dragTablePos.x);
+      const finalY = Math.round(dragTablePos.y);
+      // Keep the position locally so the table doesn't snap back
+      setLocalPositions((prev) => ({ ...prev, [dragging]: { x: finalX, y: finalY } }));
+      updatePosition.mutate(
+        { id: dragging, x: finalX, y: finalY },
+        {
+          onSettled: () => {
+            // Clear local override once query cache is up to date
+            setLocalPositions((prev) => {
+              const next = { ...prev };
+              delete next[dragging];
+              return next;
+            });
+          },
+        }
+      );
       setDragging(null);
     }
   }, [isPanning, dragging, dragTablePos, updatePosition]);
 
   const handleTablePointerDown = useCallback((e: React.PointerEvent, table: any) => {
     e.stopPropagation();
+    const localPos = localPositions[table.id];
     setDragging(table.id);
     setDragStart({ x: e.clientX, y: e.clientY });
-    setDragTablePos({ x: table.position_x, y: table.position_y });
+    setDragTablePos({ x: localPos?.x ?? table.position_x, y: localPos?.y ?? table.position_y });
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
+  }, [localPositions]);
 
   const gridSize = 40;
 
@@ -322,8 +336,9 @@ function FloorPlannerView({ tables }: { tables: any[] }) {
           {/* Tables */}
           {tables.map((table: any) => {
             const isBeingDragged = dragging === table.id;
-            const posX = isBeingDragged ? dragTablePos.x : table.position_x;
-            const posY = isBeingDragged ? dragTablePos.y : table.position_y;
+            const localPos = localPositions[table.id];
+            const posX = isBeingDragged ? dragTablePos.x : (localPos?.x ?? table.position_x);
+            const posY = isBeingDragged ? dragTablePos.y : (localPos?.y ?? table.position_y);
             const size = getTableSize(table.capacity);
             const colors = plannerStatusColors[table.status] || plannerStatusColors.available;
 
@@ -385,7 +400,7 @@ export default function TablesPage() {
   // Form states
   const [newTableNumber, setNewTableNumber] = useState("");
   const [newTableCapacity, setNewTableCapacity] = useState("4");
-  const [newTableSpaceId, setNewTableSpaceId] = useState("");
+  const [newTableSpaceId, setNewTableSpaceId] = useState("none");
   const [newSpaceName, setNewSpaceName] = useState("");
   const [newSpaceDescription, setNewSpaceDescription] = useState("");
   const [newSpaceFloor, setNewSpaceFloor] = useState("1");
@@ -435,14 +450,14 @@ export default function TablesPage() {
       {
         number: num,
         capacity: cap || 4,
-        spaceId: newTableSpaceId || undefined,
+        spaceId: newTableSpaceId === "none" ? undefined : newTableSpaceId,
       },
       {
         onSuccess: () => {
           setCreateTableDialog(false);
           setNewTableNumber("");
           setNewTableCapacity("4");
-          setNewTableSpaceId("");
+          setNewTableSpaceId("none");
         },
       }
     );
@@ -797,16 +812,17 @@ export default function TablesPage() {
                           </Button>
                         </div>
                         {/* Status selector */}
-                        <Select
-                          className="mt-2 h-7 text-xs"
-                          value={table.status}
-                          onChange={(e) => handleStatusChange(table.id, e.target.value)}
-                        >
-                          {statusOptions.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
+                        <Select value={table.status} onValueChange={(v) => handleStatusChange(table.id, v)}>
+                          <SelectTrigger className="mt-2 h-7 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {statusOptions.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
                         </Select>
                       </CardContent>
                     </Card>
@@ -883,18 +899,19 @@ export default function TablesPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="table-space">Espacio (opcional)</Label>
-              <Select
-                id="table-space"
-                value={newTableSpaceId}
-                onChange={(e) => setNewTableSpaceId(e.target.value)}
-              >
-                <option value="">Sin espacio</option>
-                {spaces.map((space: any) => (
-                  <option key={space.id} value={space.id}>
-                    {space.name}
-                  </option>
-                ))}
+              <Label>Espacio (opcional)</Label>
+              <Select value={newTableSpaceId} onValueChange={setNewTableSpaceId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sin espacio" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin espacio</SelectItem>
+                  {spaces.map((space: any) => (
+                    <SelectItem key={space.id} value={space.id}>
+                      {space.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
           </div>

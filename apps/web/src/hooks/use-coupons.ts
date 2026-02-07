@@ -55,3 +55,23 @@ export function useValidateCoupon() {
       }),
   });
 }
+
+export function useCouponAssignments(couponId: string) {
+  return useQuery({
+    queryKey: ["coupons", couponId, "assignments"],
+    queryFn: () => apiFetch(`/api/coupons/${couponId}/assignments`),
+    enabled: !!couponId,
+  });
+}
+
+export function useAssignCoupon() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { couponId: string; customerIds: string[] }) =>
+      apiFetch("/api/coupons/assign", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["coupons"] }),
+  });
+}

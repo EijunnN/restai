@@ -5,9 +5,14 @@ import { Card, CardContent } from "@restai/ui/components/card";
 import { Input } from "@restai/ui/components/input";
 import { Badge } from "@restai/ui/components/badge";
 import { Button } from "@restai/ui/components/button";
-import { Search, RefreshCw } from "lucide-react";
+import { Search, RefreshCw, ChevronLeft, ChevronRight, Printer } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { useOrders, useUpdateOrderStatus } from "@/hooks/use-orders";
+import { useOrgSettings, useBranchSettings } from "@/hooks/use-settings";
+import { usePrintReceipt } from "@/components/print-ticket";
+import { apiFetch } from "@/lib/fetcher";
+
+const PAGE_SIZE = 20;
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   pending: { label: "Pendiente", variant: "outline" },
@@ -19,6 +24,12 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
   cancelled: { label: "Cancelado", variant: "destructive" },
 };
 
+const paymentStatusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline"; className?: string }> = {
+  paid: { label: "Pagado", variant: "default", className: "bg-green-600 hover:bg-green-600" },
+  partial: { label: "Parcial", variant: "default", className: "bg-amber-500 hover:bg-amber-500" },
+  unpaid: { label: "Sin pagar", variant: "outline" },
+};
+
 function Skeleton({ className }: { className?: string }) {
   return <div className={`animate-pulse bg-muted rounded ${className ?? ""}`} />;
 }
@@ -26,20 +37,70 @@ function Skeleton({ className }: { className?: string }) {
 export default function OrdersPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [page, setPage] = useState(1);
 
-  const { data, isLoading, error, refetch } = useOrders({ status: statusFilter });
+  const { data, isLoading, error, refetch } = useOrders({ status: statusFilter, page, limit: PAGE_SIZE });
   const updateStatus = useUpdateOrderStatus();
+  const { data: orgSettings } = useOrgSettings();
+  const { data: branchSettings } = useBranchSettings();
+  const printReceipt = usePrintReceipt();
 
-  const orders: any[] = data ?? [];
+  const handlePrintReceipt = async (order: any) => {
+    try {
+      const orderDetail = await apiFetch(`/api/orders/${order.id}`);
+      const org = orgSettings as any;
+      const branch = branchSettings as any;
+      const items = (orderDetail as any)?.items || [];
+      printReceipt({
+        businessName: org?.name || "Restaurante",
+        ruc: org?.settings?.ruc || undefined,
+        address: branch?.address || undefined,
+        orderNumber: order.order_number || order.id,
+        createdAt: order.created_at || new Date().toISOString(),
+        items: items.map((i: any) => ({
+          name: i.name,
+          quantity: i.quantity,
+          unit_price: i.unit_price,
+          total: i.total,
+        })),
+        subtotal: order.subtotal ?? 0,
+        tax: order.tax ?? 0,
+        total: order.total ?? 0,
+        customerName: order.customer_name || undefined,
+      });
+    } catch {
+      // If we can't fetch details, print with what we have
+      const org = orgSettings as any;
+      printReceipt({
+        businessName: org?.name || "Restaurante",
+        orderNumber: order.order_number || order.id,
+        createdAt: order.created_at || new Date().toISOString(),
+        items: [],
+        subtotal: order.subtotal ?? 0,
+        tax: order.tax ?? 0,
+        total: order.total ?? 0,
+        customerName: order.customer_name || undefined,
+      });
+    }
+  };
+
+  const orders: any[] = data?.orders ?? [];
+  const pagination = data?.pagination ?? { page: 1, limit: PAGE_SIZE, total: 0, totalPages: 1 };
+
+  // Reset page when filter changes
+  const handleStatusFilter = (status: string) => {
+    setStatusFilter(status);
+    setPage(1);
+  };
 
   const filteredOrders = orders.filter((order: any) => {
-    const orderNum = order.orderNumber || order.order_number || "";
-    const customer = order.customerName || order.customer_name || "";
-    const table = order.tableName || order.table_name || order.table || "";
+    const orderNum = order.order_number || "";
+    const customer = order.customer_name || "";
+    const tableNum = order.table_number != null ? `Mesa ${order.table_number}` : "";
     return (
       orderNum.toLowerCase().includes(search.toLowerCase()) ||
       customer.toLowerCase().includes(search.toLowerCase()) ||
-      table.toLowerCase().includes(search.toLowerCase())
+      tableNum.toLowerCase().includes(search.toLowerCase())
     );
   });
 
@@ -91,13 +152,13 @@ export default function OrdersPage() {
           />
         </div>
         <div className="flex gap-2 flex-wrap">
-          {["all", "pending", "preparing", "ready", "served", "completed"].map(
+          {["all", "pending", "confirmed", "preparing", "ready", "served", "completed"].map(
             (status) => (
               <Button
                 key={status}
                 variant={statusFilter === status ? "default" : "outline"}
                 size="sm"
-                onClick={() => setStatusFilter(status)}
+                onClick={() => handleStatusFilter(status)}
               >
                 {status === "all"
                   ? "Todos"
@@ -126,6 +187,9 @@ export default function OrdersPage() {
                   <th className="text-left p-3 text-sm font-medium text-muted-foreground">
                     Estado
                   </th>
+                  <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden sm:table-cell">
+                    Pago
+                  </th>
                   <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">
                     Items
                   </th>
@@ -148,6 +212,7 @@ export default function OrdersPage() {
                       <td className="p-3"><Skeleton className="h-4 w-16" /></td>
                       <td className="p-3 hidden sm:table-cell"><Skeleton className="h-4 w-20" /></td>
                       <td className="p-3"><Skeleton className="h-5 w-20 rounded-full" /></td>
+                      <td className="p-3 hidden sm:table-cell"><Skeleton className="h-5 w-16 rounded-full" /></td>
                       <td className="p-3 hidden md:table-cell"><Skeleton className="h-4 w-12" /></td>
                       <td className="p-3"><Skeleton className="h-4 w-16 ml-auto" /></td>
                       <td className="p-3 hidden lg:table-cell"><Skeleton className="h-4 w-24 ml-auto" /></td>
@@ -156,7 +221,7 @@ export default function OrdersPage() {
                   ))
                 ) : filteredOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="p-8 text-center text-sm text-muted-foreground">
+                    <td colSpan={9} className="p-8 text-center text-sm text-muted-foreground">
                       No se encontraron ordenes
                     </td>
                   </tr>
@@ -167,11 +232,13 @@ export default function OrdersPage() {
                       variant: "outline" as const,
                     };
                     const nextStatus = getNextStatus(order.status);
-                    const orderNum = order.orderNumber || order.order_number || order.id;
-                    const table = order.tableName || order.table_name || order.table || "";
-                    const customer = order.customerName || order.customer_name || "";
-                    const itemCount = order.itemCount || order.item_count || order.items?.length || 0;
-                    const createdAt = order.createdAt || order.created_at || "";
+                    const orderNum = order.order_number || order.id;
+                    const table = order.table_number != null ? `Mesa ${order.table_number}` : "-";
+                    const customer = order.customer_name || "";
+                    const itemCount = order.item_count ?? 0;
+                    const createdAt = order.created_at || "";
+                    const paymentStatus = order.payment_status || "unpaid";
+                    const payConfig = paymentStatusConfig[paymentStatus] || paymentStatusConfig.unpaid;
 
                     return (
                       <tr
@@ -184,6 +251,16 @@ export default function OrdersPage() {
                         <td className="p-3">
                           <Badge variant={config.variant}>{config.label}</Badge>
                         </td>
+                        <td className="p-3 hidden sm:table-cell">
+                          <Badge variant={payConfig.variant} className={payConfig.className}>
+                            {payConfig.label}
+                          </Badge>
+                          {paymentStatus === "partial" && order.total_paid != null && (
+                            <span className="text-[10px] text-muted-foreground ml-1">
+                              {formatCurrency(order.total_paid)}
+                            </span>
+                          )}
+                        </td>
                         <td className="p-3 text-sm text-muted-foreground hidden md:table-cell">
                           {itemCount} items
                         </td>
@@ -194,18 +271,29 @@ export default function OrdersPage() {
                           {createdAt ? formatDate(createdAt) : "-"}
                         </td>
                         <td className="p-3 text-center hidden md:table-cell">
-                          {nextStatus && (
+                          <div className="flex items-center justify-center gap-1">
+                            {nextStatus && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={updateStatus.isPending}
+                                onClick={() =>
+                                  updateStatus.mutate({ id: order.id, status: nextStatus })
+                                }
+                              >
+                                {statusConfig[nextStatus]?.label || nextStatus}
+                              </Button>
+                            )}
                             <Button
-                              variant="outline"
+                              variant="ghost"
                               size="sm"
-                              disabled={updateStatus.isPending}
-                              onClick={() =>
-                                updateStatus.mutate({ id: order.id, status: nextStatus })
-                              }
+                              className="h-8 w-8 p-0"
+                              onClick={() => handlePrintReceipt(order)}
+                              title="Imprimir Boleta"
                             >
-                              {statusConfig[nextStatus]?.label || nextStatus}
+                              <Printer className="h-4 w-4" />
                             </Button>
-                          )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -216,6 +304,37 @@ export default function OrdersPage() {
           </div>
         </CardContent>
       </Card>
+
+      {pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            {pagination.total} ordenes en total
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Anterior
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Pagina {pagination.page} de {pagination.totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= pagination.totalPages}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Siguiente
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

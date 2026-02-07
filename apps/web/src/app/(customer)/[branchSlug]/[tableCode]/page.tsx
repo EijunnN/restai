@@ -2,7 +2,7 @@
 
 import { use, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
+import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { startSessionSchema, type StartSessionInput } from "@restai/validators";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import {
 } from "@restai/ui/components/card";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
+import { DatePicker } from "@restai/ui/components/date-picker";
 import { UtensilsCrossed, Star, RefreshCw } from "lucide-react";
 import { useCustomerStore } from "@/stores/customer-store";
 
@@ -85,6 +86,7 @@ export default function CustomerEntryPage({
   const {
     register,
     handleSubmit,
+    control,
     formState: { errors },
   } = useForm<RegisterInput>({
     resolver: zodResolver(wantsLoyalty ? registerSchema : startSessionSchema),
@@ -330,10 +332,16 @@ export default function CustomerEntryPage({
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="birthDate">Fecha de nacimiento (opcional)</Label>
-                  <Input
-                    id="birthDate"
-                    type="date"
-                    {...register("birthDate")}
+                  <Controller
+                    control={control}
+                    name="birthDate"
+                    render={({ field }) => (
+                      <DatePicker
+                        id="birthDate"
+                        value={field.value}
+                        onChange={(d) => field.onChange(d ?? "")}
+                      />
+                    )}
                   />
                 </div>
               </div>

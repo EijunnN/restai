@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
-import { Input } from "@restai/ui/components/input";
+import { DatePicker } from "@restai/ui/components/date-picker";
 import { Label } from "@restai/ui/components/label";
 import { RefreshCw } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
@@ -109,20 +109,18 @@ export default function ReportsPage() {
         <div className="flex items-end gap-3">
           <div className="space-y-1">
             <Label className="text-xs">Desde</Label>
-            <Input
-              type="date"
+            <DatePicker
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="w-[150px]"
+              onChange={(d) => setStartDate(d ?? "")}
+              className="w-[180px]"
             />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Hasta</Label>
-            <Input
-              type="date"
+            <DatePicker
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="w-[150px]"
+              onChange={(d) => setEndDate(d ?? "")}
+              className="w-[180px]"
             />
           </div>
         </div>

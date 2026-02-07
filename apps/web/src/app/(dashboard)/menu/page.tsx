@@ -2,16 +2,10 @@
 
 import { useState, useRef } from "react";
 import { Button } from "@restai/ui/components/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@restai/ui/components/card";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { Badge } from "@restai/ui/components/badge";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Tabs,
   TabsList,
@@ -108,7 +102,7 @@ function ImageUploadButton({
         <img
           src={currentUrl}
           alt=""
-          className="h-8 w-8 rounded object-cover"
+          className="h-20 w-20 rounded-lg object-cover"
         />
       )}
       <button
@@ -319,6 +313,7 @@ function ProductDialog({
   const [imageUrl, setImageUrl] = useState<string>(
     initial?.image_url ?? initial?.imageUrl ?? ""
   );
+  const [linkKey, setLinkKey] = useState(0);
 
   const loading = createItem.isPending || updateItem.isPending;
   const linkedGroupIds = (linkedGroups ?? []).map((g: any) => g.id);
@@ -406,20 +401,17 @@ function ProductDialog({
             </div>
             <div className="space-y-2 col-span-2 sm:col-span-1">
               <Label htmlFor="prod-cat">Categoria</Label>
-              <Select
-                id="prod-cat"
-                value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
-                required
-              >
-                {categories.length === 0 && (
-                  <option value="">Crea una categoria primero</option>
-                )}
-                {categories.map((c: any) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
+              <Select value={categoryId || "none"} onValueChange={(v) => setCategoryId(v === "none" ? "" : v)}>
+                <SelectTrigger disabled={categories.length === 0}>
+                  <SelectValue placeholder={categories.length === 0 ? "Crea una categoria primero" : "Selecciona categoria"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.map((c: any) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
           </div>
@@ -514,18 +506,17 @@ function ProductDialog({
 
               {/* Add group dropdown */}
               {unlinkedGroups.length > 0 && (
-                <Select
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value) handleLink(e.target.value);
-                  }}
-                >
-                  <option value="">+ Vincular grupo...</option>
-                  {unlinkedGroups.map((g: any) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name} ({g.modifiers?.length ?? 0} opciones)
-                    </option>
-                  ))}
+                <Select key={linkKey} onValueChange={(v) => { handleLink(v); setLinkKey((k) => k + 1); }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="+ Vincular grupo..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {unlinkedGroups.map((g: any) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name} ({g.modifiers?.length ?? 0} opciones)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               )}
             </div>
@@ -1053,6 +1044,7 @@ function ProductsPanel({
   isLoading: boolean;
 }) {
   const [search, setSearch] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("all");
   const updateItem = useUpdateMenuItem();
   const deleteItem = useDeleteMenuItem();
   const deleteCat = useDeleteCategory();
@@ -1070,25 +1062,32 @@ function ProductsPanel({
   const categoryList: any[] = categories ?? [];
   const allItems: any[] = menuItems ?? [];
 
-  const categoriesWithItems = categoryList.map((cat: any) => ({
-    ...cat,
-    items: allItems.filter(
-      (item: any) => (item.categoryId || item.category_id) === cat.id
-    ),
-  }));
+  // Map items to categories for counts
+  const itemCountByCategory: Record<string, number> = {};
+  for (const item of allItems) {
+    const catId = item.categoryId || item.category_id;
+    itemCountByCategory[catId] = (itemCountByCategory[catId] || 0) + 1;
+  }
 
-  const filteredCategories = categoriesWithItems
-    .map((cat: any) => ({
-      ...cat,
-      items: cat.items.filter(
-        (item: any) =>
-          item.name.toLowerCase().includes(search.toLowerCase()) ||
-          (item.description || "")
-            .toLowerCase()
-            .includes(search.toLowerCase())
-      ),
-    }))
-    .filter((cat: any) => cat.items.length > 0 || !search);
+  // Filter items by selected category and search
+  const visibleItems = allItems.filter((item: any) => {
+    const catId = item.categoryId || item.category_id;
+    if (selectedCategoryId !== "all" && catId !== selectedCategoryId) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (
+        !item.name.toLowerCase().includes(q) &&
+        !(item.description || "").toLowerCase().includes(q)
+      )
+        return false;
+    }
+    return true;
+  });
+
+  const activeCategoryName =
+    selectedCategoryId === "all"
+      ? "Todos los productos"
+      : categoryList.find((c: any) => c.id === selectedCategoryId)?.name ?? "Productos";
 
   const handleToggleAvailability = (item: any) => {
     updateItem.mutate(
@@ -1115,6 +1114,9 @@ function ProductsPanel({
       if (confirmDelete.type === "category") {
         await deleteCat.mutateAsync(confirmDelete.id);
         toast.success("Categoria eliminada");
+        if (selectedCategoryId === confirmDelete.id) {
+          setSelectedCategoryId("all");
+        }
       } else {
         await deleteItem.mutateAsync(confirmDelete.id);
         toast.success("Producto eliminado");
@@ -1125,31 +1127,177 @@ function ProductsPanel({
     setConfirmDelete(null);
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Actions bar */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Buscar productos..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+  if (isLoading) {
+    return (
+      <div className="flex gap-6">
+        <div className="w-56 shrink-0 space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-9" />
+          ))}
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
+        <div className="flex-1 space-y-4">
+          <Skeleton className="h-10" />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-56" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (categoryList.length === 0) {
+    return (
+      <div className="text-center py-12 border border-dashed border-border rounded-lg">
+        <UtensilsCrossed className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
+        <p className="text-sm text-muted-foreground mb-4">
+          No hay categorias en el menu
+        </p>
+        <Button
+          variant="outline"
+          onClick={() => {
+            setEditingCategory(null);
+            setCatDialogOpen(true);
+          }}
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          Crear primera categoria
+        </Button>
+        {catDialogOpen && (
+          <CategoryDialog
+            open={catDialogOpen}
+            onOpenChange={(v) => {
+              setCatDialogOpen(v);
+              if (!v) setEditingCategory(null);
+            }}
+            initial={editingCategory}
+          />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-6">
+      {/* Left sidebar: categories */}
+      <div className="w-56 shrink-0">
+        <div className="sticky top-4 space-y-1">
+          {/* "Todos" option */}
+          <button
+            onClick={() => setSelectedCategoryId("all")}
+            className={`w-full flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors text-left ${
+              selectedCategoryId === "all"
+                ? "bg-primary text-primary-foreground font-medium"
+                : "hover:bg-muted text-foreground"
+            }`}
+          >
+            <span className="truncate">Todos</span>
+            <span
+              className={`text-xs tabular-nums ${
+                selectedCategoryId === "all"
+                  ? "text-primary-foreground/70"
+                  : "text-muted-foreground"
+              }`}
+            >
+              {allItems.length}
+            </span>
+          </button>
+
+          {/* Category list */}
+          <div className="max-h-[calc(100vh-16rem)] overflow-y-auto space-y-1">
+            {categoryList.map((cat: any) => {
+              const isActive = selectedCategoryId === cat.id;
+              const count = itemCountByCategory[cat.id] || 0;
+              return (
+                <div key={cat.id} className="group relative">
+                  <button
+                    onClick={() => setSelectedCategoryId(cat.id)}
+                    className={`w-full flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors text-left ${
+                      isActive
+                        ? "bg-primary text-primary-foreground font-medium"
+                        : "hover:bg-muted text-foreground"
+                    }`}
+                  >
+                    <span className="truncate pr-1">{cat.name}</span>
+                    <span
+                      className={`text-xs tabular-nums shrink-0 ${
+                        isActive
+                          ? "text-primary-foreground/70"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                  {/* Edit/delete buttons on hover */}
+                  <div
+                    className={`absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ${
+                      isActive ? "right-10" : ""
+                    }`}
+                  >
+                    <button
+                      className={`p-1 rounded transition-colors ${
+                        isActive
+                          ? "hover:bg-primary-foreground/20 text-primary-foreground/70 hover:text-primary-foreground"
+                          : "hover:bg-muted-foreground/10 text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingCategory(cat);
+                        setCatDialogOpen(true);
+                      }}
+                    >
+                      <Edit className="h-3 w-3" />
+                    </button>
+                    <button
+                      className={`p-1 rounded transition-colors ${
+                        isActive
+                          ? "hover:bg-primary-foreground/20 text-primary-foreground/70 hover:text-primary-foreground"
+                          : "hover:bg-muted-foreground/10 text-muted-foreground hover:text-destructive"
+                      }`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete({
+                          type: "category",
+                          id: cat.id,
+                          name: cat.name,
+                        });
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Create category button */}
+          <button
             onClick={() => {
               setEditingCategory(null);
               setCatDialogOpen(true);
             }}
+            className="w-full flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           >
-            <Plus className="h-4 w-4 mr-1" />
-            Categoria
-          </Button>
+            <Plus className="h-3.5 w-3.5" />
+            Nueva categoria
+          </button>
+        </div>
+      </div>
+
+      {/* Main area: products */}
+      <div className="flex-1 min-w-0 space-y-4">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-semibold truncate">{activeCategoryName}</h2>
+            <p className="text-sm text-muted-foreground">
+              {visibleItems.length} producto{visibleItems.length !== 1 ? "s" : ""}
+              {search ? ` encontrado${visibleItems.length !== 1 ? "s" : ""}` : ""}
+            </p>
+          </div>
           <Button
             size="sm"
             onClick={() => {
@@ -1161,211 +1309,153 @@ function ProductsPanel({
             Producto
           </Button>
         </div>
-      </div>
 
-      {/* Content */}
-      {isLoading ? (
-        <div className="space-y-4">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Card key={i}>
-              <CardHeader>
-                <Skeleton className="h-5 w-32" />
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {Array.from({ length: 3 }).map((_, j) => (
-                    <Skeleton key={j} className="h-24" />
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+        {/* Search */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Buscar en esta categoria..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
         </div>
-      ) : filteredCategories.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-border rounded-lg">
-          <p className="text-sm text-muted-foreground mb-4">
-            {search
-              ? "No se encontraron productos"
-              : "No hay categorias en el menu"}
-          </p>
-          {!search && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                setEditingCategory(null);
-                setCatDialogOpen(true);
-              }}
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Crear primera categoria
-            </Button>
-          )}
-        </div>
-      ) : (
-        filteredCategories.map((category: any) => (
-          <Card key={category.id}>
-            <CardHeader className="flex flex-row items-center justify-between pb-3">
-              <div className="flex items-center gap-3">
-                {category.image_url && (
-                  <img
-                    src={category.image_url}
-                    alt={category.name}
-                    className="h-8 w-8 rounded object-cover"
-                  />
-                )}
-                <div>
-                  <CardTitle className="text-base">{category.name}</CardTitle>
-                  {category.description && (
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {category.description}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-1">
-                <Badge variant="secondary" className="text-[10px] mr-1">
-                  {category.items.length}
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  onClick={() => {
-                    setEditingCategory(category);
-                    setCatDialogOpen(true);
-                  }}
+
+        {/* Products grid */}
+        {visibleItems.length === 0 ? (
+          <div className="text-center py-12 border border-dashed border-border rounded-lg">
+            <UtensilsCrossed className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
+            <p className="text-sm text-muted-foreground mb-3">
+              {search ? "No se encontraron productos" : "Sin productos en esta categoria"}
+            </p>
+            {!search && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setEditingProduct(null);
+                  setProdDialogOpen(true);
+                }}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Agregar producto
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {visibleItems.map((item: any) => {
+              const available = item.isAvailable ?? item.is_available ?? true;
+              const imageUrl = item.imageUrl || item.image_url;
+              return (
+                <div
+                  key={item.id}
+                  className={`group relative rounded-lg border border-border bg-card overflow-hidden transition-colors hover:border-primary/30 ${
+                    !available ? "opacity-60" : ""
+                  }`}
                 >
-                  <Edit className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  onClick={() =>
-                    setConfirmDelete({
-                      type: "category",
-                      id: category.id,
-                      name: category.name,
-                    })
-                  }
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {category.items.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  Sin productos en esta categoria
-                </p>
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {category.items.map((item: any) => {
-                    const available =
-                      item.isAvailable ?? item.is_available ?? true;
-                    const imageUrl = item.imageUrl || item.image_url;
-                    return (
-                      <div
-                        key={item.id}
-                        className={`group relative rounded-lg border overflow-hidden transition-colors hover:border-primary/30 ${
-                          !available ? "opacity-60" : ""
-                        }`}
-                      >
-                        {/* Product image — prominent */}
-                        <div className="relative w-full h-36 bg-muted">
-                          {imageUrl ? (
-                            <img
-                              src={imageUrl}
-                              alt={item.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" />
-                            </div>
-                          )}
-                          {!available && (
-                            <Badge
-                              variant="secondary"
-                              className="absolute top-2 left-2 text-[9px]"
-                            >
-                              No disp.
-                            </Badge>
-                          )}
-                          {/* Actions overlay */}
-                          <div className="absolute top-2 right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              className="p-1.5 rounded-md bg-background/80 hover:bg-background transition-colors"
-                              onClick={() => handleToggleAvailability(item)}
-                              title={
-                                available
-                                  ? "Marcar no disponible"
-                                  : "Marcar disponible"
-                              }
-                            >
-                              {available ? (
-                                <ToggleRight className="h-4 w-4 text-primary" />
-                              ) : (
-                                <ToggleLeft className="h-4 w-4 text-muted-foreground" />
-                              )}
-                            </button>
-                            <button
-                              className="p-1.5 rounded-md bg-background/80 hover:bg-background transition-colors"
-                              onClick={() => {
-                                setEditingProduct(item);
-                                setProdDialogOpen(true);
-                              }}
-                            >
-                              <Edit className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              className="p-1.5 rounded-md bg-background/80 hover:bg-background transition-colors"
-                              onClick={() =>
-                                setConfirmDelete({
-                                  type: "product",
-                                  id: item.id,
-                                  name: item.name,
-                                })
-                              }
-                            >
-                              <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                            </button>
-                          </div>
-                          {/* Image upload overlay */}
-                          <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <div className="bg-background/80 rounded-md px-2 py-1">
-                              <ImageUploadButton
-                                currentUrl={imageUrl}
-                                onUploaded={(url) =>
-                                  handleImageUploaded(item, url)
-                                }
-                              />
-                            </div>
-                          </div>
-                        </div>
-                        {/* Product info */}
-                        <div className="p-3">
-                          <h4 className="font-medium text-sm leading-tight truncate">
-                            {item.name}
-                          </h4>
-                          {item.description && (
-                            <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
-                              {item.description}
-                            </p>
-                          )}
-                          <p className="text-sm font-semibold mt-1.5">
-                            {formatCurrency(item.price)}
-                          </p>
-                        </div>
+                  {/* Product image */}
+                  <div className="relative w-full h-36 bg-muted">
+                    {imageUrl ? (
+                      <img
+                        src={imageUrl}
+                        alt={item.name}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" />
                       </div>
-                    );
-                  })}
+                    )}
+                    {!available && (
+                      <Badge
+                        variant="secondary"
+                        className="absolute top-2 left-2 text-[9px]"
+                      >
+                        No disp.
+                      </Badge>
+                    )}
+                    {/* Actions overlay */}
+                    <div className="absolute top-2 right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        className="p-1.5 rounded-md bg-background/80 hover:bg-background transition-colors"
+                        onClick={() => handleToggleAvailability(item)}
+                        title={
+                          available
+                            ? "Marcar no disponible"
+                            : "Marcar disponible"
+                        }
+                      >
+                        {available ? (
+                          <ToggleRight className="h-4 w-4 text-primary" />
+                        ) : (
+                          <ToggleLeft className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </button>
+                      <button
+                        className="p-1.5 rounded-md bg-background/80 hover:bg-background transition-colors"
+                        onClick={() => {
+                          setEditingProduct(item);
+                          setProdDialogOpen(true);
+                        }}
+                      >
+                        <Edit className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        className="p-1.5 rounded-md bg-background/80 hover:bg-background transition-colors"
+                        onClick={() =>
+                          setConfirmDelete({
+                            type: "product",
+                            id: item.id,
+                            name: item.name,
+                          })
+                        }
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </button>
+                    </div>
+                    {/* Image upload overlay */}
+                    <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="bg-background/80 rounded-md px-2 py-1">
+                        <ImageUploadButton
+                          currentUrl={imageUrl}
+                          onUploaded={(url) =>
+                            handleImageUploaded(item, url)
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  {/* Product info */}
+                  <div className="p-3">
+                    <h4 className="font-medium text-sm leading-tight truncate">
+                      {item.name}
+                    </h4>
+                    {item.description && (
+                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                        {item.description}
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between mt-1.5">
+                      <p className="text-sm font-semibold">
+                        {formatCurrency(item.price)}
+                      </p>
+                      {selectedCategoryId === "all" && (
+                        <span className="text-[10px] text-muted-foreground truncate ml-2">
+                          {categoryList.find(
+                            (c: any) =>
+                              c.id === (item.categoryId || item.category_id)
+                          )?.name ?? ""}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        ))
-      )}
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Dialogs */}
       {catDialogOpen && (

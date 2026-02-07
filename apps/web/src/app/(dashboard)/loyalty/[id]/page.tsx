@@ -11,7 +11,7 @@ import {
 } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
-import { Select } from "@restai/ui/components/select";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import {
   Dialog,
   DialogContent,
@@ -109,20 +109,20 @@ export default function CustomerDetailPage({
   const redeemReward = useRedeemReward();
 
   const [redeemOpen, setRedeemOpen] = useState(false);
-  const [selectedRewardId, setSelectedRewardId] = useState("");
+  const [selectedRewardId, setSelectedRewardId] = useState("none");
 
   const transactions: any[] = transactionsData ?? [];
   const rewards: any[] = rewardsData ?? [];
   const loyalty = customer?.loyalty;
 
   function handleRedeem() {
-    if (!selectedRewardId || !loyalty?.id) return;
+    if (!selectedRewardId || selectedRewardId === "none" || !loyalty?.id) return;
     redeemReward.mutate(
       { rewardId: selectedRewardId, customerLoyaltyId: loyalty.id },
       {
         onSuccess: () => {
           setRedeemOpen(false);
-          setSelectedRewardId("");
+          setSelectedRewardId("none");
           toast.success("Recompensa canjeada exitosamente");
           refetch();
         },
@@ -434,25 +434,26 @@ export default function CustomerDetailPage({
                 {(loyalty?.points_balance || 0).toLocaleString()}
               </span>
             </p>
-            <Select
-              value={selectedRewardId}
-              onChange={(e) => setSelectedRewardId(e.target.value)}
-            >
-              <option value="">Seleccionar recompensa...</option>
-              {rewards.map((r: any) => (
-                <option
-                  key={r.id}
-                  value={r.id}
-                  disabled={
-                    r.points_cost > (loyalty?.points_balance || 0)
-                  }
-                >
-                  {r.name} - {r.points_cost.toLocaleString()} pts
-                  {r.points_cost > (loyalty?.points_balance || 0)
-                    ? " (insuficientes)"
-                    : ""}
-                </option>
-              ))}
+            <Select value={selectedRewardId} onValueChange={setSelectedRewardId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Seleccionar recompensa..." />
+              </SelectTrigger>
+              <SelectContent>
+                {rewards.map((r: any) => (
+                  <SelectItem
+                    key={r.id}
+                    value={r.id}
+                    disabled={
+                      r.points_cost > (loyalty?.points_balance || 0)
+                    }
+                  >
+                    {r.name} - {r.points_cost.toLocaleString()} pts
+                    {r.points_cost > (loyalty?.points_balance || 0)
+                      ? " (insuficientes)"
+                      : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           </div>
           <DialogFooter>
@@ -465,7 +466,7 @@ export default function CustomerDetailPage({
             </Button>
             <Button
               onClick={handleRedeem}
-              disabled={redeemReward.isPending || !selectedRewardId}
+              disabled={redeemReward.isPending || !selectedRewardId || selectedRewardId === "none"}
             >
               {redeemReward.isPending ? "Canjeando..." : "Canjear"}
             </Button>

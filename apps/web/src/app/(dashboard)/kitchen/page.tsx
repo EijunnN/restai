@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@restai/ui/components/badge";
 import { Button } from "@restai/ui/components/button";
 import { useWebSocket } from "@/hooks/use-websocket";
@@ -14,31 +14,116 @@ import {
   AlertCircle,
   UtensilsCrossed,
   Timer,
+  ChevronDown,
+  ChevronUp,
+  Printer,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useKitchenOrders, useUpdateKitchenItemStatus } from "@/hooks/use-kitchen";
 import { useUpdateOrderStatus } from "@/hooks/use-orders";
+import { usePrintKitchenTicket } from "@/components/print-ticket";
 import type { WsMessage } from "@restai/types";
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={cn("animate-pulse bg-muted rounded", className)} />;
 }
 
+function getMinutesDiff(createdAt: string): number {
+  return Math.floor((Date.now() - new Date(createdAt).getTime()) / 60000);
+}
+
 function getTimeDiff(createdAt: string): string {
-  const diff = Math.floor(
-    (Date.now() - new Date(createdAt).getTime()) / 60000
-  );
+  const diff = getMinutesDiff(createdAt);
   if (diff < 1) return "<1m";
   return `${diff}m`;
 }
 
 function getTimeUrgency(createdAt: string): "normal" | "warning" | "urgent" {
-  const diff = Math.floor(
-    (Date.now() - new Date(createdAt).getTime()) / 60000
-  );
-  if (diff >= 20) return "urgent";
-  if (diff >= 10) return "warning";
+  const diff = getMinutesDiff(createdAt);
+  if (diff >= 15) return "urgent";
+  if (diff >= 5) return "warning";
   return "normal";
+}
+
+/** Hook to force re-render every 15s so timers stay accurate */
+function useTimerTick(intervalMs = 15000) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+}
+
+const VISIBLE_ITEMS_LIMIT = 4;
+
+function ItemRow({
+  item,
+  columnStatus,
+  isUpdatingItem,
+  onItemReady,
+}: {
+  item: any;
+  columnStatus: "pending" | "preparing" | "ready";
+  isUpdatingItem: boolean;
+  onItemReady: (itemId: string) => void;
+}) {
+  const isItemReady = item.status === "ready";
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between gap-1.5 px-2 py-1 rounded text-xs",
+        isItemReady
+          ? "bg-green-500/10 text-muted-foreground"
+          : "bg-muted/50"
+      )}
+    >
+      <div className="flex-1 min-w-0">
+        <span className={cn("font-semibold leading-tight", isItemReady && "line-through")}>
+          <span className="text-foreground/70 mr-0.5">{item.quantity}x</span>
+          {item.name}
+        </span>
+        {item.notes && (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium leading-tight truncate">
+            * {item.notes}
+          </p>
+        )}
+      </div>
+      {columnStatus === "preparing" && (
+        isItemReady ? (
+          <CheckCircle className="h-3.5 w-3.5 text-green-600 dark:text-green-400 shrink-0" />
+        ) : (
+          <button
+            className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-1.5 py-0.5 rounded transition-colors shrink-0"
+            disabled={isUpdatingItem}
+            onClick={() => onItemReady(item.id)}
+          >
+            Listo
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+function ElapsedTimerBadge({ createdAt }: { createdAt: string }) {
+  const urgency = getTimeUrgency(createdAt);
+  const timeStr = getTimeDiff(createdAt);
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono font-black tabular-nums text-base leading-none",
+        urgency === "urgent"
+          ? "bg-red-500 text-white animate-pulse"
+          : urgency === "warning"
+            ? "bg-amber-500 text-white"
+            : "bg-green-600 text-white"
+      )}
+    >
+      <Timer className="h-4 w-4" />
+      {timeStr}
+    </div>
+  );
 }
 
 function KitchenOrderCard({
@@ -46,6 +131,7 @@ function KitchenOrderCard({
   columnStatus,
   onAdvance,
   onItemReady,
+  onPrint,
   isAdvancing,
   isUpdatingItem,
 }: {
@@ -53,14 +139,20 @@ function KitchenOrderCard({
   columnStatus: "pending" | "preparing" | "ready";
   onAdvance: (orderId: string, status: string) => void;
   onItemReady: (itemId: string) => void;
+  onPrint: (order: any) => void;
   isAdvancing: boolean;
   isUpdatingItem: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const orderNum = order.orderNumber || order.order_number || order.id;
   const tableName = order.tableName || order.table_name || "";
   const createdAt = order.createdAt || order.created_at || "";
   const items: any[] = order.items || [];
   const urgency = createdAt ? getTimeUrgency(createdAt) : "normal";
+
+  const hasOverflow = items.length > VISIBLE_ITEMS_LIMIT;
+  const visibleItems = expanded ? items : items.slice(0, VISIBLE_ITEMS_LIMIT);
+  const hiddenCount = items.length - VISIBLE_ITEMS_LIMIT;
 
   const borderColor =
     columnStatus === "pending"
@@ -104,101 +196,82 @@ function KitchenOrderCard({
             </span>
           )}
         </div>
-        {createdAt && (
-          <div
-            className={cn(
-              "flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold",
-              urgency === "urgent"
-                ? "bg-white/30 text-white"
-                : urgency === "warning"
-                  ? "bg-white/25 text-white"
-                  : "bg-white/20 text-white/90"
-            )}
+        <div className="flex items-center gap-1.5">
+          <button
+            className="text-white/70 hover:text-white p-1 rounded transition-colors"
+            onClick={() => onPrint(order)}
+            title="Imprimir Ticket"
           >
-            <Timer className="h-3 w-3" />
-            {getTimeDiff(createdAt)}
-          </div>
+            <Printer className="h-4 w-4" />
+          </button>
+          {createdAt && <ElapsedTimerBadge createdAt={createdAt} />}
+        </div>
+      </div>
+
+      {/* Compact Items List */}
+      <div className="p-1.5 space-y-0.5">
+        {visibleItems.map((item: any) => (
+          <ItemRow
+            key={item.id}
+            item={item}
+            columnStatus={columnStatus}
+            isUpdatingItem={isUpdatingItem}
+            onItemReady={onItemReady}
+          />
+        ))}
+        {hasOverflow && (
+          <button
+            className="flex items-center gap-1 w-full px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded transition-colors"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? (
+              <>
+                <ChevronUp className="h-3 w-3" />
+                Mostrar menos
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3 w-3" />
+                y {hiddenCount} mas...
+              </>
+            )}
+          </button>
         )}
       </div>
 
-      {/* Items List */}
-      <div className="p-2 space-y-1">
-        {items.map((item: any) => {
-          const isItemReady = item.status === "ready";
-          return (
-            <div
-              key={item.id}
-              className={cn(
-                "flex items-start justify-between gap-2 px-2.5 py-1.5 rounded-md text-sm",
-                isItemReady
-                  ? "bg-green-500/10 text-muted-foreground"
-                  : "bg-muted/50"
-              )}
-            >
-              <div className="flex-1 min-w-0">
-                <div className={cn("font-semibold", isItemReady && "line-through")}>
-                  <span className="text-foreground/70 mr-1">{item.quantity}x</span>
-                  {item.name}
-                </div>
-                {item.notes && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 font-medium leading-tight">
-                    * {item.notes}
-                  </p>
-                )}
-              </div>
-              {columnStatus === "preparing" && (
-                isItemReady ? (
-                  <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0 mt-0.5" />
-                ) : (
-                  <button
-                    className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 px-2 py-0.5 rounded transition-colors shrink-0"
-                    disabled={isUpdatingItem}
-                    onClick={() => onItemReady(item.id)}
-                  >
-                    Listo
-                  </button>
-                )
-              )}
-            </div>
-          );
-        })}
-      </div>
-
       {/* Action Button */}
-      <div className="p-2 pt-0">
+      <div className="p-1.5 pt-0">
         {columnStatus === "pending" && (
           <Button
             size="sm"
-            className="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold"
+            className="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold h-8 text-xs"
             disabled={isAdvancing}
             onClick={() => onAdvance(order.id, "pending")}
           >
             Iniciar Preparacion
-            <ArrowRight className="h-4 w-4 ml-1" />
+            <ArrowRight className="h-3.5 w-3.5 ml-1" />
           </Button>
         )}
         {columnStatus === "preparing" && (
           <Button
             size="sm"
-            className="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold"
+            className="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold h-8 text-xs"
             disabled={isAdvancing}
             onClick={() => onAdvance(order.id, "preparing")}
           >
             Marcar como Listo
-            <CheckCircle className="h-4 w-4 ml-1" />
+            <CheckCircle className="h-3.5 w-3.5 ml-1" />
           </Button>
         )}
         {columnStatus === "ready" && (
           <Button
             size="sm"
             variant="outline"
-            className="w-full border-green-500/40 text-green-700 dark:text-green-400 hover:bg-green-500/10 font-semibold"
+            className="w-full border-green-500/40 text-green-700 dark:text-green-400 hover:bg-green-500/10 font-semibold h-8 text-xs"
             disabled={isAdvancing}
-            onClick={() =>
-              onAdvance(order.id, "ready")
-            }
+            onClick={() => onAdvance(order.id, "ready")}
           >
-            <UtensilsCrossed className="h-4 w-4 mr-1" />
+            <UtensilsCrossed className="h-3.5 w-3.5 mr-1" />
             Servir
           </Button>
         )}
@@ -257,10 +330,12 @@ function ColumnHeader({
 }
 
 export default function KitchenPage() {
+  useTimerTick();
   const { accessToken, selectedBranchId } = useAuthStore();
   const { data, isLoading, error, refetch } = useKitchenOrders();
   const updateItemStatus = useUpdateKitchenItemStatus();
   const updateOrderStatus = useUpdateOrderStatus();
+  const printKitchenTicket = usePrintKitchenTicket();
 
   const handleWsMessage = useCallback((msg: WsMessage) => {
     if (
@@ -277,6 +352,23 @@ export default function KitchenPage() {
     handleWsMessage,
     accessToken || undefined
   );
+
+  const handlePrint = useCallback((order: any) => {
+    printKitchenTicket({
+      orderNumber: order.orderNumber || order.order_number || order.id,
+      tableNumber: order.tableName || order.table_name || undefined,
+      customerName: order.customerName || order.customer_name || undefined,
+      createdAt: order.createdAt || order.created_at || new Date().toISOString(),
+      items: (order.items || []).map((i: any) => ({
+        name: i.name,
+        quantity: i.quantity,
+        unit_price: i.unit_price || 0,
+        total: i.total || 0,
+        notes: i.notes,
+      })),
+      notes: order.notes,
+    });
+  }, [printKitchenTicket]);
 
   const orders: any[] = data ?? [];
 
@@ -370,6 +462,7 @@ export default function KitchenPage() {
                   order={order}
                   columnStatus="pending"
                   onAdvance={advanceOrder}
+                  onPrint={handlePrint}
                   onItemReady={() => {}}
                   isAdvancing={updateOrderStatus.isPending}
                   isUpdatingItem={false}
@@ -398,6 +491,7 @@ export default function KitchenPage() {
                   order={order}
                   columnStatus="preparing"
                   onAdvance={advanceOrder}
+                  onPrint={handlePrint}
                   onItemReady={(itemId) =>
                     updateItemStatus.mutate({ id: itemId, status: "ready" })
                   }
@@ -428,6 +522,7 @@ export default function KitchenPage() {
                   order={order}
                   columnStatus="ready"
                   onAdvance={advanceOrder}
+                  onPrint={handlePrint}
                   onItemReady={() => {}}
                   isAdvancing={updateOrderStatus.isPending}
                   isUpdatingItem={false}

@@ -25,8 +25,10 @@ import {
   Building2,
   ChevronDown,
   Store,
+  Smartphone,
 } from "lucide-react";
 import { Button } from "@restai/ui/components/button";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import { cn } from "@/lib/utils";
 import { useOrgSettings, useBranches } from "@/hooks/use-settings";
 
@@ -45,6 +47,7 @@ const navGroups: NavGroup[] = [
   {
     label: "Operaciones",
     items: [
+      { href: "/pos", label: "POS", icon: Smartphone },
       { href: "/orders", label: "Ordenes", icon: ClipboardList },
       { href: "/tables", label: "Mesas", icon: Grid3X3 },
       { href: "/kitchen", label: "Cocina", icon: ChefHat },
@@ -157,20 +160,18 @@ export default function DashboardLayout({
             <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
               Sede activa
             </label>
-            <div className="relative">
-              <select
-                value={selectedBranchId || ""}
-                onChange={(e) => handleBranchChange(e.target.value)}
-                className="w-full appearance-none text-xs bg-sidebar-accent/50 text-sidebar-foreground border border-sidebar-border rounded-md pl-2.5 pr-7 py-1.5 focus:outline-none focus:ring-1 focus:ring-sidebar-ring cursor-pointer"
-              >
+            <Select value={selectedBranchId || undefined} onValueChange={handleBranchChange}>
+              <SelectTrigger className="h-auto text-xs bg-sidebar-accent/50 text-sidebar-foreground border-sidebar-border py-1.5 focus:ring-sidebar-ring">
+                <SelectValue placeholder="Seleccionar sede" />
+              </SelectTrigger>
+              <SelectContent>
                 {branches.map((branch: any) => (
-                  <option key={branch.id} value={branch.id}>
+                  <SelectItem key={branch.id} value={branch.id}>
                     {branch.name}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
-            </div>
+              </SelectContent>
+            </Select>
           </div>
         )}
 
@@ -306,23 +307,23 @@ export default function DashboardLayout({
             <div className="flex items-center gap-3">
               {/* Mobile branch selector */}
               {user.branches && user.branches.length > 1 && (
-                <div className="md:hidden relative">
-                  <select
-                    value={selectedBranchId || ""}
-                    onChange={(e) => handleBranchChange(e.target.value)}
-                    className="appearance-none text-xs border rounded-md pl-2 pr-6 py-1.5 bg-background"
-                  >
-                    {branches ? branches.map((branch: any) => (
-                      <option key={branch.id} value={branch.id}>
-                        {branch.name}
-                      </option>
-                    )) : user.branches.map((branchId: string) => (
-                      <option key={branchId} value={branchId}>
-                        Sede {branchId.slice(0, 8)}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                <div className="md:hidden">
+                  <Select value={selectedBranchId || undefined} onValueChange={handleBranchChange}>
+                    <SelectTrigger className="h-auto text-xs py-1.5 w-auto min-w-[8rem]">
+                      <SelectValue placeholder="Sede" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {branches ? branches.map((branch: any) => (
+                        <SelectItem key={branch.id} value={branch.id}>
+                          {branch.name}
+                        </SelectItem>
+                      )) : user.branches.map((branchId: string) => (
+                        <SelectItem key={branchId} value={branchId}>
+                          Sede {branchId.slice(0, 8)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
               {/* Current branch badge on desktop */}
@@ -373,20 +374,18 @@ export default function DashboardLayout({
                   <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
                     Sede activa
                   </label>
-                  <div className="relative">
-                    <select
-                      value={selectedBranchId || ""}
-                      onChange={(e) => handleBranchChange(e.target.value)}
-                      className="w-full appearance-none text-xs bg-sidebar-accent/50 text-sidebar-foreground border border-sidebar-border rounded-md pl-2.5 pr-7 py-1.5 focus:outline-none focus:ring-1 focus:ring-sidebar-ring"
-                    >
+                  <Select value={selectedBranchId || undefined} onValueChange={handleBranchChange}>
+                    <SelectTrigger className="h-auto text-xs bg-sidebar-accent/50 text-sidebar-foreground border-sidebar-border py-1.5 focus:ring-sidebar-ring">
+                      <SelectValue placeholder="Seleccionar sede" />
+                    </SelectTrigger>
+                    <SelectContent>
                       {branches.map((branch: any) => (
-                        <option key={branch.id} value={branch.id}>
+                        <SelectItem key={branch.id} value={branch.id}>
                           {branch.name}
-                        </option>
+                        </SelectItem>
                       ))}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
-                  </div>
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
 
