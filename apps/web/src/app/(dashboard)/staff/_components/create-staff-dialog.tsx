@@ -12,8 +12,10 @@ import {
 } from "@restai/ui/components/dialog";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import { useCreateStaff } from "@/hooks/use-staff";
+import { useBranches } from "@/hooks/use-settings";
 import { useAuthStore } from "@/stores/auth-store";
 import { toast } from "sonner";
+import { Check } from "lucide-react";
 
 interface CreateStaffDialogProps {
   open: boolean;
@@ -21,15 +23,18 @@ interface CreateStaffDialogProps {
 }
 
 export function CreateStaffDialog({ open, onOpenChange }: CreateStaffDialogProps) {
+  const selectedBranchId = useAuthStore((s) => s.selectedBranchId);
   const [form, setForm] = useState({
     name: "",
     email: "",
     password: "",
     role: "waiter",
+    branchIds: selectedBranchId ? [selectedBranchId] : [] as string[],
   });
 
   const createStaff = useCreateStaff();
-  const selectedBranchId = useAuthStore((s) => s.selectedBranchId);
+  const { data: branchesData } = useBranches();
+  const branches = branchesData ?? [];
 
   const handleCreate = async () => {
     if (!form.name || !form.email || !form.password) {
@@ -42,11 +47,11 @@ export function CreateStaffDialog({ open, onOpenChange }: CreateStaffDialogProps
         email: form.email,
         password: form.password,
         role: form.role,
-        branchIds: selectedBranchId ? [selectedBranchId] : [],
+        branchIds: form.branchIds,
       });
       toast.success("Miembro de staff creado");
       onOpenChange(false);
-      setForm({ name: "", email: "", password: "", role: "waiter" });
+      setForm({ name: "", email: "", password: "", role: "waiter", branchIds: selectedBranchId ? [selectedBranchId] : [] });
     } catch (err: any) {
       toast.error(err.message || "Error al crear staff");
     }
@@ -100,10 +105,45 @@ export function CreateStaffDialog({ open, onOpenChange }: CreateStaffDialogProps
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-2">
+            <Label>Sedes asignadas *</Label>
+            <div className="border rounded-md max-h-40 overflow-y-auto">
+              {branches.map((branch) => {
+                const isChecked = form.branchIds.includes(branch.id);
+                return (
+                  <button
+                    key={branch.id}
+                    type="button"
+                    onClick={() =>
+                      setForm({
+                        ...form,
+                        branchIds: isChecked
+                          ? form.branchIds.filter((id) => id !== branch.id)
+                          : [...form.branchIds, branch.id],
+                      })
+                    }
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-accent transition-colors"
+                  >
+                    <div
+                      className={`h-4 w-4 rounded border-2 flex items-center justify-center ${
+                        isChecked ? "bg-primary border-primary" : "border-muted-foreground/30"
+                      }`}
+                    >
+                      {isChecked && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
+                    </div>
+                    {branch.name}
+                  </button>
+                );
+              })}
+            </div>
+            {form.branchIds.length === 0 && (
+              <p className="text-xs text-destructive">Selecciona al menos una sede</p>
+            )}
+          </div>
           <Button
             className="w-full"
             onClick={handleCreate}
-            disabled={createStaff.isPending}
+            disabled={createStaff.isPending || form.branchIds.length === 0}
           >
             {createStaff.isPending ? "Creando..." : "Crear Miembro"}
           </Button>

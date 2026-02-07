@@ -10,8 +10,9 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@restai/ui/components/dialog";
-import { Check, Plus, Minus, Loader2, UtensilsCrossed } from "lucide-react";
-import { formatCurrency } from "@/lib/utils";
+import { Badge } from "@restai/ui/components/badge";
+import { Check, ChevronDown, Plus, Minus, Loader2, UtensilsCrossed } from "lucide-react";
+import { cn, formatCurrency } from "@/lib/utils";
 import { useItemModifierGroups } from "@/hooks/use-menu";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,7 @@ export function ModifierDialog({
   const modifierGroups: any[] = groups ?? [];
 
   const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [quantity, setQuantity] = useState(1);
   const [notes, setNotes] = useState("");
 
@@ -50,6 +52,7 @@ export function ModifierDialog({
   useEffect(() => {
     if (open) {
       setSelected({});
+      setOpenGroups({});
       setQuantity(1);
       setNotes("");
     }
@@ -142,10 +145,18 @@ export function ModifierDialog({
             {modifierGroups.map((group: any) => {
               const isSingle = group.max_selections === 1;
               const sel = selected[group.id] || [];
+              const isOpen = openGroups[group.id] !== false;
+              const selCount = sel.length;
 
               return (
                 <div key={group.id}>
-                  <div className="flex items-center justify-between mb-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenGroups((prev) => ({ ...prev, [group.id]: !isOpen }))
+                    }
+                    className="flex items-center justify-between w-full mb-2"
+                  >
                     <p className="text-sm font-semibold">
                       {group.name}
                       {group.is_required && (
@@ -154,48 +165,71 @@ export function ModifierDialog({
                         </span>
                       )}
                     </p>
-                    {group.max_selections > 1 && (
-                      <span className="text-xs text-muted-foreground">
-                        Max {group.max_selections}
-                      </span>
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    {(group.modifiers || []).filter((m: any) => m.is_available !== false).map((mod: any) => {
-                      const isSelected = sel.includes(mod.id);
-                      return (
-                        <button
-                          key={mod.id}
-                          type="button"
-                          onClick={() => toggleModifier(group.id, mod.id, group.max_selections, isSingle)}
-                          className={`w-full flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm transition-colors ${
-                            isSelected
-                              ? "border-primary bg-primary/5"
-                              : "border-border hover:border-primary/40"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <div
-                              className={`flex h-4.5 w-4.5 items-center justify-center ${
-                                isSingle ? "rounded-full" : "rounded"
-                              } border-2 transition-colors ${
-                                isSelected ? "border-primary bg-primary" : "border-muted-foreground/30"
+                    <div className="flex items-center gap-2">
+                      {!isOpen && selCount > 0 && (
+                        <Badge variant="secondary" className="text-xs">
+                          {selCount} sel.
+                        </Badge>
+                      )}
+                      {group.max_selections > 1 && (
+                        <span className="text-xs text-muted-foreground">
+                          Max {group.max_selections}
+                        </span>
+                      )}
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 text-muted-foreground transition-transform",
+                          isOpen && "rotate-180"
+                        )}
+                      />
+                    </div>
+                  </button>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateRows: isOpen ? "1fr" : "0fr",
+                    }}
+                    className="transition-all duration-200"
+                  >
+                    <div className="overflow-hidden">
+                      <div className="space-y-1">
+                        {(group.modifiers || []).filter((m: any) => m.is_available !== false).map((mod: any) => {
+                          const isSelected = sel.includes(mod.id);
+                          return (
+                            <button
+                              key={mod.id}
+                              type="button"
+                              onClick={() => toggleModifier(group.id, mod.id, group.max_selections, isSingle)}
+                              className={`w-full flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                                isSelected
+                                  ? "border-primary bg-primary/5"
+                                  : "border-border hover:border-primary/40"
                               }`}
                             >
-                              {isSelected && (
-                                <Check className="h-2.5 w-2.5 text-primary-foreground" />
+                              <div className="flex items-center gap-2.5">
+                                <div
+                                  className={`flex h-4.5 w-4.5 items-center justify-center ${
+                                    isSingle ? "rounded-full" : "rounded"
+                                  } border-2 transition-colors ${
+                                    isSelected ? "border-primary bg-primary" : "border-muted-foreground/30"
+                                  }`}
+                                >
+                                  {isSelected && (
+                                    <Check className="h-2.5 w-2.5 text-primary-foreground" />
+                                  )}
+                                </div>
+                                <span className={isSelected ? "font-medium" : ""}>{mod.name}</span>
+                              </div>
+                              {mod.price > 0 && (
+                                <span className="text-xs text-muted-foreground">
+                                  +{formatCurrency(mod.price)}
+                                </span>
                               )}
-                            </div>
-                            <span className={isSelected ? "font-medium" : ""}>{mod.name}</span>
-                          </div>
-                          {mod.price > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              +{formatCurrency(mod.price)}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
               );

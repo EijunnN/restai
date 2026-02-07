@@ -147,6 +147,12 @@ export default function CustomerMenuPage({
     fetchMenu();
   }, [branchSlug, tableCode, setSession]);
 
+  useEffect(() => {
+    if (sessionValid === false) {
+      router.replace(`/${branchSlug}/${tableCode}`);
+    }
+  }, [sessionValid, router, branchSlug, tableCode]);
+
   const itemCount = getItemCount();
   const cartTotal = items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
 
@@ -173,12 +179,6 @@ export default function CustomerMenuPage({
       </div>
     );
   }
-
-  useEffect(() => {
-    if (sessionValid === false) {
-      router.replace(`/${branchSlug}/${tableCode}`);
-    }
-  }, [sessionValid, router, branchSlug, tableCode]);
 
   if (sessionValid === false) {
     return (

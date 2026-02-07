@@ -12,8 +12,10 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@restai/ui/components/dialog";
+import { DatePicker } from "@restai/ui/components/date-picker";
 import { RefreshCw } from "lucide-react";
 import { useCreateCoupon } from "@/hooks/use-coupons";
+import { useMenuItems, useCategories } from "@/hooks/use-menu";
 import { toast } from "sonner";
 
 function generateCouponCode(): string {
@@ -33,6 +35,10 @@ export function CreateCouponDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const createCoupon = useCreateCoupon();
+  const { data: menuItemsData } = useMenuItems();
+  const { data: categoriesData } = useCategories();
+  const menuItems: any[] = menuItemsData?.data ?? [];
+  const categories: any[] = categoriesData?.data ?? [];
   const [form, setForm] = useState({
     code: generateCouponCode(),
     name: "",
@@ -171,11 +177,55 @@ export function CreateCouponDialog({
             </div>
           )}
 
-          {(form.type === "item_discount" || form.type === "category_discount") && (
+          {(form.type === "item_discount" || form.type === "item_free") && (
+            <div className="space-y-2">
+              <Label>Item del menu *</Label>
+              <Select value={form.menuItemId || "none"} onValueChange={(v) => setForm((p) => ({ ...p, menuItemId: v === "none" ? "" : v }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar item..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Seleccionar item...</SelectItem>
+                  {menuItems.map((item: any) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.name} — S/ {(item.price / 100).toFixed(2)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {form.type === "item_discount" && (
             <div className="space-y-2">
               <Label htmlFor="cpn-dv">Descuento (%)</Label>
               <Input id="cpn-dv" type="number" min={1} max={100} value={form.discountValue} onChange={(e) => setForm((p) => ({ ...p, discountValue: parseInt(e.target.value) || 0 }))} />
             </div>
+          )}
+
+          {form.type === "category_discount" && (
+            <>
+              <div className="space-y-2">
+                <Label>Categoria *</Label>
+                <Select value={form.categoryId || "none"} onValueChange={(v) => setForm((p) => ({ ...p, categoryId: v === "none" ? "" : v }))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar categoria..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Seleccionar categoria...</SelectItem>
+                    {categories.map((cat: any) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cpn-dv-cat">Descuento (%)</Label>
+                <Input id="cpn-dv-cat" type="number" min={1} max={100} value={form.discountValue} onChange={(e) => setForm((p) => ({ ...p, discountValue: parseInt(e.target.value) || 0 }))} />
+              </div>
+            </>
           )}
 
           {form.type === "buy_x_get_y" && (
@@ -219,19 +269,36 @@ export function CreateCouponDialog({
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="cpn-start">Fecha inicio</Label>
-                <Input id="cpn-start" type="datetime-local" value={form.startsAt} onChange={(e) => setForm((p) => ({ ...p, startsAt: e.target.value }))} />
+                <Label>Fecha inicio</Label>
+                <DatePicker
+                  value={form.startsAt}
+                  onChange={(v) => setForm((p) => ({ ...p, startsAt: v ?? "" }))}
+                  placeholder="Seleccionar..."
+                />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="cpn-end">Fecha fin</Label>
-                <Input id="cpn-end" type="datetime-local" value={form.expiresAt} onChange={(e) => setForm((p) => ({ ...p, expiresAt: e.target.value }))} />
+                <Label>Fecha fin</Label>
+                <DatePicker
+                  value={form.expiresAt}
+                  onChange={(v) => setForm((p) => ({ ...p, expiresAt: v ?? "" }))}
+                  placeholder="Seleccionar..."
+                />
               </div>
             </div>
           </div>
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-            <Button type="submit" disabled={createCoupon.isPending || !form.name || !form.code}>
+            <Button
+              type="submit"
+              disabled={
+                createCoupon.isPending ||
+                !form.name ||
+                !form.code ||
+                (["item_free", "item_discount"].includes(form.type) && !form.menuItemId) ||
+                (form.type === "category_discount" && !form.categoryId)
+              }
+            >
               {createCoupon.isPending ? "Creando..." : "Crear Cupon"}
             </Button>
           </DialogFooter>

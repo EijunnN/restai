@@ -139,9 +139,17 @@ export function StaffGrid({
                     </div>
                   </div>
                   <div className="mt-3 pt-3 border-t flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      Sedes: {branches.length > 0 ? branches.map((b) => b.name).join(", ") : "Sin asignar"}
-                    </p>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {branches.length > 0 ? (
+                        branches.map((b: any) => (
+                          <Badge key={b.id} variant="outline" className="text-xs">
+                            {b.name}
+                          </Badge>
+                        ))
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Sin sedes</span>
+                      )}
+                    </div>
                     <div className="flex gap-1">
                       <Button
                         variant="ghost"
