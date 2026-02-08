@@ -19,12 +19,19 @@ import type { WsMessage } from "@restai/types";
 // ── Time helpers ──
 
 export function getMinutesDiff(createdAt: string): number {
-  return Math.floor((Date.now() - new Date(createdAt).getTime()) / 60000);
+  const date = new Date(createdAt);
+  if (isNaN(date.getTime())) return 0;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
 }
 
 export function getTimeDiff(createdAt: string): string {
   const diff = getMinutesDiff(createdAt);
   if (diff < 1) return "<1m";
+  if (diff >= 60) {
+    const hours = Math.floor(diff / 60);
+    const mins = diff % 60;
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  }
   return `${diff}m`;
 }
 
@@ -106,7 +113,8 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
       if (
         msg.type === "order:new" ||
         msg.type === "order:updated" ||
-        msg.type === "order:item_status"
+        msg.type === "order:item_status" ||
+        msg.type === "order:cancelled"
       ) {
         refetch();
       }

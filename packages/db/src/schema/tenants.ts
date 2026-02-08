@@ -19,8 +19,8 @@ export const organizations = pgTable("organizations", {
   plan: planEnum("plan").default("free").notNull(),
   is_active: boolean("is_active").default(true).notNull(),
   settings: jsonb("settings").default({}).notNull(),
-  created_at: timestamp("created_at").defaultNow().notNull(),
-  updated_at: timestamp("updated_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const branches = pgTable(
@@ -39,8 +39,8 @@ export const branches = pgTable(
     tax_rate: integer("tax_rate").default(1800).notNull(), // 18.00%
     is_active: boolean("is_active").default(true).notNull(),
     settings: jsonb("settings").default({}).notNull(),
-    created_at: timestamp("created_at").defaultNow().notNull(),
-    updated_at: timestamp("updated_at").defaultNow().notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     unique("branches_org_slug_unique").on(table.organization_id, table.slug),

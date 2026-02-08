@@ -123,6 +123,7 @@ export const createOrderSchema = z.object({
   customerName: z.string().max(255).optional(),
   notes: z.string().max(500).optional(),
   items: z.array(createOrderItemSchema).min(1, "La orden debe tener al menos un item"),
+  couponCode: z.string().max(50).optional(),
 });
 
 export const updateOrderStatusSchema = z.object({
@@ -238,6 +239,8 @@ export const movementQuerySchema = z.object({
 
 export const customerSearchSchema = z.object({
   search: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 export const couponQuerySchema = z.object({

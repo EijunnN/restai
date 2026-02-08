@@ -10,6 +10,7 @@ import { apiFetch } from "@/lib/fetcher";
 import { PageHeader } from "@/components/page-header";
 import { OrderFilters } from "./_components/order-filters";
 import { OrdersTable } from "./_components/orders-table";
+import { PaymentDialog } from "../payments/_components/payment-dialog";
 
 const PAGE_SIZE = 20;
 
@@ -17,6 +18,7 @@ export default function OrdersPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
+  const [chargeOrderId, setChargeOrderId] = useState<string | null>(null);
 
   const { data, isLoading, error, refetch } = useOrders({ status: statusFilter, page, limit: PAGE_SIZE });
   const updateStatus = useUpdateOrderStatus();
@@ -109,6 +111,13 @@ export default function OrdersPage() {
         updateStatusPending={updateStatus.isPending}
         onUpdateStatus={(id, status) => updateStatus.mutate({ id, status })}
         onPrintReceipt={handlePrintReceipt}
+        onCharge={(order) => setChargeOrderId(order.id)}
+      />
+
+      <PaymentDialog
+        open={!!chargeOrderId}
+        onOpenChange={(v) => { if (!v) setChargeOrderId(null); }}
+        preselectedOrderId={chargeOrderId ?? undefined}
       />
     </div>
   );

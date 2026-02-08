@@ -37,8 +37,8 @@ export function CreateCouponDialog({
   const createCoupon = useCreateCoupon();
   const { data: menuItemsData } = useMenuItems();
   const { data: categoriesData } = useCategories();
-  const menuItems: any[] = menuItemsData?.data ?? [];
-  const categories: any[] = categoriesData?.data ?? [];
+  const menuItems: any[] = menuItemsData ?? [];
+  const categories: any[] = categoriesData ?? [];
   const [form, setForm] = useState({
     code: generateCouponCode(),
     name: "",
@@ -145,7 +145,15 @@ export function CreateCouponDialog({
           {/* Type */}
           <div className="space-y-2">
             <Label htmlFor="cpn-type">Tipo de cupon</Label>
-            <Select value={form.type} onValueChange={(v) => setForm((p) => ({ ...p, type: v }))}>
+            <Select value={form.type} onValueChange={(v) => setForm((p) => ({
+              ...p,
+              type: v,
+              discountValue: (v === "percentage" || v === "item_discount" || v === "category_discount") ? 10 : 0,
+              menuItemId: "",
+              categoryId: "",
+              buyQuantity: 2,
+              getQuantity: 1,
+            }))}>
               <SelectTrigger>
                 <SelectValue placeholder="Tipo de cupon" />
               </SelectTrigger>

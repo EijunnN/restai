@@ -6,7 +6,7 @@ export function useKitchenOrders() {
   return useQuery({
     queryKey: ["kitchen", "orders"],
     queryFn: () => apiFetch("/api/kitchen/orders"),
-    refetchInterval: 5000,
+    refetchInterval: 30000,
   });
 }
 

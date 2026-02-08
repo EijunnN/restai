@@ -33,7 +33,7 @@ export const payments = pgTable("payments", {
   reference: varchar("reference", { length: 255 }),
   tip: integer("tip").default(0).notNull(), // in cents
   status: paymentStatusEnum("status").default("pending").notNull(),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const invoices = pgTable("invoices", {
@@ -60,5 +60,5 @@ export const invoices = pgTable("invoices", {
   sunat_response: jsonb("sunat_response"),
   pdf_url: text("pdf_url"),
   xml_url: text("xml_url"),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

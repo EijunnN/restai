@@ -21,7 +21,7 @@ export const users = pgTable("users", {
   name: varchar("name", { length: 255 }).notNull(),
   role: userRoleEnum("role").notNull(),
   is_active: boolean("is_active").default(true).notNull(),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const userBranches = pgTable(
@@ -45,6 +45,6 @@ export const refreshTokens = pgTable("refresh_tokens", {
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   token_hash: text("token_hash").notNull(),
-  expires_at: timestamp("expires_at").notNull(),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

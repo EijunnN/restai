@@ -55,7 +55,7 @@ export const inventoryMovements = pgTable("inventory_movements", {
   quantity: numeric("quantity", { precision: 10, scale: 3 }).notNull(),
   reference: varchar("reference", { length: 255 }),
   notes: text("notes"),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   created_by: uuid("created_by").references(() => users.id, {
     onDelete: "set null",
   }),

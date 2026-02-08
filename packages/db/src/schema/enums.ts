@@ -51,6 +51,7 @@ export const orderItemStatusEnum = pgEnum("order_item_status", [
   "preparing",
   "ready",
   "served",
+  "cancelled",
 ]);
 
 export const paymentMethodEnum = pgEnum("payment_method", [

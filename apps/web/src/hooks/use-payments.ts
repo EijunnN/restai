@@ -17,7 +17,10 @@ export function useCreatePayment() {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["payments"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["payments"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
   });
 }
 
@@ -25,6 +28,13 @@ export function usePaymentSummary() {
   return useQuery({
     queryKey: ["payments", "summary"],
     queryFn: () => apiFetch("/api/payments/summary"),
+  });
+}
+
+export function useUnpaidOrders() {
+  return useQuery({
+    queryKey: ["payments", "unpaid-orders"],
+    queryFn: () => apiFetch("/api/payments/unpaid-orders"),
   });
 }
 

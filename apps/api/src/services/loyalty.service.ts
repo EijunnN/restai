@@ -25,6 +25,20 @@ export async function enrollCustomer(params: {
 
   if (!program) return null;
 
+  // Check if enrollment already exists for this customer+program
+  const [existing] = await txOrDb
+    .select()
+    .from(schema.customerLoyalty)
+    .where(
+      and(
+        eq(schema.customerLoyalty.customer_id, customerId),
+        eq(schema.customerLoyalty.program_id, program.id),
+      ),
+    )
+    .limit(1);
+
+  if (existing) return existing;
+
   // Find the lowest tier
   const [baseTier] = await txOrDb
     .select()
@@ -60,45 +74,64 @@ export async function awardPoints(params: {
 }) {
   const { customerId, orderId, orderTotal, orderNumber, organizationId } = params;
 
-  // Find customer's loyalty enrollment with program info
-  const [enrollment] = await db
-    .select({
-      id: schema.customerLoyalty.id,
-      points_balance: schema.customerLoyalty.points_balance,
-      total_points_earned: schema.customerLoyalty.total_points_earned,
-      tier_id: schema.customerLoyalty.tier_id,
-      program_id: schema.customerLoyalty.program_id,
-      points_per_currency_unit: schema.loyaltyPrograms.points_per_currency_unit,
-    })
-    .from(schema.customerLoyalty)
-    .innerJoin(
-      schema.loyaltyPrograms,
-      and(
-        eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
-        eq(schema.loyaltyPrograms.organization_id, organizationId),
-        eq(schema.loyaltyPrograms.is_active, true),
-      ),
-    )
-    .where(eq(schema.customerLoyalty.customer_id, customerId))
-    .limit(1);
+  return await db.transaction(async (tx) => {
+    // Idempotency: check if points were already awarded for this order
+    const [existingTx] = await tx
+      .select({ id: schema.loyaltyTransactions.id })
+      .from(schema.loyaltyTransactions)
+      .where(
+        and(
+          eq(schema.loyaltyTransactions.order_id, orderId),
+          eq(schema.loyaltyTransactions.type, "earned"),
+        ),
+      )
+      .limit(1);
 
-  if (!enrollment) return null;
+    if (existingTx) return null;
 
-  // Calculate points: total is in cents, divide by 100 for soles, multiply by rate
-  const pointsEarned = Math.floor(orderTotal / 100) * enrollment.points_per_currency_unit;
+    // Find customer's loyalty enrollment with program info + tier multiplier (inside tx)
+    const [enrollment] = await tx
+      .select({
+        id: schema.customerLoyalty.id,
+        points_balance: schema.customerLoyalty.points_balance,
+        total_points_earned: schema.customerLoyalty.total_points_earned,
+        tier_id: schema.customerLoyalty.tier_id,
+        program_id: schema.customerLoyalty.program_id,
+        points_per_currency_unit: schema.loyaltyPrograms.points_per_currency_unit,
+        multiplier: schema.loyaltyTiers.multiplier,
+      })
+      .from(schema.customerLoyalty)
+      .innerJoin(
+        schema.loyaltyPrograms,
+        and(
+          eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+          eq(schema.loyaltyPrograms.organization_id, organizationId),
+          eq(schema.loyaltyPrograms.is_active, true),
+        ),
+      )
+      .leftJoin(
+        schema.loyaltyTiers,
+        eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
+      )
+      .where(eq(schema.customerLoyalty.customer_id, customerId))
+      .limit(1);
 
-  if (pointsEarned <= 0) return null;
+    if (!enrollment) return null;
 
-  const newBalance = enrollment.points_balance + pointsEarned;
-  const newTotal = enrollment.total_points_earned + pointsEarned;
+    // Calculate points with tier multiplier
+    const multiplier = enrollment.multiplier ?? 100;
+    const pointsEarned = Math.floor(
+      Math.floor(orderTotal / 100) * enrollment.points_per_currency_unit * multiplier / 100,
+    );
 
-  // Wrap writes in a transaction
-  await db.transaction(async (tx) => {
+    if (pointsEarned <= 0) return null;
+
+    // Atomic balance update
     await tx
       .update(schema.customerLoyalty)
       .set({
-        points_balance: newBalance,
-        total_points_earned: newTotal,
+        points_balance: sql`${schema.customerLoyalty.points_balance} + ${pointsEarned}`,
+        total_points_earned: sql`${schema.customerLoyalty.total_points_earned} + ${pointsEarned}`,
       })
       .where(eq(schema.customerLoyalty.id, enrollment.id));
 
@@ -109,6 +142,10 @@ export async function awardPoints(params: {
       type: "earned",
       description: `Orden #${orderNumber} completada`,
     });
+
+    // Re-read totals for tier check
+    const newTotal = enrollment.total_points_earned + pointsEarned;
+    const newBalance = enrollment.points_balance + pointsEarned;
 
     // Check tier upgrade: find the highest tier the customer qualifies for
     const [nextTier] = await tx
@@ -129,9 +166,9 @@ export async function awardPoints(params: {
         .set({ tier_id: nextTier.id })
         .where(eq(schema.customerLoyalty.id, enrollment.id));
     }
-  });
 
-  return { pointsEarned, newBalance, newTotal };
+    return { pointsEarned, newBalance, newTotal };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -141,42 +178,72 @@ export async function awardPoints(params: {
 export async function redeemReward(params: {
   rewardId: string;
   customerLoyaltyId: string;
+  organizationId: string;
   orderId?: string;
 }) {
-  const { rewardId, customerLoyaltyId, orderId } = params;
+  const { rewardId, customerLoyaltyId, organizationId, orderId } = params;
 
-  // Get reward
-  const [reward] = await db
-    .select()
-    .from(schema.rewards)
-    .where(eq(schema.rewards.id, rewardId))
-    .limit(1);
+  return await db.transaction(async (tx) => {
+    // Get reward
+    const [reward] = await tx
+      .select()
+      .from(schema.rewards)
+      .where(eq(schema.rewards.id, rewardId))
+      .limit(1);
 
-  if (!reward || !reward.is_active) {
-    throw new Error("REWARD_NOT_FOUND");
-  }
+    if (!reward || !reward.is_active) {
+      throw new Error("REWARD_NOT_FOUND");
+    }
 
-  // Get customer loyalty
-  const [cl] = await db
-    .select()
-    .from(schema.customerLoyalty)
-    .where(eq(schema.customerLoyalty.id, customerLoyaltyId))
-    .limit(1);
+    // Get customer loyalty
+    const [cl] = await tx
+      .select()
+      .from(schema.customerLoyalty)
+      .where(eq(schema.customerLoyalty.id, customerLoyaltyId))
+      .limit(1);
 
-  if (!cl) {
-    throw new Error("LOYALTY_NOT_FOUND");
-  }
+    if (!cl) {
+      throw new Error("LOYALTY_NOT_FOUND");
+    }
 
-  if (cl.points_balance < reward.points_cost) {
-    throw new Error("INSUFFICIENT_POINTS");
-  }
+    // Validate program match
+    if (reward.program_id !== cl.program_id) {
+      throw new Error("PROGRAM_MISMATCH");
+    }
 
-  // Wrap writes in a transaction
-  const [redemption] = await db.transaction(async (tx) => {
-    await tx
+    // Validate org ownership via program
+    const [program] = await tx
+      .select({ id: schema.loyaltyPrograms.id })
+      .from(schema.loyaltyPrograms)
+      .where(
+        and(
+          eq(schema.loyaltyPrograms.id, reward.program_id),
+          eq(schema.loyaltyPrograms.organization_id, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!program) {
+      throw new Error("REWARD_NOT_FOUND");
+    }
+
+    // Atomic deduction with balance guard
+    const [updated] = await tx
       .update(schema.customerLoyalty)
-      .set({ points_balance: cl.points_balance - reward.points_cost })
-      .where(eq(schema.customerLoyalty.id, customerLoyaltyId));
+      .set({
+        points_balance: sql`${schema.customerLoyalty.points_balance} - ${reward.points_cost}`,
+      })
+      .where(
+        and(
+          eq(schema.customerLoyalty.id, customerLoyaltyId),
+          sql`${schema.customerLoyalty.points_balance} >= ${reward.points_cost}`,
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new Error("INSUFFICIENT_POINTS");
+    }
 
     await tx.insert(schema.loyaltyTransactions).values({
       customer_loyalty_id: customerLoyaltyId,
@@ -186,7 +253,7 @@ export async function redeemReward(params: {
       description: `Canje: ${reward.name}`,
     });
 
-    const [r] = await tx
+    const [redemption] = await tx
       .insert(schema.rewardRedemptions)
       .values({
         customer_loyalty_id: customerLoyaltyId,
@@ -195,16 +262,14 @@ export async function redeemReward(params: {
       })
       .returning();
 
-    return [r];
+    return {
+      redemption,
+      discount: {
+        type: reward.discount_type,
+        value: reward.discount_value,
+      },
+      pointsDeducted: reward.points_cost,
+      newBalance: updated.points_balance,
+    };
   });
-
-  return {
-    redemption,
-    discount: {
-      type: reward.discount_type,
-      value: reward.discount_value,
-    },
-    pointsDeducted: reward.points_cost,
-    newBalance: cl.points_balance - reward.points_cost,
-  };
 }

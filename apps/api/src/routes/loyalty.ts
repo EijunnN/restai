@@ -76,10 +76,11 @@ loyalty.get("/stats", requirePermission("loyalty:read"), async (c) => {
 // CUSTOMERS
 // ---------------------------------------------------------------------------
 
-// GET /customers - List customers for org with optional search
+// GET /customers - List customers for org with optional search + pagination
 loyalty.get("/customers", requirePermission("customers:read"), zValidator("query", customerSearchSchema), async (c) => {
   const tenant = c.get("tenant") as any;
-  const { search } = c.req.valid("query");
+  const { search, page, limit } = c.req.valid("query");
+  const offset = (page - 1) * limit;
 
   const conditions = [
     eq(schema.customers.organization_id, tenant.organizationId),
@@ -96,34 +97,47 @@ loyalty.get("/customers", requirePermission("customers:read"), zValidator("query
     );
   }
 
-  const customers = await db
-    .select({
-      id: schema.customers.id,
-      name: schema.customers.name,
-      email: schema.customers.email,
-      phone: schema.customers.phone,
-      birth_date: schema.customers.birth_date,
-      created_at: schema.customers.created_at,
-      points_balance: schema.customerLoyalty.points_balance,
-      total_points_earned: schema.customerLoyalty.total_points_earned,
-      tier_id: schema.customerLoyalty.tier_id,
-      customer_loyalty_id: schema.customerLoyalty.id,
-      tier_name: schema.loyaltyTiers.name,
-    })
-    .from(schema.customers)
-    .leftJoin(
-      schema.customerLoyalty,
-      eq(schema.customers.id, schema.customerLoyalty.customer_id),
-    )
-    .leftJoin(
-      schema.loyaltyTiers,
-      eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
-    )
-    .where(and(...conditions))
-    .orderBy(desc(schema.customers.created_at))
-    .limit(100);
+  const [customers, [{ count: total }]] = await Promise.all([
+    db
+      .select({
+        id: schema.customers.id,
+        name: schema.customers.name,
+        email: schema.customers.email,
+        phone: schema.customers.phone,
+        birth_date: schema.customers.birth_date,
+        created_at: schema.customers.created_at,
+        points_balance: schema.customerLoyalty.points_balance,
+        total_points_earned: schema.customerLoyalty.total_points_earned,
+        tier_id: schema.customerLoyalty.tier_id,
+        customer_loyalty_id: schema.customerLoyalty.id,
+        tier_name: schema.loyaltyTiers.name,
+      })
+      .from(schema.customers)
+      .leftJoin(
+        schema.customerLoyalty,
+        eq(schema.customers.id, schema.customerLoyalty.customer_id),
+      )
+      .leftJoin(
+        schema.loyaltyTiers,
+        eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
+      )
+      .where(and(...conditions))
+      .orderBy(desc(schema.customers.created_at))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(schema.customers)
+      .where(and(...conditions)),
+  ]);
 
-  return c.json({ success: true, data: customers });
+  return c.json({
+    success: true,
+    data: {
+      customers,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    },
+  });
 });
 
 // POST /customers - Create or find customer
@@ -161,6 +175,42 @@ loyalty.post(
     });
 
     return c.json({ success: true, data: { ...customer, loyalty } }, 201);
+  },
+);
+
+// DELETE /customers/:id - Soft-delete: remove customer and related loyalty data
+loyalty.delete(
+  "/customers/:id",
+  requirePermission("customers:delete"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const tenant = c.get("tenant") as any;
+    const { id } = c.req.valid("param");
+
+    // Verify customer belongs to org
+    const [customer] = await db
+      .select({ id: schema.customers.id })
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.id, id),
+          eq(schema.customers.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!customer) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+        404,
+      );
+    }
+
+    // All related tables (customer_loyalty, loyalty_transactions, coupon_assignments)
+    // have onDelete: "cascade" — deleting the customer cascades everything.
+    await db.delete(schema.customers).where(eq(schema.customers.id, id));
+
+    return c.json({ success: true });
   },
 );
 
@@ -449,6 +499,26 @@ loyalty.post(
   ),
   async (c) => {
     const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Verify program belongs to org
+    const [program] = await db
+      .select({ id: schema.loyaltyPrograms.id })
+      .from(schema.loyaltyPrograms)
+      .where(
+        and(
+          eq(schema.loyaltyPrograms.id, body.programId),
+          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!program) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Programa no encontrado" } },
+        404,
+      );
+    }
 
     const [tier] = await db
       .insert(schema.loyaltyTiers)
@@ -481,6 +551,31 @@ loyalty.patch(
   async (c) => {
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Verify tier belongs to a program owned by this org
+    const [tier] = await db
+      .select({
+        id: schema.loyaltyTiers.id,
+        program_id: schema.loyaltyTiers.program_id,
+      })
+      .from(schema.loyaltyTiers)
+      .innerJoin(
+        schema.loyaltyPrograms,
+        and(
+          eq(schema.loyaltyTiers.program_id, schema.loyaltyPrograms.id),
+          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        ),
+      )
+      .where(eq(schema.loyaltyTiers.id, id))
+      .limit(1);
+
+    if (!tier) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Nivel no encontrado" } },
+        404,
+      );
+    }
 
     const updates: any = {};
     if (body.name !== undefined) updates.name = body.name;
@@ -493,13 +588,6 @@ loyalty.patch(
       .where(eq(schema.loyaltyTiers.id, id))
       .returning();
 
-    if (!updated) {
-      return c.json(
-        { success: false, error: { code: "NOT_FOUND", message: "Nivel no encontrado" } },
-        404,
-      );
-    }
-
     return c.json({ success: true, data: updated });
   },
 );
@@ -511,14 +599,23 @@ loyalty.delete(
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
 
-    const [existing] = await db
-      .select()
+    // Verify tier belongs to a program owned by this org
+    const [tier] = await db
+      .select({ id: schema.loyaltyTiers.id })
       .from(schema.loyaltyTiers)
+      .innerJoin(
+        schema.loyaltyPrograms,
+        and(
+          eq(schema.loyaltyTiers.program_id, schema.loyaltyPrograms.id),
+          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        ),
+      )
       .where(eq(schema.loyaltyTiers.id, id))
       .limit(1);
 
-    if (!existing) {
+    if (!tier) {
       return c.json(
         { success: false, error: { code: "NOT_FOUND", message: "Nivel no encontrado" } },
         404,
@@ -534,7 +631,7 @@ loyalty.delete(
 // REWARDS
 // ---------------------------------------------------------------------------
 
-// GET /rewards - List active rewards for the org's program
+// GET /rewards - List all rewards for the org's program (admin sees all, not just active)
 loyalty.get("/rewards", requirePermission("loyalty:read"), async (c) => {
   const tenant = c.get("tenant") as any;
 
@@ -554,12 +651,7 @@ loyalty.get("/rewards", requirePermission("loyalty:read"), async (c) => {
       schema.loyaltyPrograms,
       eq(schema.rewards.program_id, schema.loyaltyPrograms.id),
     )
-    .where(
-      and(
-        eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
-        eq(schema.rewards.is_active, true),
-      ),
-    );
+    .where(eq(schema.loyaltyPrograms.organization_id, tenant.organizationId));
 
   return c.json({ success: true, data: result });
 });
@@ -581,6 +673,26 @@ loyalty.post(
   ),
   async (c) => {
     const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Verify program belongs to org
+    const [program] = await db
+      .select({ id: schema.loyaltyPrograms.id })
+      .from(schema.loyaltyPrograms)
+      .where(
+        and(
+          eq(schema.loyaltyPrograms.id, body.programId),
+          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!program) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Programa no encontrado" } },
+        404,
+      );
+    }
 
     const [reward] = await db
       .insert(schema.rewards)
@@ -595,6 +707,115 @@ loyalty.post(
       .returning();
 
     return c.json({ success: true, data: reward }, 201);
+  },
+);
+
+// PATCH /rewards/:id - Update reward
+loyalty.patch(
+  "/rewards/:id",
+  requirePermission("loyalty:create"),
+  zValidator("param", idParamSchema),
+  zValidator(
+    "json",
+    z.object({
+      name: z.string().min(1).max(255).optional(),
+      description: z.string().max(500).optional(),
+      pointsCost: z.number().int().min(1).optional(),
+      discountType: z.enum(["percentage", "fixed"]).optional(),
+      discountValue: z.number().int().min(1).optional(),
+      isActive: z.boolean().optional(),
+    }),
+  ),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Verify reward belongs to a program owned by this org
+    const [reward] = await db
+      .select({ id: schema.rewards.id })
+      .from(schema.rewards)
+      .innerJoin(
+        schema.loyaltyPrograms,
+        and(
+          eq(schema.rewards.program_id, schema.loyaltyPrograms.id),
+          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        ),
+      )
+      .where(eq(schema.rewards.id, id))
+      .limit(1);
+
+    if (!reward) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Recompensa no encontrada" } },
+        404,
+      );
+    }
+
+    const updates: any = {};
+    if (body.name !== undefined) updates.name = body.name;
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.pointsCost !== undefined) updates.points_cost = body.pointsCost;
+    if (body.discountType !== undefined) updates.discount_type = body.discountType;
+    if (body.discountValue !== undefined) updates.discount_value = body.discountValue;
+    if (body.isActive !== undefined) updates.is_active = body.isActive;
+
+    const [updated] = await db
+      .update(schema.rewards)
+      .set(updates)
+      .where(eq(schema.rewards.id, id))
+      .returning();
+
+    return c.json({ success: true, data: updated });
+  },
+);
+
+// DELETE /rewards/:id - Delete reward (soft-delete via is_active=false if redemptions exist)
+loyalty.delete(
+  "/rewards/:id",
+  requirePermission("loyalty:create"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    // Verify reward belongs to a program owned by this org
+    const [reward] = await db
+      .select({ id: schema.rewards.id })
+      .from(schema.rewards)
+      .innerJoin(
+        schema.loyaltyPrograms,
+        and(
+          eq(schema.rewards.program_id, schema.loyaltyPrograms.id),
+          eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        ),
+      )
+      .where(eq(schema.rewards.id, id))
+      .limit(1);
+
+    if (!reward) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Recompensa no encontrada" } },
+        404,
+      );
+    }
+
+    // Check if reward has redemptions — if so, soft-delete
+    const [{ count: redemptionCount }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.rewardRedemptions)
+      .where(eq(schema.rewardRedemptions.reward_id, id));
+
+    if (redemptionCount > 0) {
+      await db
+        .update(schema.rewards)
+        .set({ is_active: false })
+        .where(eq(schema.rewards.id, id));
+      return c.json({ success: true, data: { deleted: false, deactivated: true } });
+    }
+
+    await db.delete(schema.rewards).where(eq(schema.rewards.id, id));
+    return c.json({ success: true, data: { deleted: true } });
   },
 );
 
@@ -613,9 +834,15 @@ loyalty.post(
   async (c) => {
     const { id } = c.req.valid("param");
     const { customerLoyaltyId, orderId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
 
     try {
-      const result = await redeemReward({ rewardId: id, customerLoyaltyId, orderId });
+      const result = await redeemReward({
+        rewardId: id,
+        customerLoyaltyId,
+        organizationId: tenant.organizationId,
+        orderId,
+      });
       return c.json({ success: true, data: result }, 201);
     } catch (err: any) {
       if (err.message === "REWARD_NOT_FOUND") {
@@ -628,6 +855,12 @@ loyalty.post(
         return c.json(
           { success: false, error: { code: "NOT_FOUND", message: "Registro de lealtad no encontrado" } },
           404,
+        );
+      }
+      if (err.message === "PROGRAM_MISMATCH") {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "La recompensa no pertenece al programa del cliente" } },
+          400,
         );
       }
       if (err.message === "INSUFFICIENT_POINTS") {

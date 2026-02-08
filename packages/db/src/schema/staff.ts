@@ -18,7 +18,7 @@ export const shifts = pgTable("shifts", {
   organization_id: uuid("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
-  start_time: timestamp("start_time").notNull(),
-  end_time: timestamp("end_time"),
+  start_time: timestamp("start_time", { withTimezone: true }).notNull(),
+  end_time: timestamp("end_time", { withTimezone: true }),
   notes: text("notes"),
 });

@@ -9,10 +9,14 @@ export function useLoyaltyStats() {
   });
 }
 
-export function useLoyaltyCustomers(search?: string) {
+export function useLoyaltyCustomers(search?: string, page = 1) {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  params.set("page", String(page));
+  const qs = params.toString();
   return useQuery({
-    queryKey: ["loyalty", "customers", search],
-    queryFn: () => apiFetch(`/api/loyalty/customers${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+    queryKey: ["loyalty", "customers", search, page],
+    queryFn: () => apiFetch(`/api/loyalty/customers?${qs}`),
   });
 }
 
@@ -57,6 +61,15 @@ export function useCreateCustomer() {
   });
 }
 
+export function useDeleteCustomer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/loyalty/customers/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
+  });
+}
+
 export function useCreateProgram() {
   const qc = useQueryClient();
   return useMutation({
@@ -64,7 +77,7 @@ export function useCreateProgram() {
       method: "POST",
       body: JSON.stringify(data),
     }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty", "programs"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
   });
 }
 
@@ -75,7 +88,28 @@ export function useCreateReward() {
       method: "POST",
       body: JSON.stringify(data),
     }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty", "rewards"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
+  });
+}
+
+export function useUpdateReward() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: any) =>
+      apiFetch(`/api/loyalty/rewards/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
+  });
+}
+
+export function useDeleteReward() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/loyalty/rewards/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
   });
 }
 
@@ -99,7 +133,7 @@ export function useUpdateProgram() {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty", "programs"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
   });
 }
 

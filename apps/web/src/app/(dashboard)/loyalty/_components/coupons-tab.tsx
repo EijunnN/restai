@@ -77,7 +77,7 @@ function AssignCouponDialog({
   const { data: customersData, isLoading: customersLoading } = useLoyaltyCustomers(debouncedSearch || undefined);
   const { data: assignmentsData } = useCouponAssignments(coupon?.id || "");
 
-  const customers: any[] = customersData ?? [];
+  const customers: any[] = customersData?.customers ?? [];
   const assignments: any[] = assignmentsData ?? [];
   const assignedCustomerIds = new Set(assignments.map((a: any) => a.customer_id));
 

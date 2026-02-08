@@ -9,6 +9,7 @@ import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency } from "@/lib/utils";
 import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown } from "lucide-react";
+import { toast } from "sonner";
 
 const TAX_RATE = 1800; // 18% IGV
 
@@ -65,7 +66,7 @@ export default function CartPage({
   const [couponCode, setCouponCode] = useState("");
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponError, setCouponError] = useState<string | null>(null);
-  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number } | null>(null);
+  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number; menu_item_id?: string | null } | null>(null);
   const [availableCoupons, setAvailableCoupons] = useState<any[]>([]);
 
   useEffect(() => {
@@ -121,6 +122,7 @@ export default function CartPage({
         name: data.data.name,
         type: data.data.type,
         discount_value: data.data.discount_value || 0,
+        menu_item_id: data.data.menu_item_id || null,
       });
       setCouponCode("");
     } catch {
@@ -132,18 +134,47 @@ export default function CartPage({
 
   function getCouponDiscount(): number {
     if (!appliedCoupon) return 0;
-    if (appliedCoupon.type === "percentage") {
-      const discount = Math.round(subtotal * (appliedCoupon.discount_value / 100));
-      return discount;
+    let discount = 0;
+    switch (appliedCoupon.type) {
+      case "percentage":
+        discount = Math.round(subtotal * (appliedCoupon.discount_value / 100));
+        break;
+      case "fixed":
+        discount = Math.min(appliedCoupon.discount_value, subtotal);
+        break;
+      case "item_free": {
+        if (appliedCoupon.menu_item_id) {
+          const match = items.find((i) => i.menuItemId === appliedCoupon.menu_item_id);
+          if (match) discount = match.unitPrice;
+        } else if (items.length > 0) {
+          const cheapest = items.reduce((min, i) => (i.unitPrice < min.unitPrice ? i : min), items[0]);
+          discount = cheapest.unitPrice;
+        }
+        break;
+      }
+      case "item_discount": {
+        if (appliedCoupon.menu_item_id) {
+          const match = items.find((i) => i.menuItemId === appliedCoupon.menu_item_id);
+          if (match) discount = Math.round(match.unitPrice * match.quantity * (appliedCoupon.discount_value / 100));
+        }
+        break;
+      }
+      case "buy_x_get_y": {
+        // Server calculates exact discount — show approximate as "promo applied"
+        discount = 0;
+        break;
+      }
+      default:
+        discount = 0;
     }
-    if (appliedCoupon.type === "fixed") {
-      return Math.min(appliedCoupon.discount_value, subtotal);
-    }
-    return 0;
+    return Math.min(discount, subtotal);
   }
 
   const couponDiscount = getCouponDiscount();
-  const adjustedTotal = total - couponDiscount;
+  // IGV is calculated on (subtotal - discount) to match backend logic
+  const taxableBase = subtotal - couponDiscount;
+  const adjustedTax = couponDiscount > 0 ? Math.round((taxableBase * TAX_RATE) / 10000) : tax;
+  const adjustedTotal = couponDiscount > 0 ? taxableBase + adjustedTax : total;
 
   const handleConfirmOrder = async () => {
     try {
@@ -181,6 +212,9 @@ export default function CartPage({
       }
 
       clearCart();
+      toast.success("Pedido enviado a cocina", {
+        description: `Orden #${data.data?.order_number || ""} recibida`,
+      });
       router.push(`/${branchSlug}/${tableCode}/status`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error inesperado");
@@ -332,6 +366,7 @@ export default function CartPage({
                           name: coupon.name,
                           type: coupon.type,
                           discount_value: coupon.discount_value || 0,
+                          menu_item_id: coupon.menu_item_id || null,
                         });
                       }}
                       className="w-full flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
@@ -341,9 +376,13 @@ export default function CartPage({
                         <p className="text-xs text-muted-foreground font-mono">{coupon.code}</p>
                       </div>
                       <span className="text-sm font-bold text-primary">
-                        {coupon.type === "percentage"
+                        {coupon.type === "percentage" || coupon.type === "item_discount"
                           ? `${coupon.discount_value}%`
-                          : formatCurrency(coupon.discount_value || 0)}
+                          : coupon.type === "item_free"
+                            ? "Gratis"
+                            : coupon.type === "buy_x_get_y"
+                              ? "Promo"
+                              : formatCurrency(coupon.discount_value || 0)}
                       </span>
                     </button>
                   ))}
@@ -398,20 +437,20 @@ export default function CartPage({
             <span className="text-muted-foreground">Subtotal</span>
             <span className="font-medium">{formatCurrency(subtotal)}</span>
           </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">IGV (18%)</span>
-            <span className="font-medium">{formatCurrency(tax)}</span>
-          </div>
           {couponDiscount > 0 && (
             <div className="flex justify-between text-sm">
               <span className="text-green-600 dark:text-green-400">Cupon ({appliedCoupon?.code})</span>
               <span className="font-medium text-green-600 dark:text-green-400">-{formatCurrency(couponDiscount)}</span>
             </div>
           )}
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">IGV (18%)</span>
+            <span className="font-medium">{formatCurrency(couponDiscount > 0 ? adjustedTax : tax)}</span>
+          </div>
           <div className="border-t border-border pt-3">
             <div className="flex justify-between font-bold text-lg">
               <span>Total</span>
-              <span className="text-primary">{formatCurrency(couponDiscount > 0 ? adjustedTotal : total)}</span>
+              <span className="text-primary">{formatCurrency(adjustedTotal)}</span>
             </div>
           </div>
         </CardContent>
@@ -424,7 +463,7 @@ export default function CartPage({
           onClick={handleConfirmOrder}
           disabled={loading}
         >
-          {loading ? "Enviando pedido..." : `Confirmar Pedido · ${formatCurrency(couponDiscount > 0 ? adjustedTotal : total)}`}
+          {loading ? "Enviando pedido..." : `Confirmar Pedido · ${formatCurrency(adjustedTotal)}`}
         </Button>
       </div>
     </div>

@@ -67,6 +67,45 @@ payments.get("/summary", requirePermission("payments:read"), async (c) => {
   });
 });
 
+// GET /unpaid-orders - Orders pending payment (for payment dialog selector)
+payments.get("/unpaid-orders", requirePermission("payments:read"), async (c) => {
+  const tenant = c.get("tenant") as any;
+
+  const result = await db
+    .select({
+      id: schema.orders.id,
+      order_number: schema.orders.order_number,
+      customer_name: schema.orders.customer_name,
+      total: schema.orders.total,
+      status: schema.orders.status,
+      created_at: schema.orders.created_at,
+      total_paid: sql<number>`COALESCE((SELECT SUM(amount)::int FROM payments WHERE payments.order_id = ${schema.orders.id} AND payments.status = 'completed'), 0)`,
+      table_number: schema.tables.number,
+    })
+    .from(schema.orders)
+    .leftJoin(schema.tableSessions, eq(schema.orders.table_session_id, schema.tableSessions.id))
+    .leftJoin(schema.tables, eq(schema.tableSessions.table_id, schema.tables.id))
+    .where(
+      and(
+        eq(schema.orders.branch_id, tenant.branchId),
+        eq(schema.orders.organization_id, tenant.organizationId),
+        sql`${schema.orders.status} != 'cancelled'`,
+      ),
+    )
+    .orderBy(desc(schema.orders.created_at))
+    .limit(50);
+
+  // Filter to only unpaid/partial orders
+  const unpaid = result
+    .filter((o) => o.total_paid < o.total)
+    .map((o) => ({
+      ...o,
+      remaining: o.total - o.total_paid,
+    }));
+
+  return c.json({ success: true, data: unpaid });
+});
+
 // GET / - List payments for branch with optional filters
 payments.get("/", requirePermission("payments:read"), async (c) => {
   const tenant = c.get("tenant") as any;

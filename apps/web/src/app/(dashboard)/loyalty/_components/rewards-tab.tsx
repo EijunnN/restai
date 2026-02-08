@@ -7,10 +7,12 @@ import {
 } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
-import { Plus, Gift, Award } from "lucide-react";
-import { useLoyaltyRewards, useLoyaltyPrograms } from "@/hooks/use-loyalty";
+import { Plus, Gift, Award, Pencil, Trash2 } from "lucide-react";
+import { useLoyaltyRewards, useLoyaltyPrograms, useDeleteReward } from "@/hooks/use-loyalty";
 import { formatCurrency } from "@/lib/utils";
-import { CreateRewardDialog } from "./reward-dialog";
+import { RewardDialog } from "./reward-dialog";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { toast } from "sonner";
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={`animate-pulse bg-muted rounded ${className ?? ""}`} />;
@@ -19,11 +21,35 @@ function Skeleton({ className }: { className?: string }) {
 export function RewardsTab() {
   const { data: rewards, isLoading: rewardsLoading } = useLoyaltyRewards();
   const { data: programs } = useLoyaltyPrograms();
-  const [showCreate, setShowCreate] = useState(false);
+  const deleteReward = useDeleteReward();
+  const [showDialog, setShowDialog] = useState(false);
+  const [editingReward, setEditingReward] = useState<any>(null);
+  const [deletingRewardId, setDeletingRewardId] = useState<string | null>(null);
 
   const rewardsList: any[] = rewards ?? [];
   const programsList: any[] = programs ?? [];
   const programId = programsList[0]?.id;
+
+  function handleEdit(reward: any) {
+    setEditingReward(reward);
+    setShowDialog(true);
+  }
+
+  function handleCreate() {
+    setEditingReward(null);
+    setShowDialog(true);
+  }
+
+  function handleDelete() {
+    if (!deletingRewardId) return;
+    deleteReward.mutate(deletingRewardId, {
+      onSuccess: () => {
+        setDeletingRewardId(null);
+        toast.success("Recompensa eliminada");
+      },
+      onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+    });
+  }
 
   if (rewardsLoading) {
     return (
@@ -44,7 +70,7 @@ export function RewardsTab() {
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
-        <Button onClick={() => setShowCreate(true)} disabled={!programId}>
+        <Button onClick={handleCreate} disabled={!programId}>
           <Plus className="h-4 w-4 mr-2" />Crear Recompensa
         </Button>
       </div>
@@ -83,16 +109,43 @@ export function RewardsTab() {
                 <Badge variant="secondary" className="text-xs">
                   {reward.discount_type === "percentage" ? `${reward.discount_value}% descuento` : `${formatCurrency(reward.discount_value)} descuento`}
                 </Badge>
-                {reward.is_active && (
+                {reward.is_active ? (
                   <Badge variant="outline" className="text-xs text-green-600 border-green-300 dark:text-green-400 dark:border-green-700">Activa</Badge>
+                ) : (
+                  <Badge variant="outline" className="text-xs text-red-600 border-red-300 dark:text-red-400 dark:border-red-700">Inactiva</Badge>
                 )}
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => handleEdit(reward)}>
+                  <Pencil className="h-3.5 w-3.5 mr-1" />Editar
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setDeletingRewardId(reward.id)}>
+                  <Trash2 className="h-3.5 w-3.5 mr-1" />Eliminar
+                </Button>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
-      {programId && <CreateRewardDialog open={showCreate} onOpenChange={setShowCreate} programId={programId} />}
+      {programId && (
+        <RewardDialog
+          open={showDialog}
+          onOpenChange={setShowDialog}
+          programId={programId}
+          editData={editingReward}
+        />
+      )}
+
+      <ConfirmDialog
+        open={!!deletingRewardId}
+        onOpenChange={(open) => { if (!open) setDeletingRewardId(null); }}
+        title="Eliminar recompensa"
+        description="Si la recompensa tiene canjes, se desactivara en vez de eliminarse."
+        onConfirm={handleDelete}
+        confirmLabel="Eliminar"
+        variant="destructive"
+      />
     </div>
   );
 }

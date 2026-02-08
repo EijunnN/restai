@@ -3,7 +3,7 @@
 import { Card, CardContent } from "@restai/ui/components/card";
 import { Badge } from "@restai/ui/components/badge";
 import { Button } from "@restai/ui/components/button";
-import { ChevronLeft, ChevronRight, Printer } from "lucide-react";
+import { ChevronLeft, ChevronRight, DollarSign, Printer } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -47,6 +47,7 @@ interface OrdersTableProps {
   updateStatusPending: boolean;
   onUpdateStatus: (id: string, status: string) => void;
   onPrintReceipt: (order: any) => void;
+  onCharge?: (order: any) => void;
 }
 
 export function OrdersTable({
@@ -59,6 +60,7 @@ export function OrdersTable({
   updateStatusPending,
   onUpdateStatus,
   onPrintReceipt,
+  onCharge,
 }: OrdersTableProps) {
   const filteredOrders = orders.filter((order: any) => {
     const orderNum = order.order_number || "";
@@ -186,6 +188,16 @@ export function OrdersTable({
                                 {statusConfig[nextStatus]?.label || nextStatus}
                               </Button>
                             )}
+                            {paymentStatus !== "paid" && onCharge && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => onCharge(order)}
+                              >
+                                <DollarSign className="h-3 w-3 mr-1" />
+                                Cobrar
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="sm"
@@ -207,11 +219,11 @@ export function OrdersTable({
         </CardContent>
       </Card>
 
-      {pagination.totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            {pagination.total} ordenes en total
-          </p>
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          {pagination.total} ordenes en total
+        </p>
+        {pagination.totalPages > 1 && (
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -235,8 +247,8 @@ export function OrdersTable({
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }

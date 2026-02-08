@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { Button } from "@restai/ui/components/button";
@@ -12,54 +12,105 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@restai/ui/components/dialog";
-import { useCreateReward } from "@/hooks/use-loyalty";
+import { useCreateReward, useUpdateReward } from "@/hooks/use-loyalty";
 import { toast } from "sonner";
 
-export function CreateRewardDialog({
+const defaultForm = {
+  name: "",
+  description: "",
+  pointsCost: 100,
+  discountType: "percentage" as "percentage" | "fixed",
+  discountValue: 10,
+};
+
+export function RewardDialog({
   open,
   onOpenChange,
   programId,
+  editData,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   programId: string;
+  editData?: {
+    id: string;
+    name: string;
+    description?: string | null;
+    points_cost: number;
+    discount_type: string;
+    discount_value: number;
+    is_active: boolean;
+  } | null;
 }) {
   const createReward = useCreateReward();
-  const [form, setForm] = useState({
-    name: "",
-    description: "",
-    pointsCost: 100,
-    discountType: "percentage" as "percentage" | "fixed",
-    discountValue: 10,
-  });
+  const updateReward = useUpdateReward();
+  const isEdit = !!editData;
+  const [form, setForm] = useState(defaultForm);
+
+  useEffect(() => {
+    if (editData) {
+      setForm({
+        name: editData.name,
+        description: editData.description || "",
+        pointsCost: editData.points_cost,
+        discountType: editData.discount_type as "percentage" | "fixed",
+        discountValue: editData.discount_value,
+      });
+    } else {
+      setForm(defaultForm);
+    }
+  }, [editData]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    createReward.mutate(
-      {
-        programId,
-        name: form.name,
-        description: form.description || undefined,
-        pointsCost: form.pointsCost,
-        discountType: form.discountType,
-        discountValue: form.discountValue,
-      },
-      {
-        onSuccess: () => {
-          setForm({ name: "", description: "", pointsCost: 100, discountType: "percentage", discountValue: 10 });
-          onOpenChange(false);
-          toast.success("Recompensa creada exitosamente");
+
+    if (isEdit) {
+      updateReward.mutate(
+        {
+          id: editData!.id,
+          name: form.name,
+          description: form.description || undefined,
+          pointsCost: form.pointsCost,
+          discountType: form.discountType,
+          discountValue: form.discountValue,
         },
-        onError: (err) => toast.error(`Error: ${(err as Error).message}`),
-      },
-    );
+        {
+          onSuccess: () => {
+            onOpenChange(false);
+            toast.success("Recompensa actualizada");
+          },
+          onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+        },
+      );
+    } else {
+      createReward.mutate(
+        {
+          programId,
+          name: form.name,
+          description: form.description || undefined,
+          pointsCost: form.pointsCost,
+          discountType: form.discountType,
+          discountValue: form.discountValue,
+        },
+        {
+          onSuccess: () => {
+            setForm(defaultForm);
+            onOpenChange(false);
+            toast.success("Recompensa creada exitosamente");
+          },
+          onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+        },
+      );
+    }
   }
+
+  const isPending = createReward.isPending || updateReward.isPending;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Crear Recompensa</DialogTitle>
+          <DialogTitle>{isEdit ? "Editar Recompensa" : "Crear Recompensa"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
@@ -95,8 +146,8 @@ export function CreateRewardDialog({
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-            <Button type="submit" disabled={createReward.isPending || !form.name}>
-              {createReward.isPending ? "Creando..." : "Crear Recompensa"}
+            <Button type="submit" disabled={isPending || !form.name}>
+              {isPending ? (isEdit ? "Guardando..." : "Creando...") : (isEdit ? "Guardar" : "Crear Recompensa")}
             </Button>
           </DialogFooter>
         </form>
@@ -104,3 +155,6 @@ export function CreateRewardDialog({
     </Dialog>
   );
 }
+
+// Re-export with old name for backward compat
+export { RewardDialog as CreateRewardDialog };

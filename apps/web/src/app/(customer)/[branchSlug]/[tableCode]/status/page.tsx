@@ -5,7 +5,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
 import { useCustomerStore } from "@/stores/customer-store";
-import { cn } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@restai/ui/components/dialog";
 import {
   Clock,
   CheckCircle,
@@ -15,6 +23,10 @@ import {
   Loader2,
   Receipt,
   Bell,
+  XCircle,
+  Star,
+  Gift,
+  TrendingUp,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -31,6 +43,26 @@ interface OrderData {
   status: string;
   items: OrderItem[];
   created_at: string;
+  subtotal?: number;
+  tax?: number;
+  discount?: number;
+  total?: number;
+}
+
+interface LoyaltyData {
+  points_balance: number;
+  total_points_earned: number;
+  program_name: string;
+  tier_name: string | null;
+  next_tier: { name: string; min_points: number } | null;
+  rewards: Array<{
+    id: string;
+    name: string;
+    description: string | null;
+    points_cost: number;
+    discount_type: string;
+    discount_value: number;
+  }>;
 }
 
 const steps = [
@@ -55,6 +87,7 @@ const itemStatusLabels: Record<string, string> = {
   preparing: "Preparando",
   ready: "Listo",
   served: "Servido",
+  cancelled: "Cancelado",
 };
 
 const itemStatusVariants: Record<string, string> = {
@@ -62,6 +95,7 @@ const itemStatusVariants: Record<string, string> = {
   preparing: "bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/20",
   ready: "bg-green-500/15 text-green-700 dark:text-green-400 border-green-500/20",
   served: "bg-muted text-muted-foreground border-border",
+  cancelled: "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/20",
 };
 
 export default function OrderStatusPage({
@@ -75,10 +109,14 @@ export default function OrderStatusPage({
   const storeToken = useCustomerStore((s) => s.token);
 
   const [order, setOrder] = useState<OrderData | null>(null);
+  const [loyalty, setLoyalty] = useState<LoyaltyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const getToken = useCallback(() => {
     if (storeToken) return storeToken;
@@ -154,9 +192,66 @@ export default function OrderStatusPage({
     }
   }, [getOrderId, getToken]);
 
+  const fetchLoyalty = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const res = await fetch("http://localhost:3001/api/customer/my-loyalty", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await res.json();
+      if (result.success && result.data) {
+        setLoyalty(result.data);
+      }
+    } catch {
+      // silently fail — loyalty is optional
+    }
+  }, [getToken]);
+
+  const handleCancelOrder = useCallback(async () => {
+    const orderId = getOrderId();
+    const token = getToken();
+    if (!orderId || !token) return;
+
+    try {
+      setCancelling(true);
+      const res = await fetch(
+        `http://localhost:3001/api/customer/orders/${orderId}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+      const result = await res.json();
+      if (!result.success) {
+        setError(result.error?.message || "No se pudo cancelar el pedido");
+        return;
+      }
+      await fetchOrder();
+    } catch {
+      setError("Error al cancelar el pedido");
+    } finally {
+      setCancelling(false);
+      setCancelDialogOpen(false);
+    }
+  }, [getOrderId, getToken, fetchOrder]);
+
   useEffect(() => {
     fetchOrder();
-  }, [fetchOrder]);
+    fetchLoyalty();
+  }, [fetchOrder, fetchLoyalty]);
+
+  // Show confirmation banner on first load if order is new
+  useEffect(() => {
+    if (order && order.status === "pending" && !showConfirmation) {
+      setShowConfirmation(true);
+      const timer = setTimeout(() => setShowConfirmation(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [order?.id]);
 
   if (loading) {
     return (
@@ -179,66 +274,89 @@ export default function OrderStatusPage({
   }
 
   const currentStep = stepIndex[order.status] ?? 0;
+  const isCancelled = order.status === "cancelled";
+  // Only allow cancel when the ORDER itself is pending (not just item-level)
+  const canCancel = order.status === "pending";
 
   return (
     <div className="p-4 space-y-5">
+      {/* Confirmation banner */}
+      {showConfirmation && (
+        <div className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-4 text-center animate-in fade-in slide-in-from-top-2 duration-300">
+          <CheckCircle className="h-8 w-8 text-green-600 dark:text-green-400 mx-auto mb-2" />
+          <p className="font-semibold text-green-800 dark:text-green-300">Pedido recibido</p>
+          <p className="text-sm text-green-600 dark:text-green-400">Tu orden fue enviada a cocina</p>
+        </div>
+      )}
+
       {/* Header */}
       <div className="text-center pt-2">
         <h1 className="text-2xl font-bold">Tu Pedido</h1>
         <p className="text-muted-foreground mt-1">Orden #{order.order_number}</p>
       </div>
 
-      {/* Stepper */}
-      <Card>
-        <CardContent className="p-5">
-          <div className="space-y-1">
-            {steps.map((step, index) => {
-              const isCompleted = index <= currentStep;
-              const isCurrent = index === currentStep;
-              const isLast = index === steps.length - 1;
-              return (
-                <div key={step.key}>
-                  <div className="flex items-center gap-4 py-2">
-                    <div
-                      className={cn(
-                        "flex items-center justify-center h-10 w-10 rounded-full shrink-0 transition-all",
-                        isCurrent
-                          ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
-                          : isCompleted
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-muted text-muted-foreground",
-                      )}
-                    >
-                      <step.icon className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1">
-                      <p
+      {/* Cancelled banner */}
+      {isCancelled ? (
+        <Card>
+          <CardContent className="p-5 text-center">
+            <XCircle className="h-12 w-12 text-red-500 mx-auto mb-3" />
+            <p className="font-semibold text-lg text-red-600 dark:text-red-400">Pedido Cancelado</p>
+            <p className="text-sm text-muted-foreground mt-1">Este pedido ha sido cancelado</p>
+          </CardContent>
+        </Card>
+      ) : (
+        /* Stepper */
+        <Card>
+          <CardContent className="p-5">
+            <div className="space-y-1">
+              {steps.map((step, index) => {
+                const isCompleted = index <= currentStep;
+                const isCurrent = index === currentStep;
+                const isLast = index === steps.length - 1;
+                return (
+                  <div key={step.key}>
+                    <div className="flex items-center gap-4 py-2">
+                      <div
                         className={cn(
-                          "font-medium text-sm",
-                          isCompleted ? "text-foreground" : "text-muted-foreground",
+                          "flex items-center justify-center h-10 w-10 rounded-full shrink-0 transition-all",
+                          isCurrent
+                            ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
+                            : isCompleted
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-muted text-muted-foreground",
                         )}
                       >
-                        {step.label}
-                      </p>
-                      {isCurrent && (
-                        <p className="text-xs text-primary font-medium mt-0.5">
-                          Estado actual
+                        <step.icon className="h-5 w-5" />
+                      </div>
+                      <div className="flex-1">
+                        <p
+                          className={cn(
+                            "font-medium text-sm",
+                            isCompleted ? "text-foreground" : "text-muted-foreground",
+                          )}
+                        >
+                          {step.label}
                         </p>
+                        {isCurrent && (
+                          <p className="text-xs text-primary font-medium mt-0.5">
+                            Estado actual
+                          </p>
+                        )}
+                      </div>
+                      {isCompleted && (
+                        <CheckCircle className="h-5 w-5 text-primary shrink-0" />
                       )}
                     </div>
-                    {isCompleted && (
-                      <CheckCircle className="h-5 w-5 text-primary shrink-0" />
+                    {!isLast && (
+                      <div className="ml-5 w-px h-3 bg-border" />
                     )}
                   </div>
-                  {!isLast && (
-                    <div className="ml-5 w-px h-3 bg-border" />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Items */}
       <Card>
@@ -264,56 +382,240 @@ export default function OrderStatusPage({
               </span>
             </div>
           ))}
+
+          {/* Order total summary */}
+          {order.total != null && (
+            <div className="pt-3 mt-2 border-t border-border space-y-1">
+              {order.subtotal != null && (
+                <div className="flex justify-between text-sm text-muted-foreground">
+                  <span>Subtotal</span>
+                  <span>{formatCurrency(order.subtotal)}</span>
+                </div>
+              )}
+              {order.tax != null && order.tax > 0 && (
+                <div className="flex justify-between text-sm text-muted-foreground">
+                  <span>IGV</span>
+                  <span>{formatCurrency(order.tax)}</span>
+                </div>
+              )}
+              {order.discount != null && order.discount > 0 && (
+                <div className="flex justify-between text-sm text-green-600 dark:text-green-400">
+                  <span>Descuento</span>
+                  <span>-{formatCurrency(order.discount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-bold text-sm pt-1">
+                <span>Total</span>
+                <span>{formatCurrency(order.total)}</span>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Actions */}
-      <div className="flex gap-3">
+      {/* Loyalty points card */}
+      {loyalty && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Star className="h-5 w-5 text-primary" />
+              <p className="font-semibold text-sm">{loyalty.program_name}</p>
+              {loyalty.tier_name && (
+                <Badge variant="secondary" className="text-xs ml-auto">
+                  {loyalty.tier_name}
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex items-baseline gap-1">
+              <span className="text-3xl font-bold text-primary">
+                {loyalty.points_balance.toLocaleString()}
+              </span>
+              <span className="text-sm text-muted-foreground">puntos disponibles</span>
+            </div>
+
+            {loyalty.next_tier && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>Progreso a {loyalty.next_tier.name}</span>
+                  <span>{loyalty.total_points_earned.toLocaleString()} / {loyalty.next_tier.min_points.toLocaleString()}</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary rounded-full transition-all"
+                    style={{
+                      width: `${Math.min(100, (loyalty.total_points_earned / loyalty.next_tier.min_points) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Available rewards */}
+            {loyalty.rewards.length > 0 && (
+              <div className="pt-2 border-t border-primary/10 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <Gift className="h-4 w-4 text-primary" />
+                  <p className="text-xs font-medium text-foreground">Recompensas disponibles</p>
+                </div>
+                {loyalty.rewards.map((reward) => {
+                  const canRedeem = loyalty.points_balance >= reward.points_cost;
+                  return (
+                    <div
+                      key={reward.id}
+                      className={cn(
+                        "flex items-center justify-between p-2.5 rounded-lg border text-sm",
+                        canRedeem
+                          ? "border-primary/30 bg-background"
+                          : "border-border bg-muted/30 opacity-60",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-sm truncate">{reward.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {reward.discount_type === "percentage"
+                            ? `${reward.discount_value}% de descuento`
+                            : `${formatCurrency(reward.discount_value)} de descuento`}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0 ml-2">
+                        <p className={cn(
+                          "text-xs font-bold",
+                          canRedeem ? "text-primary" : "text-muted-foreground",
+                        )}>
+                          {reward.points_cost.toLocaleString()} pts
+                        </p>
+                        {!canRedeem && (
+                          <p className="text-[10px] text-muted-foreground">
+                            Faltan {(reward.points_cost - loyalty.points_balance).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                <p className="text-[10px] text-muted-foreground text-center">
+                  Pide al mozo para canjear tus recompensas
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <TrendingUp className="h-3 w-3" />
+              <span>Ganas puntos con cada pedido</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cancel button - only when order status is pending */}
+      {canCancel && (
         <Button
-          variant="outline"
-          className="flex-1"
-          disabled={refreshing}
-          onClick={async () => {
-            setRefreshing(true);
-            await fetchOrder();
-            setRefreshing(false);
-          }}
+          variant="destructive"
+          className="w-full gap-2"
+          disabled={cancelling}
+          onClick={() => setCancelDialogOpen(true)}
         >
-          {refreshing ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <RefreshCcw className="h-4 w-4 mr-2" />
-          )}
-          {refreshing ? "Actualizando..." : "Actualizar"}
+          <XCircle className="h-4 w-4" />
+          Cancelar Pedido
         </Button>
-        <Link href={`/${branchSlug}/${tableCode}/menu`} className="flex-1">
-          <Button variant="default" className="w-full">
-            Pedir Mas
+      )}
+
+      {/* Actions */}
+      {!isCancelled && (
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            className="flex-1"
+            disabled={refreshing}
+            onClick={async () => {
+              setRefreshing(true);
+              await fetchOrder();
+              setRefreshing(false);
+            }}
+          >
+            {refreshing ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCcw className="h-4 w-4 mr-2" />
+            )}
+            {refreshing ? "Actualizando..." : "Actualizar"}
           </Button>
-        </Link>
-      </div>
+          <Link href={`/${branchSlug}/${tableCode}/menu`} className="flex-1">
+            <Button variant="default" className="w-full">
+              Pedir Mas
+            </Button>
+          </Link>
+        </div>
+      )}
 
       {/* Table action buttons */}
-      <div className="flex gap-3">
-        <Button
-          variant="outline"
-          className="flex-1 gap-2"
-          disabled={actionLoading !== null}
-          onClick={() => handleTableAction("request_bill")}
-        >
-          <Receipt className="h-4 w-4" />
-          {actionLoading === "request_bill" ? "Enviando..." : "Pedir la Cuenta"}
-        </Button>
-        <Button
-          variant="outline"
-          className="flex-1 gap-2"
-          disabled={actionLoading !== null}
-          onClick={() => handleTableAction("call_waiter")}
-        >
-          <Bell className="h-4 w-4" />
-          {actionLoading === "call_waiter" ? "Enviando..." : "Llamar al Mozo"}
-        </Button>
-      </div>
+      {!isCancelled && (
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            className="flex-1 gap-2"
+            disabled={actionLoading !== null}
+            onClick={() => handleTableAction("request_bill")}
+          >
+            <Receipt className="h-4 w-4" />
+            {actionLoading === "request_bill" ? "Enviando..." : "Pedir la Cuenta"}
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1 gap-2"
+            disabled={actionLoading !== null}
+            onClick={() => handleTableAction("call_waiter")}
+          >
+            <Bell className="h-4 w-4" />
+            {actionLoading === "call_waiter" ? "Enviando..." : "Llamar al Mozo"}
+          </Button>
+        </div>
+      )}
+
+      {/* Back to menu after cancellation */}
+      {isCancelled && (
+        <Link href={`/${branchSlug}/${tableCode}/menu`}>
+          <Button variant="default" className="w-full">
+            Volver al Menu
+          </Button>
+        </Link>
+      )}
+
+      {/* Cancel confirmation dialog */}
+      <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancelar Pedido</DialogTitle>
+            <DialogDescription>
+              Esta seguro que desea cancelar su pedido? Esta accion no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setCancelDialogOpen(false)}
+              disabled={cancelling}
+            >
+              No, mantener pedido
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleCancelOrder}
+              disabled={cancelling}
+            >
+              {cancelling ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Cancelando...
+                </>
+              ) : (
+                "Si, cancelar pedido"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -31,9 +31,9 @@ export const coupons = pgTable("coupons", {
   max_uses_total: integer("max_uses_total"),
   max_uses_per_customer: integer("max_uses_per_customer").default(1),
   current_uses: integer("current_uses").default(0).notNull(),
-  starts_at: timestamp("starts_at"),
-  expires_at: timestamp("expires_at"),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  starts_at: timestamp("starts_at", { withTimezone: true }),
+  expires_at: timestamp("expires_at", { withTimezone: true }),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const couponAssignments = pgTable(
@@ -46,9 +46,9 @@ export const couponAssignments = pgTable(
     customer_id: uuid("customer_id")
       .notNull()
       .references(() => customers.id, { onDelete: "cascade" }),
-    sent_at: timestamp("sent_at").defaultNow().notNull(),
-    seen_at: timestamp("seen_at"),
-    used_at: timestamp("used_at"),
+    sent_at: timestamp("sent_at", { withTimezone: true }).defaultNow().notNull(),
+    seen_at: timestamp("seen_at", { withTimezone: true }),
+    used_at: timestamp("used_at", { withTimezone: true }),
   },
   (t) => [unique("uq_coupon_customer").on(t.coupon_id, t.customer_id)],
 );
@@ -61,5 +61,5 @@ export const couponRedemptions = pgTable("coupon_redemptions", {
   customer_id: uuid("customer_id"),
   order_id: uuid("order_id"),
   discount_applied: integer("discount_applied").notNull(),
-  redeemed_at: timestamp("redeemed_at").defaultNow().notNull(),
+  redeemed_at: timestamp("redeemed_at", { withTimezone: true }).defaultNow().notNull(),
 });

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   startSessionSchema,
@@ -11,7 +11,7 @@ import {
 import { z } from "zod";
 import { signCustomerToken, verifyAccessToken } from "../lib/jwt.js";
 import { wsManager } from "../ws/manager.js";
-import { createCustomer } from "../services/customer.service.js";
+import { findOrCreate } from "../services/customer.service.js";
 import { createOrder, OrderValidationError } from "../services/order.service.js";
 import * as sessionService from "../services/session.service.js";
 
@@ -142,8 +142,8 @@ customer.post(
       );
     }
 
-    // Create customer + auto-enroll in loyalty
-    const { customer: customer_record } = await createCustomer({
+    // Find existing customer or create new one (dedup by email/phone)
+    const { customer: customer_record } = await findOrCreate({
       organizationId: branch.organization_id,
       name: body.customerName,
       email: body.email,
@@ -352,6 +352,17 @@ customer.post(
       );
     }
 
+    // Link to existing customer if phone is provided (enables points accumulation)
+    let customerId: string | undefined;
+    if (body.customerPhone) {
+      const { customer: found } = await findOrCreate({
+        organizationId: branch.organization_id,
+        name: body.customerName,
+        phone: body.customerPhone,
+      });
+      customerId = found.id;
+    }
+
     // Generate customer token
     const sessionId = crypto.randomUUID();
     const token = await signCustomerToken({
@@ -359,6 +370,7 @@ customer.post(
       org: branch.organization_id,
       branch: branch.id,
       table: table.id,
+      ...(customerId ? { customerId } : {}),
     });
 
     // Create session with pending status
@@ -522,6 +534,96 @@ const requireActiveSession = async (c: any, next: any) => {
   return next();
 };
 
+// GET /my-loyalty - Get loyalty info for current customer (customer auth)
+customer.get("/my-loyalty", customerAuth, requireActiveSession, async (c) => {
+  const user = c.get("user") as any;
+  const customerId = user.customerId;
+  const orgId = user.org;
+
+  if (!customerId) {
+    return c.json({ success: true, data: null });
+  }
+
+  // Get enrollment with program and tier info
+  const enrollment = await db
+    .select({
+      id: schema.customerLoyalty.id,
+      points_balance: schema.customerLoyalty.points_balance,
+      total_points_earned: schema.customerLoyalty.total_points_earned,
+      program_name: schema.loyaltyPrograms.name,
+      program_id: schema.loyaltyPrograms.id,
+      tier_name: schema.loyaltyTiers.name,
+      tier_min_points: schema.loyaltyTiers.min_points,
+    })
+    .from(schema.customerLoyalty)
+    .innerJoin(
+      schema.loyaltyPrograms,
+      and(
+        eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+        eq(schema.loyaltyPrograms.organization_id, orgId),
+        eq(schema.loyaltyPrograms.is_active, true),
+      ),
+    )
+    .leftJoin(
+      schema.loyaltyTiers,
+      eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
+    )
+    .where(eq(schema.customerLoyalty.customer_id, customerId))
+    .limit(1);
+
+  if (enrollment.length === 0) {
+    return c.json({ success: true, data: null });
+  }
+
+  const info = enrollment[0];
+
+  // Get available rewards for this program
+  const availableRewards = await db
+    .select({
+      id: schema.rewards.id,
+      name: schema.rewards.name,
+      description: schema.rewards.description,
+      points_cost: schema.rewards.points_cost,
+      discount_type: schema.rewards.discount_type,
+      discount_value: schema.rewards.discount_value,
+    })
+    .from(schema.rewards)
+    .where(
+      and(
+        eq(schema.rewards.program_id, info.program_id),
+        eq(schema.rewards.is_active, true),
+      ),
+    );
+
+  // Get next tier (if any)
+  const nextTier = await db
+    .select({
+      name: schema.loyaltyTiers.name,
+      min_points: schema.loyaltyTiers.min_points,
+    })
+    .from(schema.loyaltyTiers)
+    .where(
+      and(
+        eq(schema.loyaltyTiers.program_id, info.program_id),
+        sql`${schema.loyaltyTiers.min_points} > ${info.total_points_earned}`,
+      ),
+    )
+    .orderBy(schema.loyaltyTiers.min_points)
+    .limit(1);
+
+  return c.json({
+    success: true,
+    data: {
+      points_balance: info.points_balance,
+      total_points_earned: info.total_points_earned,
+      program_name: info.program_name,
+      tier_name: info.tier_name,
+      next_tier: nextTier[0] || null,
+      rewards: availableRewards,
+    },
+  });
+});
+
 // GET /my-coupons - Get available coupons for current customer (customer auth)
 customer.get("/my-coupons", customerAuth, requireActiveSession, async (c) => {
   const user = c.get("user") as any;
@@ -543,6 +645,7 @@ customer.get("/my-coupons", customerAuth, requireActiveSession, async (c) => {
       min_order_amount: schema.coupons.min_order_amount,
       max_discount_amount: schema.coupons.max_discount_amount,
       expires_at: schema.coupons.expires_at,
+      menu_item_id: schema.coupons.menu_item_id,
     })
     .from(schema.couponAssignments)
     .innerJoin(
@@ -553,6 +656,8 @@ customer.get("/my-coupons", customerAuth, requireActiveSession, async (c) => {
       and(
         eq(schema.couponAssignments.customer_id, customerId),
         eq(schema.coupons.status, "active"),
+        sql`(${schema.coupons.expires_at} IS NULL OR ${schema.coupons.expires_at} > NOW())`,
+        sql`(${schema.coupons.max_uses_total} IS NULL OR ${schema.coupons.current_uses} < ${schema.coupons.max_uses_total})`,
       ),
     );
 
@@ -596,6 +701,7 @@ customer.post("/orders", customerAuth, requireActiveSession, zValidator("json", 
       notes: body.notes,
       tableSessionId: session.id,
       customerId: user.customerId || null,
+      couponCode: body.couponCode || null,
     });
   } catch (err) {
     if (err instanceof OrderValidationError) {
@@ -725,8 +831,115 @@ customer.post(
         discount_value: coupon.discount_value,
         min_order_amount: coupon.min_order_amount,
         max_discount_amount: coupon.max_discount_amount,
+        menu_item_id: coupon.menu_item_id,
       },
     });
+  },
+);
+
+// POST /orders/:id/cancel - Cancel order before kitchen starts (customer auth)
+customer.post(
+  "/orders/:id/cancel",
+  customerAuth,
+  requireActiveSession,
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const user = c.get("user") as any;
+    const branchId = user.branch;
+
+    // Verify order belongs to customer's branch
+    const [order] = await db
+      .select()
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.id, id),
+          eq(schema.orders.branch_id, branchId),
+        ),
+      )
+      .limit(1);
+
+    if (!order) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Orden no encontrada" } },
+        404,
+      );
+    }
+
+    // Get all items for this order
+    const items = await db
+      .select()
+      .from(schema.orderItems)
+      .where(eq(schema.orderItems.order_id, id));
+
+    // Check ALL items are still pending
+    const nonPendingItem = items.find((item) => item.status !== "pending");
+    if (nonPendingItem) {
+      return c.json(
+        { success: false, error: { code: "CONFLICT", message: "El pedido ya está siendo preparado" } },
+        409,
+      );
+    }
+
+    // Update order status to cancelled
+    await db
+      .update(schema.orders)
+      .set({ status: "cancelled" })
+      .where(eq(schema.orders.id, id));
+
+    // Update all order items to cancelled
+    if (items.length > 0) {
+      await db
+        .update(schema.orderItems)
+        .set({ status: "cancelled" })
+        .where(eq(schema.orderItems.order_id, id));
+    }
+
+    // Revert coupon if order had one
+    const [redemption] = await db
+      .select()
+      .from(schema.couponRedemptions)
+      .where(eq(schema.couponRedemptions.order_id, id))
+      .limit(1);
+
+    if (redemption) {
+      // Decrement current_uses
+      await db
+        .update(schema.coupons)
+        .set({ current_uses: sql`GREATEST(${schema.coupons.current_uses} - 1, 0)` })
+        .where(eq(schema.coupons.id, redemption.coupon_id));
+
+      // Delete redemption record
+      await db
+        .delete(schema.couponRedemptions)
+        .where(eq(schema.couponRedemptions.id, redemption.id));
+
+      // Clear used_at on assignment if customer is known
+      if (order.customer_id) {
+        await db
+          .update(schema.couponAssignments)
+          .set({ used_at: null })
+          .where(
+            and(
+              eq(schema.couponAssignments.coupon_id, redemption.coupon_id),
+              eq(schema.couponAssignments.customer_id, order.customer_id),
+            ),
+          );
+      }
+    }
+
+    // Broadcast cancellation
+    await wsManager.publish(`branch:${branchId}`, {
+      type: "order:cancelled",
+      payload: {
+        orderId: id,
+        orderNumber: order.order_number,
+      },
+      timestamp: Date.now(),
+    });
+
+    return c.json({ success: true, data: { message: "Pedido cancelado exitosamente" } });
   },
 );
 

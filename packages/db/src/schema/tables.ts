@@ -27,7 +27,7 @@ export const spaces = pgTable(
     floor_number: integer("floor_number").default(1).notNull(),
     is_active: boolean("is_active").default(true).notNull(),
     sort_order: integer("sort_order").default(0).notNull(),
-    created_at: timestamp("created_at").defaultNow().notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     unique("spaces_branch_name_unique").on(table.branch_id, table.name),
@@ -53,7 +53,7 @@ export const tables = pgTable(
     status: tableStatusEnum("status").default("available").notNull(),
     position_x: integer("position_x").default(0).notNull(),
     position_y: integer("position_y").default(0).notNull(),
-    created_at: timestamp("created_at").defaultNow().notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     unique("tables_branch_number_unique").on(table.branch_id, table.number),
@@ -74,7 +74,7 @@ export const tableAssignments = pgTable("table_assignments", {
   organization_id: uuid("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const tableSessions = pgTable("table_sessions", {
@@ -92,6 +92,6 @@ export const tableSessions = pgTable("table_sessions", {
   customer_phone: varchar("customer_phone", { length: 20 }),
   token: text("token").notNull(),
   status: sessionStatusEnum("status").default("active").notNull(),
-  started_at: timestamp("started_at").defaultNow().notNull(),
-  ended_at: timestamp("ended_at"),
+  started_at: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+  ended_at: timestamp("ended_at", { withTimezone: true }),
 });

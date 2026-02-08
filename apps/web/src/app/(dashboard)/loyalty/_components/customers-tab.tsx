@@ -7,9 +7,10 @@ import {
   CardContent,
 } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
-import { Plus, RefreshCw } from "lucide-react";
-import { useLoyaltyCustomers } from "@/hooks/use-loyalty";
+import { Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
+import { useLoyaltyCustomers, useDeleteCustomer } from "@/hooks/use-loyalty";
 import { SearchInput } from "@/components/search-input";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CreateCustomerDialog } from "./customer-dialog";
 
 const tierConfig: Record<string, { label: string; color: string }> = {
@@ -38,18 +39,23 @@ function Skeleton({ className }: { className?: string }) {
 export function CustomersTab() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [showCreate, setShowCreate] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [timer, setTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
 
   function handleSearch(val: string) {
     setSearch(val);
+    setPage(1);
     if (timer) clearTimeout(timer);
     const t = setTimeout(() => setDebouncedSearch(val), 300);
     setTimer(t);
   }
 
-  const { data, isLoading, error, refetch } = useLoyaltyCustomers(debouncedSearch || undefined);
-  const customers: any[] = data ?? [];
+  const { data, isLoading, error, refetch } = useLoyaltyCustomers(debouncedSearch || undefined, page);
+  const customers: any[] = data?.customers ?? [];
+  const pagination = data?.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 };
+  const deleteCustomer = useDeleteCustomer();
 
   if (error) {
     return (
@@ -86,6 +92,7 @@ export function CustomersTab() {
                   <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden sm:table-cell">Telefono</th>
                   <th className="text-center p-3 text-sm font-medium text-muted-foreground">Tier</th>
                   <th className="text-right p-3 text-sm font-medium text-muted-foreground">Puntos</th>
+                  <th className="w-10 p-3" />
                 </tr>
               </thead>
               <tbody>
@@ -96,11 +103,12 @@ export function CustomersTab() {
                       <td className="p-3 hidden sm:table-cell"><Skeleton className="h-4 w-20" /></td>
                       <td className="p-3"><Skeleton className="h-5 w-14 mx-auto rounded-full" /></td>
                       <td className="p-3"><Skeleton className="h-4 w-12 ml-auto" /></td>
+                      <td className="p-3" />
                     </tr>
                   ))
                 ) : customers.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="p-8 text-center text-sm text-muted-foreground">
+                    <td colSpan={5} className="p-8 text-center text-sm text-muted-foreground">
                       {debouncedSearch ? "No se encontraron clientes" : "No hay clientes registrados"}
                     </td>
                   </tr>
@@ -121,6 +129,16 @@ export function CustomersTab() {
                           <span className={`text-xs px-2 py-1 rounded-full font-medium ${tier.color}`}>{tier.label}</span>
                         </td>
                         <td className="p-3 text-sm font-medium text-right text-foreground">{(customer.points_balance || 0).toLocaleString()}</td>
+                        <td className="p-3">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={() => setDeleteConfirm({ id: customer.id, name: customer.name })}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </td>
                       </tr>
                     );
                   })
@@ -131,7 +149,54 @@ export function CustomersTab() {
         </CardContent>
       </Card>
 
+      {pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            {pagination.total} clientes en total
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage(page - 1)}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Anterior
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Pagina {pagination.page} de {pagination.totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= pagination.totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Siguiente
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
       <CreateCustomerDialog open={showCreate} onOpenChange={setShowCreate} />
+
+      <ConfirmDialog
+        open={!!deleteConfirm}
+        onOpenChange={(v) => !v && setDeleteConfirm(null)}
+        title="Eliminar cliente"
+        description={`Se eliminara a "${deleteConfirm?.name}" y todos sus datos de loyalty (puntos, transacciones, cupones). Los pedidos existentes se conservaran. Esta accion no se puede deshacer.`}
+        confirmLabel="Eliminar"
+        onConfirm={() => {
+          if (deleteConfirm) {
+            deleteCustomer.mutate(deleteConfirm.id, {
+              onSuccess: () => setDeleteConfirm(null),
+            });
+          }
+        }}
+        loading={deleteCustomer.isPending}
+      />
     </div>
   );
 }

@@ -43,8 +43,8 @@ export const orders = pgTable("orders", {
   total: integer("total").notNull().default(0),
   notes: text("notes"),
   inventory_deducted: boolean("inventory_deducted").default(false).notNull(),
-  created_at: timestamp("created_at").defaultNow().notNull(),
-  updated_at: timestamp("updated_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const orderItems = pgTable("order_items", {

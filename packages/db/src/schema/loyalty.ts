@@ -24,7 +24,7 @@ export const customers = pgTable("customers", {
   email: varchar("email", { length: 255 }),
   phone: varchar("phone", { length: 20 }),
   birth_date: date("birth_date"),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const loyaltyPrograms = pgTable("loyalty_programs", {
@@ -77,7 +77,7 @@ export const loyaltyTransactions = pgTable("loyalty_transactions", {
   points: integer("points").notNull(),
   type: loyaltyTransactionTypeEnum("type").notNull(),
   description: text("description"),
-  created_at: timestamp("created_at").defaultNow().notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const rewards = pgTable("rewards", {
@@ -102,5 +102,5 @@ export const rewardRedemptions = pgTable("reward_redemptions", {
     .notNull()
     .references(() => rewards.id, { onDelete: "restrict" }),
   order_id: uuid("order_id"), // FK to orders -- applied via migration to avoid circular import
-  redeemed_at: timestamp("redeemed_at").defaultNow().notNull(),
+  redeemed_at: timestamp("redeemed_at", { withTimezone: true }).defaultNow().notNull(),
 });
