@@ -124,6 +124,7 @@ export const createOrderSchema = z.object({
   notes: z.string().max(500).optional(),
   items: z.array(createOrderItemSchema).min(1, "La orden debe tener al menos un item"),
   couponCode: z.string().max(50).optional(),
+  redemptionId: z.string().uuid().optional(),
 });
 
 export const updateOrderStatusSchema = z.object({

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, sql, desc, isNull } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   startSessionSchema,
@@ -13,6 +13,7 @@ import { signCustomerToken, verifyAccessToken } from "../lib/jwt.js";
 import { wsManager } from "../ws/manager.js";
 import { findOrCreate } from "../services/customer.service.js";
 import { createOrder, OrderValidationError } from "../services/order.service.js";
+import { redeemReward } from "../services/loyalty.service.js";
 import * as sessionService from "../services/session.service.js";
 
 const customer = new Hono<AppEnv>();
@@ -702,6 +703,7 @@ customer.post("/orders", customerAuth, requireActiveSession, zValidator("json", 
       tableSessionId: session.id,
       customerId: user.customerId || null,
       couponCode: body.couponCode || null,
+      redemptionId: body.redemptionId || null,
     });
   } catch (err) {
     if (err instanceof OrderValidationError) {
@@ -992,5 +994,145 @@ customer.post(
     return c.json({ success: true, data: { message } });
   },
 );
+
+// POST /redeem-reward - Self-service reward redemption (customer auth)
+customer.post(
+  "/redeem-reward",
+  customerAuth,
+  requireActiveSession,
+  zValidator("json", z.object({ rewardId: z.string().uuid() })),
+  async (c) => {
+    const user = c.get("user") as any;
+    const customerId = user.customerId;
+
+    if (!customerId) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "No tienes cuenta de fidelidad" } },
+        400,
+      );
+    }
+
+    // Find customer loyalty enrollment
+    const [enrollment] = await db
+      .select({ id: schema.customerLoyalty.id })
+      .from(schema.customerLoyalty)
+      .where(eq(schema.customerLoyalty.customer_id, customerId))
+      .limit(1);
+
+    if (!enrollment) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "No estas inscrito en el programa de fidelidad" } },
+        400,
+      );
+    }
+
+    const { rewardId } = c.req.valid("json");
+
+    try {
+      const result = await redeemReward({
+        rewardId,
+        customerLoyaltyId: enrollment.id,
+        organizationId: user.org,
+      });
+      return c.json({ success: true, data: result }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      if (message === "REWARD_NOT_FOUND") {
+        return c.json({ success: false, error: { code: "NOT_FOUND", message: "Recompensa no encontrada" } }, 404);
+      }
+      if (message === "INSUFFICIENT_POINTS") {
+        return c.json({ success: false, error: { code: "BAD_REQUEST", message: "Puntos insuficientes" } }, 400);
+      }
+      if (message === "PROGRAM_MISMATCH") {
+        return c.json({ success: false, error: { code: "BAD_REQUEST", message: "La recompensa no pertenece a tu programa" } }, 400);
+      }
+      throw err;
+    }
+  },
+);
+
+// GET /my-orders - Orders for the current session (customer auth)
+customer.get("/my-orders", customerAuth, requireActiveSession, async (c) => {
+  const session = c.get("session") as any;
+
+  const orders = await db
+    .select({
+      id: schema.orders.id,
+      order_number: schema.orders.order_number,
+      status: schema.orders.status,
+      total: schema.orders.total,
+      created_at: schema.orders.created_at,
+    })
+    .from(schema.orders)
+    .where(eq(schema.orders.table_session_id, session.id))
+    .orderBy(desc(schema.orders.created_at));
+
+  if (orders.length === 0) {
+    return c.json({ success: true, data: [] });
+  }
+
+  const orderIds = orders.map((o) => o.id);
+  const allItems = await db
+    .select({
+      id: schema.orderItems.id,
+      name: schema.orderItems.name,
+      quantity: schema.orderItems.quantity,
+      status: schema.orderItems.status,
+      order_id: schema.orderItems.order_id,
+    })
+    .from(schema.orderItems)
+    .where(
+      orderIds.length === 1
+        ? eq(schema.orderItems.order_id, orderIds[0])
+        : inArray(schema.orderItems.order_id, orderIds),
+    );
+
+  const data = orders.map((o) => ({
+    ...o,
+    items: allItems.filter((i) => i.order_id === o.id),
+  }));
+
+  return c.json({ success: true, data });
+});
+
+// GET /my-redemptions - Pending redemptions not yet applied to an order (customer auth)
+customer.get("/my-redemptions", customerAuth, requireActiveSession, async (c) => {
+  const user = c.get("user") as any;
+  const customerId = user.customerId;
+
+  if (!customerId) {
+    return c.json({ success: true, data: [] });
+  }
+
+  // Find customer loyalty enrollment
+  const [enrollment] = await db
+    .select({ id: schema.customerLoyalty.id })
+    .from(schema.customerLoyalty)
+    .where(eq(schema.customerLoyalty.customer_id, customerId))
+    .limit(1);
+
+  if (!enrollment) {
+    return c.json({ success: true, data: [] });
+  }
+
+  const redemptions = await db
+    .select({
+      id: schema.rewardRedemptions.id,
+      reward_name: schema.rewards.name,
+      discount_type: schema.rewards.discount_type,
+      discount_value: schema.rewards.discount_value,
+      redeemed_at: schema.rewardRedemptions.redeemed_at,
+    })
+    .from(schema.rewardRedemptions)
+    .innerJoin(schema.rewards, eq(schema.rewardRedemptions.reward_id, schema.rewards.id))
+    .where(
+      and(
+        eq(schema.rewardRedemptions.customer_loyalty_id, enrollment.id),
+        isNull(schema.rewardRedemptions.order_id),
+      ),
+    );
+
+  return c.json({ success: true, data: redemptions });
+});
 
 export { customer };

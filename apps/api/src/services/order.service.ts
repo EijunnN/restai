@@ -1,4 +1,4 @@
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, sql, isNull } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { generateOrderNumber } from "../lib/id.js";
 import { logger } from "../lib/logger.js";
@@ -22,6 +22,7 @@ interface CreateOrderParams {
   tableSessionId?: string | null;
   customerId?: string | null;
   couponCode?: string | null;
+  redemptionId?: string | null;
 }
 
 interface CreateOrderResult {
@@ -44,6 +45,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     tableSessionId,
     customerId,
     couponCode,
+    redemptionId,
   } = params;
 
   // Get menu items for price calculation
@@ -117,6 +119,15 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       couponId = couponResult.couponId;
     }
 
+    // Apply reward redemption discount (stacks with coupon)
+    let redemptionDiscount = 0;
+    if (redemptionId) {
+      const rd = await applyRedemption({ redemptionId, customerId: customerId || null, subtotal, couponDiscount: discount }, tx);
+      redemptionDiscount = rd.discount;
+    }
+
+    discount += redemptionDiscount;
+
     // IGV se calcula sobre la base imponible (subtotal - descuento)
     const taxableBase = subtotal - discount;
     const tax = Math.round((taxableBase * taxRate) / 10000);
@@ -150,6 +161,14 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         })),
       )
       .returning();
+
+    // Link reward redemption to order
+    if (redemptionId && redemptionDiscount > 0) {
+      await tx
+        .update(schema.rewardRedemptions)
+        .set({ order_id: order.id })
+        .where(eq(schema.rewardRedemptions.id, redemptionId));
+    }
 
     // Record coupon redemption
     if (couponId) {
@@ -335,6 +354,71 @@ async function applyCoupon(params: ApplyCouponParams, tx: TxOrDb): Promise<{ dis
   discount = Math.min(discount, subtotal);
 
   return { discount, couponId: coupon.id };
+}
+
+// ---------------------------------------------------------------------------
+// Reward redemption discount calculation
+// ---------------------------------------------------------------------------
+
+interface ApplyRedemptionParams {
+  redemptionId: string;
+  customerId: string | null;
+  subtotal: number;
+  couponDiscount: number;
+}
+
+async function applyRedemption(params: ApplyRedemptionParams, tx: TxOrDb): Promise<{ discount: number }> {
+  const { redemptionId, customerId, subtotal, couponDiscount } = params;
+
+  // Fetch the pending redemption (order_id IS NULL = not yet used)
+  const [redemption] = await tx
+    .select({
+      id: schema.rewardRedemptions.id,
+      customer_loyalty_id: schema.rewardRedemptions.customer_loyalty_id,
+      discount_type: schema.rewards.discount_type,
+      discount_value: schema.rewards.discount_value,
+    })
+    .from(schema.rewardRedemptions)
+    .innerJoin(schema.rewards, eq(schema.rewardRedemptions.reward_id, schema.rewards.id))
+    .where(
+      and(
+        eq(schema.rewardRedemptions.id, redemptionId),
+        isNull(schema.rewardRedemptions.order_id),
+      ),
+    )
+    .limit(1);
+
+  if (!redemption) {
+    throw new OrderValidationError("Canje no encontrado o ya fue utilizado");
+  }
+
+  // Validate ownership: redemption must belong to this customer
+  if (customerId) {
+    const [enrollment] = await tx
+      .select({ customer_id: schema.customerLoyalty.customer_id })
+      .from(schema.customerLoyalty)
+      .where(eq(schema.customerLoyalty.id, redemption.customer_loyalty_id))
+      .limit(1);
+
+    if (!enrollment || enrollment.customer_id !== customerId) {
+      throw new OrderValidationError("Este canje no te pertenece");
+    }
+  }
+
+  // Calculate discount on the remaining amount after coupon
+  const remainingSubtotal = subtotal - couponDiscount;
+  let discount = 0;
+
+  if (redemption.discount_type === "percentage") {
+    discount = Math.round(remainingSubtotal * (redemption.discount_value / 100));
+  } else {
+    // fixed amount
+    discount = Math.min(redemption.discount_value, remainingSubtotal);
+  }
+
+  discount = Math.max(0, Math.min(discount, remainingSubtotal));
+
+  return { discount };
 }
 
 /**

@@ -3,7 +3,6 @@
 import { use, useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
-import { Badge } from "@restai/ui/components/badge";
 import { useCustomerStore } from "@/stores/customer-store";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
@@ -25,8 +24,7 @@ import {
   Bell,
   XCircle,
   Star,
-  Gift,
-  TrendingUp,
+  ArrowRight,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -47,22 +45,6 @@ interface OrderData {
   tax?: number;
   discount?: number;
   total?: number;
-}
-
-interface LoyaltyData {
-  points_balance: number;
-  total_points_earned: number;
-  program_name: string;
-  tier_name: string | null;
-  next_tier: { name: string; min_points: number } | null;
-  rewards: Array<{
-    id: string;
-    name: string;
-    description: string | null;
-    points_cost: number;
-    discount_type: string;
-    discount_value: number;
-  }>;
 }
 
 const steps = [
@@ -109,7 +91,6 @@ export default function OrderStatusPage({
   const storeToken = useCustomerStore((s) => s.token);
 
   const [order, setOrder] = useState<OrderData | null>(null);
-  const [loyalty, setLoyalty] = useState<LoyaltyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,22 +173,6 @@ export default function OrderStatusPage({
     }
   }, [getOrderId, getToken]);
 
-  const fetchLoyalty = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
-    try {
-      const res = await fetch("http://localhost:3001/api/customer/my-loyalty", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const result = await res.json();
-      if (result.success && result.data) {
-        setLoyalty(result.data);
-      }
-    } catch {
-      // silently fail — loyalty is optional
-    }
-  }, [getToken]);
-
   const handleCancelOrder = useCallback(async () => {
     const orderId = getOrderId();
     const token = getToken();
@@ -241,8 +206,7 @@ export default function OrderStatusPage({
 
   useEffect(() => {
     fetchOrder();
-    fetchLoyalty();
-  }, [fetchOrder, fetchLoyalty]);
+  }, [fetchOrder]);
 
   // Show confirmation banner on first load if order is new
   useEffect(() => {
@@ -413,100 +377,16 @@ export default function OrderStatusPage({
         </CardContent>
       </Card>
 
-      {/* Loyalty points card */}
-      {loyalty && (
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Star className="h-5 w-5 text-primary" />
-              <p className="font-semibold text-sm">{loyalty.program_name}</p>
-              {loyalty.tier_name && (
-                <Badge variant="secondary" className="text-xs ml-auto">
-                  {loyalty.tier_name}
-                </Badge>
-              )}
-            </div>
-
-            <div className="flex items-baseline gap-1">
-              <span className="text-3xl font-bold text-primary">
-                {loyalty.points_balance.toLocaleString()}
-              </span>
-              <span className="text-sm text-muted-foreground">puntos disponibles</span>
-            </div>
-
-            {loyalty.next_tier && (
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>Progreso a {loyalty.next_tier.name}</span>
-                  <span>{loyalty.total_points_earned.toLocaleString()} / {loyalty.next_tier.min_points.toLocaleString()}</span>
-                </div>
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-primary rounded-full transition-all"
-                    style={{
-                      width: `${Math.min(100, (loyalty.total_points_earned / loyalty.next_tier.min_points) * 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Available rewards */}
-            {loyalty.rewards.length > 0 && (
-              <div className="pt-2 border-t border-primary/10 space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <Gift className="h-4 w-4 text-primary" />
-                  <p className="text-xs font-medium text-foreground">Recompensas disponibles</p>
-                </div>
-                {loyalty.rewards.map((reward) => {
-                  const canRedeem = loyalty.points_balance >= reward.points_cost;
-                  return (
-                    <div
-                      key={reward.id}
-                      className={cn(
-                        "flex items-center justify-between p-2.5 rounded-lg border text-sm",
-                        canRedeem
-                          ? "border-primary/30 bg-background"
-                          : "border-border bg-muted/30 opacity-60",
-                      )}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium text-sm truncate">{reward.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {reward.discount_type === "percentage"
-                            ? `${reward.discount_value}% de descuento`
-                            : `${formatCurrency(reward.discount_value)} de descuento`}
-                        </p>
-                      </div>
-                      <div className="text-right shrink-0 ml-2">
-                        <p className={cn(
-                          "text-xs font-bold",
-                          canRedeem ? "text-primary" : "text-muted-foreground",
-                        )}>
-                          {reward.points_cost.toLocaleString()} pts
-                        </p>
-                        {!canRedeem && (
-                          <p className="text-[10px] text-muted-foreground">
-                            Faltan {(reward.points_cost - loyalty.points_balance).toLocaleString()}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                <p className="text-[10px] text-muted-foreground text-center">
-                  Pide al mozo para canjear tus recompensas
-                </p>
-              </div>
-            )}
-
-            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <TrendingUp className="h-3 w-3" />
-              <span>Ganas puntos con cada pedido</span>
-            </div>
+      {/* Loyalty profile link */}
+      <Link href={`/${branchSlug}/${tableCode}/profile`}>
+        <Card className="border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors cursor-pointer">
+          <CardContent className="p-4 flex items-center gap-3">
+            <Star className="h-5 w-5 text-primary shrink-0" />
+            <p className="text-sm font-medium flex-1">Ver mis puntos y recompensas</p>
+            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
           </CardContent>
         </Card>
-      )}
+      </Link>
 
       {/* Cancel button - only when order status is pending */}
       {canCancel && (

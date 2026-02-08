@@ -8,7 +8,7 @@ import { Input } from "@restai/ui/components/input";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency } from "@/lib/utils";
-import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown } from "lucide-react";
+import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift } from "lucide-react";
 import { toast } from "sonner";
 
 const TAX_RATE = 1800; // 18% IGV
@@ -68,22 +68,32 @@ export default function CartPage({
   const [couponError, setCouponError] = useState<string | null>(null);
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number; menu_item_id?: string | null } | null>(null);
   const [availableCoupons, setAvailableCoupons] = useState<any[]>([]);
+  const [pendingRedemptions, setPendingRedemptions] = useState<Array<{ id: string; reward_name: string; discount_type: string; discount_value: number }>>([]);
+  const [appliedRedemption, setAppliedRedemption] = useState<{ id: string; reward_name: string; discount_type: string; discount_value: number } | null>(null);
 
   useEffect(() => {
     const token = getToken();
     if (!token) return;
-    async function fetchCoupons() {
+    async function fetchDiscounts() {
       try {
-        const res = await fetch("http://localhost:3001/api/customer/my-coupons", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const data = await res.json();
-        if (data.success && data.data?.length > 0) {
-          setAvailableCoupons(data.data);
+        const headers = { Authorization: `Bearer ${token}` };
+        const [couponsRes, redemptionsRes] = await Promise.all([
+          fetch("http://localhost:3001/api/customer/my-coupons", { headers }),
+          fetch("http://localhost:3001/api/customer/my-redemptions", { headers }),
+        ]);
+        const [couponsData, redemptionsData] = await Promise.all([
+          couponsRes.json(),
+          redemptionsRes.json(),
+        ]);
+        if (couponsData.success && couponsData.data?.length > 0) {
+          setAvailableCoupons(couponsData.data);
+        }
+        if (redemptionsData.success && redemptionsData.data?.length > 0) {
+          setPendingRedemptions(redemptionsData.data);
         }
       } catch {}
     }
-    fetchCoupons();
+    fetchDiscounts();
   }, []);
 
   const subtotal = getSubtotal();
@@ -171,10 +181,23 @@ export default function CartPage({
   }
 
   const couponDiscount = getCouponDiscount();
+
+  function getRedemptionDiscount(): number {
+    if (!appliedRedemption) return 0;
+    const remaining = subtotal - couponDiscount;
+    if (remaining <= 0) return 0;
+    if (appliedRedemption.discount_type === "percentage") {
+      return Math.round(remaining * (appliedRedemption.discount_value / 100));
+    }
+    return Math.min(appliedRedemption.discount_value, remaining);
+  }
+
+  const redemptionDiscount = getRedemptionDiscount();
+  const totalDiscount = couponDiscount + redemptionDiscount;
   // IGV is calculated on (subtotal - discount) to match backend logic
-  const taxableBase = subtotal - couponDiscount;
-  const adjustedTax = couponDiscount > 0 ? Math.round((taxableBase * TAX_RATE) / 10000) : tax;
-  const adjustedTotal = couponDiscount > 0 ? taxableBase + adjustedTax : total;
+  const taxableBase = subtotal - totalDiscount;
+  const adjustedTax = totalDiscount > 0 ? Math.round((taxableBase * TAX_RATE) / 10000) : tax;
+  const adjustedTotal = totalDiscount > 0 ? taxableBase + adjustedTax : total;
 
   const handleConfirmOrder = async () => {
     try {
@@ -199,6 +222,7 @@ export default function CartPage({
             })),
           })),
           ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}),
+          ...(appliedRedemption ? { redemptionId: appliedRedemption.id } : {}),
         }),
       });
 
@@ -430,6 +454,63 @@ export default function CartPage({
         </CardContent>
       </Card>
 
+      {/* Reward redemptions section */}
+      {(pendingRedemptions.length > 0 || appliedRedemption) && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground mb-3">
+              <Gift className="h-4 w-4 text-primary" />
+              Recompensas Canjeadas
+              {appliedRedemption && (
+                <span className="text-[10px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">
+                  Aplicada
+                </span>
+              )}
+            </div>
+
+            {appliedRedemption ? (
+              <div className="flex items-center justify-between rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
+                <div className="flex items-center gap-2">
+                  <Check className="h-4 w-4 text-green-600 dark:text-green-400" />
+                  <div>
+                    <p className="text-sm font-medium text-green-800 dark:text-green-300">{appliedRedemption.reward_name}</p>
+                    <p className="text-xs text-green-600 dark:text-green-400">
+                      {appliedRedemption.discount_type === "percentage"
+                        ? `${appliedRedemption.discount_value}% de descuento`
+                        : `${formatCurrency(appliedRedemption.discount_value)} de descuento`}
+                      {redemptionDiscount > 0 && ` · -${formatCurrency(redemptionDiscount)}`}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => setAppliedRedemption(null)} className="p-1">
+                  <X className="h-4 w-4 text-green-600 dark:text-green-400" />
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {pendingRedemptions.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => setAppliedRedemption(r)}
+                    className="w-full flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{r.reward_name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {r.discount_type === "percentage"
+                          ? `${r.discount_value}% de descuento`
+                          : `${formatCurrency(r.discount_value)} de descuento`}
+                      </p>
+                    </div>
+                    <span className="text-xs font-bold text-primary">Aplicar</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Summary */}
       <Card>
         <CardContent className="p-4 space-y-3">
@@ -443,9 +524,15 @@ export default function CartPage({
               <span className="font-medium text-green-600 dark:text-green-400">-{formatCurrency(couponDiscount)}</span>
             </div>
           )}
+          {redemptionDiscount > 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-green-600 dark:text-green-400">Recompensa</span>
+              <span className="font-medium text-green-600 dark:text-green-400">-{formatCurrency(redemptionDiscount)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">IGV (18%)</span>
-            <span className="font-medium">{formatCurrency(couponDiscount > 0 ? adjustedTax : tax)}</span>
+            <span className="font-medium">{formatCurrency(totalDiscount > 0 ? adjustedTax : tax)}</span>
           </div>
           <div className="border-t border-border pt-3">
             <div className="flex justify-between font-bold text-lg">

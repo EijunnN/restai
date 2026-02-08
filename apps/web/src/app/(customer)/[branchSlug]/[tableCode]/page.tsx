@@ -78,6 +78,7 @@ export default function CustomerEntryPage({
         sessionId: existingSession.sessionId,
         branchSlug,
         tableCode,
+        customerName: existingSession.customerName,
       });
       router.push(`/${branchSlug}/${tableCode}/menu`);
     }
@@ -134,6 +135,7 @@ export default function CustomerEntryPage({
           sessionId: result.data.sessionId,
           branchSlug,
           tableCode,
+          customerName: data.customerName,
         });
         router.push(`/${branchSlug}/${tableCode}/menu`);
         return;
@@ -144,6 +146,7 @@ export default function CustomerEntryPage({
         sessionId: result.data.session.id,
         branchSlug,
         tableCode,
+        customerName: data.customerName,
       });
 
       router.push(`/${branchSlug}/${tableCode}/waiting`);
