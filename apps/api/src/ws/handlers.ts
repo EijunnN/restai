@@ -50,18 +50,12 @@ export async function handleWsMessage(
     }
 
     case "join": {
-      if (data.room) {
-        await manager.joinRoom(clientId, data.room);
-        ws.send(JSON.stringify({ type: "joined", room: data.room, timestamp: Date.now() }));
-      }
+      ws.send(JSON.stringify({ type: "error", message: "Rooms are assigned automatically on auth" }));
       break;
     }
 
     case "leave": {
-      if (data.room) {
-        await manager.leaveRoom(clientId, data.room);
-        ws.send(JSON.stringify({ type: "left", room: data.room, timestamp: Date.now() }));
-      }
+      ws.send(JSON.stringify({ type: "error", message: "Room management is automatic" }));
       break;
     }
 

@@ -15,6 +15,8 @@ import {
   ChevronDown,
 } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
 interface MenuItem {
   id: string;
   name: string;
@@ -58,7 +60,7 @@ export default function ProductDetailPage({
       try {
         setLoading(true);
         const res = await fetch(
-          `http://localhost:3001/api/customer/${branchSlug}/${tableCode}/menu`,
+          `${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`,
         );
         const result = await res.json();
         if (!result.success) {
@@ -79,7 +81,7 @@ export default function ProductDetailPage({
     async function fetchModifiers() {
       try {
         const res = await fetch(
-          `http://localhost:3001/api/customer/${branchSlug}/menu/items/${itemId}/modifiers`,
+          `${API_URL}/api/customer/${branchSlug}/menu/items/${itemId}/modifiers`,
         );
         const result = await res.json();
         if (result.success) {

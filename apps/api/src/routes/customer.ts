@@ -207,7 +207,6 @@ customer.get("/:branchSlug/:tableCode/check-session", async (c) => {
       id: schema.tableSessions.id,
       status: schema.tableSessions.status,
       customer_name: schema.tableSessions.customer_name,
-      token: schema.tableSessions.token,
     })
     .from(schema.tableSessions)
     .where(
@@ -226,7 +225,6 @@ customer.get("/:branchSlug/:tableCode/check-session", async (c) => {
         status: "active",
         sessionId: activeSession.id,
         customerName: activeSession.customer_name,
-        token: activeSession.token,
       },
     });
   }

@@ -29,10 +29,14 @@ import { customer } from "./routes/customer.js";
 import { uploads } from "./routes/uploads.js";
 import { coupons } from "./routes/coupons.js";
 
+const CORS_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(",")
+  : ["http://localhost:3000"];
+
 const app = new Hono<AppEnv>();
 
 // Global middleware
-app.use("*", cors({ origin: ["http://localhost:3000"], credentials: true }));
+app.use("*", cors({ origin: CORS_ORIGINS, credentials: true }));
 app.use("*", secureHeaders());
 app.use("*", logger());
 app.onError(errorHandler);

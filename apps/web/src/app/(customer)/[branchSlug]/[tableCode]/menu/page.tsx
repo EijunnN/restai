@@ -10,6 +10,8 @@ import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency, cn } from "@/lib/utils";
 import { ShoppingCart, Plus, Minus, Loader2, ImageOff, UtensilsCrossed, Receipt, Bell } from "lucide-react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
 interface MenuItem {
   id: string;
   name: string;
@@ -72,7 +74,7 @@ export default function CustomerMenuPage({
       setSessionValid(false);
       return;
     }
-    fetch(`http://localhost:3001/api/customer/${branchSlug}/${tableCode}/check-session`, {
+    fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
@@ -96,7 +98,7 @@ export default function CustomerMenuPage({
     if (!token || !sessionId) return;
     try {
       setActionLoading(action);
-      await fetch("http://localhost:3001/api/customer/table-action", {
+      await fetch(`${API_URL}/api/customer/table-action`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -116,7 +118,7 @@ export default function CustomerMenuPage({
       try {
         setLoading(true);
         const res = await fetch(
-          `http://localhost:3001/api/customer/${branchSlug}/${tableCode}/menu`,
+          `${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`,
         );
         const result = await res.json();
         if (!result.success) {

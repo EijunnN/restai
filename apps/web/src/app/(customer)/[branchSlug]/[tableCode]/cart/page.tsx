@@ -11,6 +11,7 @@ import { formatCurrency } from "@/lib/utils";
 import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift } from "lucide-react";
 import { toast } from "sonner";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 const TAX_RATE = 1800; // 18% IGV
 
 export default function CartPage({
@@ -45,7 +46,7 @@ export default function CartPage({
       router.replace(`/${branchSlug}/${tableCode}`);
       return;
     }
-    fetch(`http://localhost:3001/api/customer/${branchSlug}/${tableCode}/check-session`, {
+    fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
@@ -78,8 +79,8 @@ export default function CartPage({
       try {
         const headers = { Authorization: `Bearer ${token}` };
         const [couponsRes, redemptionsRes] = await Promise.all([
-          fetch("http://localhost:3001/api/customer/my-coupons", { headers }),
-          fetch("http://localhost:3001/api/customer/my-redemptions", { headers }),
+          fetch(`${API_URL}/api/customer/my-coupons`, { headers }),
+          fetch(`${API_URL}/api/customer/my-redemptions`, { headers }),
         ]);
         const [couponsData, redemptionsData] = await Promise.all([
           couponsRes.json(),
@@ -114,7 +115,7 @@ export default function CartPage({
       setCouponLoading(true);
       setCouponError(null);
       const token = getToken();
-      const res = await fetch("http://localhost:3001/api/customer/validate-coupon", {
+      const res = await fetch(`${API_URL}/api/customer/validate-coupon`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -205,7 +206,7 @@ export default function CartPage({
       setError(null);
       const token = getToken();
 
-      const res = await fetch("http://localhost:3001/api/customer/orders", {
+      const res = await fetch(`${API_URL}/api/customer/orders`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

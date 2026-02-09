@@ -1,7 +1,11 @@
 import { sign, verify } from "hono/jwt";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "dev-refresh-secret-change-me";
+if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
+  throw new Error("JWT_SECRET and JWT_REFRESH_SECRET environment variables are required");
+}
+
+const JWT_SECRET: string = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET: string = process.env.JWT_REFRESH_SECRET;
 
 export async function signAccessToken(payload: {
   sub: string;
@@ -11,7 +15,7 @@ export async function signAccessToken(payload: {
 }) {
   const now = Math.floor(Date.now() / 1000);
   return sign(
-    { ...payload, iat: now, exp: now + 8 * 60 * 60 },
+    { ...payload, iat: now, exp: now + 15 * 60 },
     JWT_SECRET,
   );
 }

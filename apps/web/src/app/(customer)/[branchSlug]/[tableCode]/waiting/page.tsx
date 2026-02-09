@@ -7,6 +7,8 @@ import { Button } from "@restai/ui/components/button";
 import { Loader2, Clock, CheckCircle2, XCircle } from "lucide-react";
 import { useCustomerStore } from "@/stores/customer-store";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
 export default function WaitingPage({
   params,
 }: {
@@ -24,7 +26,7 @@ export default function WaitingPage({
     const poll = async () => {
       try {
         const res = await fetch(
-          `http://localhost:3001/api/customer/${branchSlug}/${tableCode}/session-status/${sessionId}`,
+          `${API_URL}/api/customer/${branchSlug}/${tableCode}/session-status/${sessionId}`,
         );
         const result = await res.json();
         if (result.success) {

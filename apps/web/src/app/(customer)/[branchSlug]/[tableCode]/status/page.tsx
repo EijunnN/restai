@@ -28,6 +28,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
 interface OrderItem {
   id: string;
   name: string;
@@ -128,7 +130,7 @@ export default function OrderStatusPage({
     if (!token || !sessionId) return;
     try {
       setActionLoading(action);
-      await fetch("http://localhost:3001/api/customer/table-action", {
+      await fetch(`${API_URL}/api/customer/table-action`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -155,7 +157,7 @@ export default function OrderStatusPage({
 
     try {
       const res = await fetch(
-        `http://localhost:3001/api/customer/orders/${orderId}`,
+        `${API_URL}/api/customer/orders/${orderId}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         },
@@ -181,7 +183,7 @@ export default function OrderStatusPage({
     try {
       setCancelling(true);
       const res = await fetch(
-        `http://localhost:3001/api/customer/orders/${orderId}/cancel`,
+        `${API_URL}/api/customer/orders/${orderId}/cancel`,
         {
           method: "POST",
           headers: {
