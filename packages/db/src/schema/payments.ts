@@ -6,6 +6,8 @@ import {
   integer,
   timestamp,
   jsonb,
+  index,
+  unique,
 } from "drizzle-orm/pg-core";
 import {
   paymentMethodEnum,
@@ -34,7 +36,9 @@ export const payments = pgTable("payments", {
   tip: integer("tip").default(0).notNull(), // in cents
   status: paymentStatusEnum("status").default("pending").notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_payments_order").on(table.order_id),
+]);
 
 export const invoices = pgTable("invoices", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -61,4 +65,7 @@ export const invoices = pgTable("invoices", {
   pdf_url: text("pdf_url"),
   xml_url: text("xml_url"),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  unique("uq_invoices_branch_series_number").on(table.branch_id, table.series, table.number),
+  index("idx_invoices_branch_series").on(table.branch_id, table.series),
+]);

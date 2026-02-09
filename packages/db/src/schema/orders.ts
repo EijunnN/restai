@@ -6,6 +6,7 @@ import {
   integer,
   boolean,
   timestamp,
+  index,
 } from "drizzle-orm/pg-core";
 import {
   orderTypeEnum,
@@ -45,7 +46,12 @@ export const orders = pgTable("orders", {
   inventory_deducted: boolean("inventory_deducted").default(false).notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_orders_branch_status").on(table.branch_id, table.status),
+  index("idx_orders_table_session").on(table.table_session_id),
+  index("idx_orders_customer").on(table.customer_id),
+  index("idx_orders_created_at").on(table.created_at),
+]);
 
 export const orderItems = pgTable("order_items", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -61,7 +67,9 @@ export const orderItems = pgTable("order_items", {
   total: integer("total").notNull(), // in cents
   notes: text("notes"),
   status: orderItemStatusEnum("status").default("pending").notNull(),
-});
+}, (table) => [
+  index("idx_order_items_order").on(table.order_id),
+]);
 
 export const orderItemModifiers = pgTable("order_item_modifiers", {
   id: uuid("id").primaryKey().defaultRandom(),

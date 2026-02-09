@@ -8,6 +8,8 @@ import {
   date,
   timestamp,
   jsonb,
+  index,
+  unique,
 } from "drizzle-orm/pg-core";
 import {
   loyaltyTransactionTypeEnum,
@@ -62,7 +64,9 @@ export const customerLoyalty = pgTable("customer_loyalty", {
   tier_id: uuid("tier_id").references(() => loyaltyTiers.id, {
     onDelete: "set null",
   }),
-});
+}, (table) => [
+  unique("uq_customer_loyalty_customer_program").on(table.customer_id, table.program_id),
+]);
 
 // Forward-declared reference: orders is in orders.ts which imports from this file.
 // loyalty_transactions.order_id will reference orders table.
@@ -78,7 +82,10 @@ export const loyaltyTransactions = pgTable("loyalty_transactions", {
   type: loyaltyTransactionTypeEnum("type").notNull(),
   description: text("description"),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_loyalty_tx_customer_loyalty").on(table.customer_loyalty_id),
+  index("idx_loyalty_tx_order").on(table.order_id),
+]);
 
 export const rewards = pgTable("rewards", {
   id: uuid("id").primaryKey().defaultRandom(),

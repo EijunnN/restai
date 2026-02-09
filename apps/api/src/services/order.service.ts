@@ -10,6 +10,7 @@ interface OrderItemInput {
   menuItemId: string;
   quantity: number;
   notes?: string;
+  modifiers?: Array<{ modifierId: string }>;
 }
 
 interface CreateOrderParams {
@@ -57,6 +58,27 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
 
   const menuItemMap = new Map(menuItemsResult.map((mi) => [mi.id, mi]));
 
+  // Collect all modifier IDs and fetch their prices
+  const allModifierIds = items.flatMap(
+    (i) => i.modifiers?.map((m) => m.modifierId) || [],
+  );
+
+  let modifierMap = new Map<
+    string,
+    { id: string; name: string; price: number }
+  >();
+  if (allModifierIds.length > 0) {
+    const modifierRecords = await db
+      .select({
+        id: schema.modifiers.id,
+        name: schema.modifiers.name,
+        price: schema.modifiers.price,
+      })
+      .from(schema.modifiers)
+      .where(inArray(schema.modifiers.id, allModifierIds));
+    modifierMap = new Map(modifierRecords.map((m) => [m.id, m]));
+  }
+
   // Validate items and calculate totals
   let subtotal = 0;
   const orderItemsData: Array<{
@@ -66,6 +88,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     quantity: number;
     total: number;
     notes?: string;
+    modifiers: Array<{ modifierId: string }>;
   }> = [];
 
   for (const item of items) {
@@ -77,7 +100,15 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       throw new OrderValidationError(`Item no disponible: ${menuItem.name}`);
     }
 
-    const itemTotal = menuItem.price * item.quantity;
+    let modifierPricePerUnit = 0;
+    if (item.modifiers?.length) {
+      for (const mod of item.modifiers) {
+        const modifier = modifierMap.get(mod.modifierId);
+        if (modifier) modifierPricePerUnit += modifier.price;
+      }
+    }
+
+    const itemTotal = (menuItem.price + modifierPricePerUnit) * item.quantity;
     subtotal += itemTotal;
 
     orderItemsData.push({
@@ -87,6 +118,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       quantity: item.quantity,
       total: itemTotal,
       notes: item.notes,
+      modifiers: item.modifiers || [],
     });
   }
 
@@ -155,12 +187,30 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     const createdItems = await tx
       .insert(schema.orderItems)
       .values(
-        orderItemsData.map((item) => ({
+        orderItemsData.map(({ modifiers: _mods, ...item }) => ({
           order_id: order.id,
           ...item,
         })),
       )
       .returning();
+
+    // Insert order item modifiers
+    for (let i = 0; i < createdItems.length; i++) {
+      const itemData = orderItemsData[i];
+      if (itemData.modifiers.length > 0) {
+        await tx.insert(schema.orderItemModifiers).values(
+          itemData.modifiers.map((mod) => {
+            const modifier = modifierMap.get(mod.modifierId);
+            return {
+              order_item_id: createdItems[i].id,
+              modifier_id: mod.modifierId,
+              name: modifier?.name || "Modificador",
+              price: modifier?.price || 0,
+            };
+          }),
+        );
+      }
+    }
 
     // Link reward redemption to order
     if (redemptionId && redemptionDiscount > 0) {

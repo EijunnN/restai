@@ -8,6 +8,13 @@
       "when": 1770427939583,
       "tag": "0000_bent_sentinels",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1770620476442,
+      "tag": "0001_loving_namor",
+      "breakpoints": true
     }
   ]
 }

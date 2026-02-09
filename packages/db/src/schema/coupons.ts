@@ -6,6 +6,7 @@ import {
   integer,
   timestamp,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import { couponTypeEnum, couponStatusEnum } from "./enums";
 import { organizations } from "./tenants";
@@ -34,7 +35,9 @@ export const coupons = pgTable("coupons", {
   starts_at: timestamp("starts_at", { withTimezone: true }),
   expires_at: timestamp("expires_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  unique("uq_coupons_org_code").on(table.organization_id, table.code),
+]);
 
 export const couponAssignments = pgTable(
   "coupon_assignments",
@@ -62,4 +65,6 @@ export const couponRedemptions = pgTable("coupon_redemptions", {
   order_id: uuid("order_id"),
   discount_applied: integer("discount_applied").notNull(),
   redeemed_at: timestamp("redeemed_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_coupon_redemptions_coupon_customer").on(table.coupon_id, table.customer_id),
+]);

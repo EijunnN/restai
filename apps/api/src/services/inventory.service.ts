@@ -16,31 +16,19 @@ export async function recordMovement(params: {
 }): Promise<typeof schema.inventoryMovements.$inferSelect> {
   const { itemId, type, quantity, reference, notes, createdBy } = params;
 
-  // Get current stock
-  const [item] = await db
-    .select()
-    .from(schema.inventoryItems)
-    .where(eq(schema.inventoryItems.id, itemId))
-    .limit(1);
-
-  if (!item) {
-    throw new InventoryItemNotFoundError(`Item no encontrado: ${itemId}`);
-  }
-
-  const currentStock = parseFloat(item.current_stock);
-  let newStock = currentStock;
-
-  if (type === "purchase") {
-    newStock += quantity;
-  } else if (type === "consumption" || type === "waste") {
-    newStock -= quantity;
-  } else {
-    // adjustment
-    newStock += quantity;
-  }
-
-  // Create movement + update stock in a transaction
   return await db.transaction(async (tx) => {
+    // Read inside transaction with row lock
+    const [item] = await tx
+      .select()
+      .from(schema.inventoryItems)
+      .where(eq(schema.inventoryItems.id, itemId))
+      .limit(1)
+      .for("update");
+
+    if (!item) {
+      throw new InventoryItemNotFoundError(`Item no encontrado: ${itemId}`);
+    }
+
     const [movement] = await tx
       .insert(schema.inventoryMovements)
       .values({
@@ -53,10 +41,16 @@ export async function recordMovement(params: {
       })
       .returning();
 
-    await tx
-      .update(schema.inventoryItems)
-      .set({ current_stock: String(newStock) })
-      .where(eq(schema.inventoryItems.id, itemId));
+    // Atomic stock update using SQL
+    if (type === "purchase" || type === "adjustment") {
+      await tx.update(schema.inventoryItems).set({
+        current_stock: sql`(${schema.inventoryItems.current_stock}::numeric + ${quantity})::text`,
+      }).where(eq(schema.inventoryItems.id, itemId));
+    } else {
+      await tx.update(schema.inventoryItems).set({
+        current_stock: sql`(${schema.inventoryItems.current_stock}::numeric - ${quantity})::text`,
+      }).where(eq(schema.inventoryItems.id, itemId));
+    }
 
     return movement;
   });

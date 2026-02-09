@@ -7,6 +7,7 @@ import {
   text,
   timestamp,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import { tableStatusEnum, sessionStatusEnum } from "./enums";
 import { organizations, branches } from "./tenants";
@@ -75,7 +76,9 @@ export const tableAssignments = pgTable("table_assignments", {
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  unique("uq_table_assignments_table_user").on(table.table_id, table.user_id),
+]);
 
 export const tableSessions = pgTable("table_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -94,4 +97,7 @@ export const tableSessions = pgTable("table_sessions", {
   status: sessionStatusEnum("status").default("active").notNull(),
   started_at: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
   ended_at: timestamp("ended_at", { withTimezone: true }),
-});
+}, (table) => [
+  index("idx_sessions_table_status").on(table.table_id, table.status),
+  index("idx_sessions_branch").on(table.branch_id),
+]);

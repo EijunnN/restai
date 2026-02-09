@@ -81,45 +81,49 @@ invoices.post(
       );
     }
 
-    // Generate series/number
-    const prefix = body.type === "boleta" ? "B001" : "F001";
-    const lastInvoice = await db
-      .select({ number: schema.invoices.number })
-      .from(schema.invoices)
-      .where(
-        and(
-          eq(schema.invoices.branch_id, tenant.branchId),
-          eq(schema.invoices.series, prefix),
-        ),
-      )
-      .orderBy(desc(schema.invoices.number))
-      .limit(1);
+    // Generate series/number + insert in a transaction with row locking
+    const invoice = await db.transaction(async (tx) => {
+      const prefix = body.type === "boleta" ? "B001" : "F001";
 
-    const nextNumber = (lastInvoice[0]?.number || 0) + 1;
+      const lastInvoice = await tx
+        .select({ number: schema.invoices.number })
+        .from(schema.invoices)
+        .where(
+          and(
+            eq(schema.invoices.branch_id, tenant.branchId),
+            eq(schema.invoices.series, prefix),
+          ),
+        )
+        .orderBy(desc(schema.invoices.number))
+        .limit(1)
+        .for("update");
 
-    // Calculate from order total: total includes IGV (18%)
-    // subtotal = total / 1.18, igv = total - subtotal
-    const subtotal = Math.round(order.total / 1.18);
-    const igv = order.total - subtotal;
+      const nextNumber = (lastInvoice[0]?.number || 0) + 1;
 
-    const [invoice] = await db
-      .insert(schema.invoices)
-      .values({
-        order_id: body.orderId,
-        organization_id: tenant.organizationId,
-        branch_id: tenant.branchId,
-        type: body.type,
-        series: prefix,
-        number: nextNumber,
-        customer_name: body.customerName,
-        customer_doc_type: body.customerDocType,
-        customer_doc_number: body.customerDocNumber,
-        subtotal,
-        igv,
-        total: order.total,
-        sunat_status: "pending",
-      })
-      .returning();
+      const subtotal = Math.round(order.total / 1.18);
+      const igv = order.total - subtotal;
+
+      const [created] = await tx
+        .insert(schema.invoices)
+        .values({
+          order_id: body.orderId,
+          organization_id: tenant.organizationId,
+          branch_id: tenant.branchId,
+          type: body.type,
+          series: prefix,
+          number: nextNumber,
+          customer_name: body.customerName,
+          customer_doc_type: body.customerDocType,
+          customer_doc_number: body.customerDocNumber,
+          subtotal,
+          igv,
+          total: order.total,
+          sunat_status: "pending",
+        })
+        .returning();
+
+      return created;
+    });
 
     return c.json({ success: true, data: invoice }, 201);
   },

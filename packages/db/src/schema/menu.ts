@@ -6,6 +6,7 @@ import {
   integer,
   boolean,
   primaryKey,
+  index,
 } from "drizzle-orm/pg-core";
 import { organizations, branches } from "./tenants";
 
@@ -42,7 +43,10 @@ export const menuItems = pgTable("menu_items", {
   is_available: boolean("is_available").default(true).notNull(),
   sort_order: integer("sort_order").default(0).notNull(),
   preparation_time_min: integer("preparation_time_min"),
-});
+}, (table) => [
+  index("idx_menu_items_branch").on(table.branch_id),
+  index("idx_menu_items_category").on(table.category_id),
+]);
 
 export const modifierGroups = pgTable("modifier_groups", {
   id: uuid("id").primaryKey().defaultRandom(),
