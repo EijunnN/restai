@@ -929,6 +929,50 @@ customer.post(
       }
     }
 
+    // Revert reward redemption if order had one
+    const [rewardRedemption] = await db
+      .select({
+        id: schema.rewardRedemptions.id,
+        customer_loyalty_id: schema.rewardRedemptions.customer_loyalty_id,
+        reward_id: schema.rewardRedemptions.reward_id,
+      })
+      .from(schema.rewardRedemptions)
+      .where(eq(schema.rewardRedemptions.order_id, id))
+      .limit(1);
+
+    if (rewardRedemption) {
+      const [reward] = await db
+        .select({ points_cost: schema.rewards.points_cost, name: schema.rewards.name })
+        .from(schema.rewards)
+        .where(eq(schema.rewards.id, rewardRedemption.reward_id))
+        .limit(1);
+
+      if (reward) {
+        // Refund points
+        await db
+          .update(schema.customerLoyalty)
+          .set({
+            points_balance: sql`${schema.customerLoyalty.points_balance} + ${reward.points_cost}`,
+          })
+          .where(eq(schema.customerLoyalty.id, rewardRedemption.customer_loyalty_id));
+
+        // Record refund transaction
+        await db.insert(schema.loyaltyTransactions).values({
+          customer_loyalty_id: rewardRedemption.customer_loyalty_id,
+          order_id: id,
+          points: reward.points_cost,
+          type: "adjusted",
+          description: `Reembolso por cancelación: ${reward.name}`,
+        });
+      }
+
+      // Unlink redemption from order so it can be reused
+      await db
+        .update(schema.rewardRedemptions)
+        .set({ order_id: null })
+        .where(eq(schema.rewardRedemptions.id, rewardRedemption.id));
+    }
+
     // Broadcast cancellation
     await wsManager.publish(`branch:${branchId}`, {
       type: "order:cancelled",

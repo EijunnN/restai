@@ -7,6 +7,7 @@ import { reportQuerySchema } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { peruStartOfDay } from "../lib/timezone.js";
 
 const reports = new Hono<AppEnv>();
 
@@ -18,8 +19,7 @@ reports.use("*", requireBranch);
 reports.get("/dashboard", requirePermission("reports:read"), async (c) => {
   const tenant = c.get("tenant") as any;
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = peruStartOfDay();
 
   // Today's orders
   const [orderStats] = await db

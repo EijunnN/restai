@@ -7,6 +7,7 @@ import { createPaymentSchema, idParamSchema } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { peruStartOfDay, peruEndOfDay } from "../lib/timezone.js";
 
 const payments = new Hono<AppEnv>();
 
@@ -18,10 +19,8 @@ payments.use("*", requireBranch);
 payments.get("/summary", requirePermission("payments:read"), async (c) => {
   const tenant = c.get("tenant") as any;
 
-  // Today's start and end (UTC-based; adjust if needed)
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+  const startOfDay = peruStartOfDay();
+  const endOfDay = peruEndOfDay();
 
   const conditions = [
     eq(schema.payments.branch_id, tenant.branchId),
@@ -194,6 +193,17 @@ payments.post(
 
     const previouslyPaid = Number(prevPayments?.total_paid || 0);
 
+    const remaining = order.total - previouslyPaid;
+    if (remaining <= 0) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "La orden ya está pagada" } },
+        400,
+      );
+    }
+
+    // Cap payment to remaining balance
+    const effectiveAmount = Math.min(body.amount, remaining);
+
     const [payment] = await db
       .insert(schema.payments)
       .values({
@@ -201,14 +211,14 @@ payments.post(
         organization_id: tenant.organizationId,
         branch_id: tenant.branchId,
         method: body.method,
-        amount: body.amount,
+        amount: effectiveAmount,
         reference: body.reference,
         tip: body.tip,
         status: "completed",
       })
       .returning();
 
-    const totalPaid = previouslyPaid + body.amount;
+    const totalPaid = previouslyPaid + effectiveAmount;
     const fullyPaid = totalPaid >= order.total;
 
     return c.json({
