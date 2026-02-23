@@ -1,4 +1,5 @@
 import { redis, createSubscriber } from "../lib/redis.js";
+import { logger } from "../lib/logger.js";
 
 export interface WsClient {
   ws: any;
@@ -81,7 +82,18 @@ export class WebSocketManager {
   }
 
   async publish(room: string, data: object) {
-    await redis.publish(room, JSON.stringify(data));
+    const payload = JSON.stringify(data);
+    try {
+      await redis.publish(room, payload);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown Redis publish error";
+      logger.error("WebSocket publish failed, falling back to local broadcast", {
+        room,
+        error: message,
+      });
+      // Keep event delivery best-effort even when Redis is unavailable.
+      this.broadcastToRoom(room, payload);
+    }
   }
 }
 

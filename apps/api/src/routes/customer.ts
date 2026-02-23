@@ -17,6 +17,8 @@ import { redeemReward } from "../services/loyalty.service.js";
 import * as sessionService from "../services/session.service.js";
 
 const customer = new Hono<AppEnv>();
+const TABLE_ACTION_COOLDOWN_MS = 30_000;
+const tableActionCooldownBySession = new Map<string, number>();
 
 // GET /:branchSlug/:tableCode/menu - Get menu for branch (public)
 customer.get("/:branchSlug/:tableCode/menu", async (c) => {
@@ -1035,9 +1037,38 @@ customer.post(
   ),
   async (c) => {
     const user = c.get("user") as any;
+    const activeSession = c.get("session") as {
+      id: string;
+      customer_name: string | null;
+    };
     const { action, tableSessionId } = c.req.valid("json");
     const branchId = user.branch;
     const tableId = user.table;
+
+    if (tableSessionId !== activeSession.id) {
+      return c.json(
+        { success: false, error: { code: "FORBIDDEN", message: "Sesion inválida para esta mesa" } },
+        403,
+      );
+    }
+
+    const now = Date.now();
+    const actionKey = `${activeSession.id}:${action}`;
+    const nextAllowedAt = tableActionCooldownBySession.get(actionKey) ?? 0;
+    if (nextAllowedAt > now) {
+      const retryAfterSec = Math.ceil((nextAllowedAt - now) / 1000);
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "TOO_MANY_REQUESTS",
+            message: `Espera ${retryAfterSec}s antes de volver a enviar esta solicitud`,
+          },
+          data: { retryAfterSec },
+        },
+        429,
+      );
+    }
 
     // Get table number for the notification
     const [table] = await db
@@ -1059,13 +1090,16 @@ customer.post(
     await wsManager.publish(`branch:${branchId}`, {
       type: eventType,
       payload: {
-        tableSessionId,
+        tableSessionId: activeSession.id,
         tableId,
         tableNumber: table.number,
+        customerName: activeSession.customer_name || "Cliente",
         action,
       },
       timestamp: Date.now(),
     });
+
+    tableActionCooldownBySession.set(actionKey, now + TABLE_ACTION_COOLDOWN_MS);
 
     return c.json({ success: true, data: { message } });
   },
