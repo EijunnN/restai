@@ -27,8 +27,12 @@ import {
   ArrowRight,
 } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const ACTION_COOLDOWN_MS = 30_000;
+const ACTION_COOLDOWN_STORAGE_KEY = "customer_table_action_cooldown";
+type TableAction = "request_bill" | "call_waiter";
 
 interface OrderItem {
   id: string;
@@ -97,6 +101,19 @@ export default function OrderStatusPage({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionSent, setActionSent] = useState<Record<TableAction, boolean>>({
+    request_bill: false,
+    call_waiter: false,
+  });
+  const [actionCooldownUntil, setActionCooldownUntil] = useState<Record<TableAction, number>>({
+    request_bill: 0,
+    call_waiter: 0,
+  });
+  const [cooldownTick, setCooldownTick] = useState(Date.now());
+  const [actionNotice, setActionNotice] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -124,13 +141,24 @@ export default function OrderStatusPage({
     return null;
   }, []);
 
-  const handleTableAction = useCallback(async (action: "request_bill" | "call_waiter") => {
+  const handleTableAction = useCallback(async (action: TableAction) => {
     const token = getToken();
     const sessionId = getSessionId();
     if (!token || !sessionId) return;
+
+    const remainingMs = actionCooldownUntil[action] - Date.now();
+    if (remainingMs > 0) {
+      const remainingSeconds = Math.ceil(remainingMs / 1000);
+      setActionNotice({
+        kind: "error",
+        message: `Espera ${remainingSeconds}s antes de volver a enviar esta solicitud.`,
+      });
+      return;
+    }
+
     try {
       setActionLoading(action);
-      await fetch(`${API_URL}/api/customer/table-action`, {
+      const res = await fetch(`${API_URL}/api/customer/table-action`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -138,12 +166,45 @@ export default function OrderStatusPage({
         },
         body: JSON.stringify({ action, tableSessionId: sessionId }),
       });
-    } catch {
-      // silently fail
+      const result = await res.json();
+
+      if (!res.ok || !result.success) {
+        const retryAfterSec = result?.data?.retryAfterSec;
+        if (typeof retryAfterSec === "number" && retryAfterSec > 0) {
+          const now = Date.now();
+          setCooldownTick(now);
+          setActionCooldownUntil((prev) => ({
+            ...prev,
+            [action]: now + retryAfterSec * 1000,
+          }));
+        }
+        throw new Error(result.error?.message || "No se pudo enviar la solicitud");
+      }
+
+      const now = Date.now();
+      setCooldownTick(now);
+      setActionSent((prev) => ({ ...prev, [action]: true }));
+      setActionCooldownUntil((prev) => ({
+        ...prev,
+        [action]: now + ACTION_COOLDOWN_MS,
+      }));
+      const successMessage =
+        action === "request_bill"
+          ? "Tu solicitud de cuenta fue enviada al restaurante."
+          : "Tu solicitud de mozo fue enviada al restaurante.";
+      setActionNotice({ kind: "success", message: successMessage });
+      toast.success(successMessage);
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : "No se pudo enviar la solicitud. Intenta nuevamente.";
+      setActionNotice({ kind: "error", message: errorMessage });
+      toast.error(errorMessage);
     } finally {
       setActionLoading(null);
     }
-  }, [getToken, getSessionId]);
+  }, [getToken, getSessionId, actionCooldownUntil]);
 
   const fetchOrder = useCallback(async () => {
     const orderId = getOrderId();
@@ -219,6 +280,46 @@ export default function OrderStatusPage({
     }
   }, [order?.id]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = `${ACTION_COOLDOWN_STORAGE_KEY}:${branchSlug}:${tableCode}`;
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return;
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<Record<TableAction, number>>;
+      setActionCooldownUntil({
+        request_bill:
+          typeof parsed.request_bill === "number" ? parsed.request_bill : 0,
+        call_waiter:
+          typeof parsed.call_waiter === "number" ? parsed.call_waiter : 0,
+      });
+      setCooldownTick(Date.now());
+    } catch {
+      window.sessionStorage.removeItem(key);
+    }
+  }, [branchSlug, tableCode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = `${ACTION_COOLDOWN_STORAGE_KEY}:${branchSlug}:${tableCode}`;
+    window.sessionStorage.setItem(key, JSON.stringify(actionCooldownUntil));
+  }, [actionCooldownUntil, branchSlug, tableCode]);
+
+  useEffect(() => {
+    const hasActiveCooldown = Object.values(actionCooldownUntil).some(
+      (ts) => ts > Date.now()
+    );
+    if (!hasActiveCooldown) return;
+
+    setCooldownTick(Date.now());
+    const intervalId = window.setInterval(() => {
+      setCooldownTick(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [actionCooldownUntil]);
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
@@ -243,6 +344,14 @@ export default function OrderStatusPage({
   const isCancelled = order.status === "cancelled";
   // Only allow cancel when the ORDER itself is pending (not just item-level)
   const canCancel = order.status === "pending";
+  const requestBillCooldownSeconds = Math.max(
+    0,
+    Math.ceil((actionCooldownUntil.request_bill - cooldownTick) / 1000)
+  );
+  const callWaiterCooldownSeconds = Math.max(
+    0,
+    Math.ceil((actionCooldownUntil.call_waiter - cooldownTick) / 1000)
+  );
 
   return (
     <div className="p-4 space-y-5">
@@ -433,26 +542,57 @@ export default function OrderStatusPage({
 
       {/* Table action buttons */}
       {!isCancelled && (
-        <div className="flex gap-3">
-          <Button
-            variant="outline"
-            className="flex-1 gap-2"
-            disabled={actionLoading !== null}
-            onClick={() => handleTableAction("request_bill")}
-          >
-            <Receipt className="h-4 w-4" />
-            {actionLoading === "request_bill" ? "Enviando..." : "Pedir la Cuenta"}
-          </Button>
-          <Button
-            variant="outline"
-            className="flex-1 gap-2"
-            disabled={actionLoading !== null}
-            onClick={() => handleTableAction("call_waiter")}
-          >
-            <Bell className="h-4 w-4" />
-            {actionLoading === "call_waiter" ? "Enviando..." : "Llamar al Mozo"}
-          </Button>
-        </div>
+        <>
+          <div className="flex gap-3">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              disabled={actionLoading !== null || requestBillCooldownSeconds > 0}
+              onClick={() => handleTableAction("request_bill")}
+            >
+              <Receipt className="h-4 w-4" />
+              {actionLoading === "request_bill"
+                ? "Enviando..."
+                : requestBillCooldownSeconds > 0
+                  ? `Reintentar en ${requestBillCooldownSeconds}s`
+                  : actionSent.request_bill
+                    ? "Solicitar Cuenta (de nuevo)"
+                    : "Pedir la Cuenta"}
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              disabled={actionLoading !== null || callWaiterCooldownSeconds > 0}
+              onClick={() => handleTableAction("call_waiter")}
+            >
+              <Bell className="h-4 w-4" />
+              {actionLoading === "call_waiter"
+                ? "Enviando..."
+                : callWaiterCooldownSeconds > 0
+                  ? `Reintentar en ${callWaiterCooldownSeconds}s`
+                  : actionSent.call_waiter
+                    ? "Llamar al Mozo (de nuevo)"
+                    : "Llamar al Mozo"}
+            </Button>
+          </div>
+          {actionNotice && (
+            <div
+              className={cn(
+                "rounded-lg border px-3 py-2 text-sm",
+                actionNotice.kind === "success"
+                  ? "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300"
+                  : "border-destructive/30 bg-destructive/10 text-destructive"
+              )}
+            >
+              {actionNotice.message}
+            </div>
+          )}
+          {(requestBillCooldownSeconds > 0 || callWaiterCooldownSeconds > 0) && (
+            <p className="text-xs text-muted-foreground">
+              Anti-spam activo: cada solicitud tiene 30 segundos de espera.
+            </p>
+          )}
+        </>
       )}
 
       {/* Back to menu after cancellation */}
