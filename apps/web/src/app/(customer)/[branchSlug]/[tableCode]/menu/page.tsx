@@ -10,7 +10,8 @@ import { Badge } from "@restai/ui/components/badge";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency, cn } from "@/lib/utils";
-import { ShoppingCart, Plus, Minus, Loader2, ImageOff, UtensilsCrossed, Receipt, Bell } from "lucide-react";
+import { ShoppingCart, Plus, Minus, Loader2, ImageOff, UtensilsCrossed, Receipt, Bell, CheckCircle2 } from "lucide-react";
+import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
@@ -43,6 +44,10 @@ function useCustomerMenuLocalState() {
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionSent, setActionSent] = useState<{ request_bill: boolean; call_waiter: boolean }>({
+    request_bill: false,
+    call_waiter: false,
+  });
   const [sessionValid, setSessionValid] = useState<boolean | null>(null);
 
   return {
@@ -56,6 +61,8 @@ function useCustomerMenuLocalState() {
     setActiveCategory,
     actionLoading,
     setActionLoading,
+    actionSent,
+    setActionSent,
     sessionValid,
     setSessionValid,
   };
@@ -82,6 +89,8 @@ export default function CustomerMenuPage({
     setActiveCategory,
     actionLoading,
     setActionLoading,
+    actionSent,
+    setActionSent,
     sessionValid,
     setSessionValid,
   } = useCustomerMenuLocalState();
@@ -174,20 +183,32 @@ export default function CustomerMenuPage({
     const sessionId = getSessionId();
     if (!token || !sessionId) return;
     setActionLoading(action);
-    await fetch(`${API_URL}/api/customer/table-action`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ action, tableSessionId: sessionId }),
-    })
-      .catch(() => {
-        // silently fail - best effort notification
-      })
-      .finally(() => {
-        setActionLoading(null);
+    try {
+      const res = await fetch(`${API_URL}/api/customer/table-action`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action, tableSessionId: sessionId }),
       });
+
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        throw new Error(result.error?.message || "No se pudo enviar la solicitud");
+      }
+
+      setActionSent((prev) => ({ ...prev, [action]: true }));
+      toast.success(
+        action === "request_bill"
+          ? "Cuenta solicitada. El personal fue notificado."
+          : "Mozo solicitado. El personal fue notificado."
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al enviar solicitud");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   useEffect(() => {
@@ -409,23 +430,46 @@ export default function CustomerMenuPage({
             variant="outline"
             size="sm"
             className="flex-1 h-9 text-xs gap-1.5"
-            disabled={actionLoading !== null}
+            disabled={actionLoading !== null || actionSent.request_bill}
             onClick={() => handleTableAction("request_bill")}
           >
-            <Receipt className="h-3.5 w-3.5" />
-            {actionLoading === "request_bill" ? "Enviando..." : "Pedir la Cuenta"}
+            {actionSent.request_bill ? (
+              <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+            ) : (
+              <Receipt className="h-3.5 w-3.5" />
+            )}
+            {actionLoading === "request_bill"
+              ? "Enviando..."
+              : actionSent.request_bill
+                ? "Cuenta Solicitada"
+                : "Pedir la Cuenta"}
           </Button>
           <Button
             variant="outline"
             size="sm"
             className="flex-1 h-9 text-xs gap-1.5"
-            disabled={actionLoading !== null}
+            disabled={actionLoading !== null || actionSent.call_waiter}
             onClick={() => handleTableAction("call_waiter")}
           >
-            <Bell className="h-3.5 w-3.5" />
-            {actionLoading === "call_waiter" ? "Enviando..." : "Llamar al Mozo"}
+            {actionSent.call_waiter ? (
+              <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+            ) : (
+              <Bell className="h-3.5 w-3.5" />
+            )}
+            {actionLoading === "call_waiter"
+              ? "Enviando..."
+              : actionSent.call_waiter
+                ? "Mozo Solicitado"
+                : "Llamar al Mozo"}
           </Button>
         </div>
+        {(actionSent.request_bill || actionSent.call_waiter) && (
+          <div className="px-4 pb-2">
+            <div className="max-w-lg mx-auto rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300">
+              Tu solicitud fue enviada al personal del restaurante.
+            </div>
+          </div>
+        )}
         {/* Cart button */}
         {itemCount > 0 && (
           <div className="px-4 pb-4">
