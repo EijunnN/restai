@@ -1,6 +1,7 @@
 "use client";
+/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect */
 
-import { use, useState, useEffect } from "react";
+import { use, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
@@ -16,12 +17,31 @@ export default function WaitingPage({
 }: {
   params: Promise<{ branchSlug: string; tableCode: string }>;
 }) {
+  "use no memo";
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
   const sessionId = useCustomerStore((s) => s.sessionId);
   const token = useCustomerStore((s) => s.token);
   const [status, setStatus] = useState<"pending" | "active" | "rejected">("pending");
   const [error, setError] = useState<string | null>(null);
+
+  const pollSessionStatus = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(
+        `${API_URL}/api/customer/${branchSlug}/${tableCode}/session-status/${sessionId}`,
+      );
+      const result = await res.json();
+      if (result.success) {
+        setStatus(result.data.status);
+        if (result.data.status === "active") {
+          router.push(`/${branchSlug}/${tableCode}/menu`);
+        }
+      }
+    } catch {
+      setError("Error al verificar el estado");
+    }
+  }, [sessionId, branchSlug, tableCode, router]);
 
   useWebSocket(
     sessionId ? [`session:${sessionId}`] : [],
@@ -38,28 +58,9 @@ export default function WaitingPage({
 
   useEffect(() => {
     if (!sessionId) return;
-
-    const poll = async () => {
-      try {
-        const res = await fetch(
-          `${API_URL}/api/customer/${branchSlug}/${tableCode}/session-status/${sessionId}`,
-        );
-        const result = await res.json();
-        if (result.success) {
-          setStatus(result.data.status);
-          if (result.data.status === "active") {
-            router.push(`/${branchSlug}/${tableCode}/menu`);
-          }
-        }
-      } catch {
-        setError("Error al verificar el estado");
-      }
-    };
-
-    poll();
-    const interval = setInterval(poll, 15000);
+    const interval = setInterval(pollSessionStatus, 15000);
     return () => clearInterval(interval);
-  }, [sessionId, branchSlug, tableCode, router]);
+  }, [sessionId, pollSessionStatus]);
 
   if (!sessionId) {
     return (

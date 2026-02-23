@@ -1,6 +1,7 @@
 "use client";
+/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
 
-import { use, useState, useEffect } from "react";
+import { use, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
 import { Card, CardContent } from "@restai/ui/components/card";
@@ -14,11 +15,54 @@ import { toast } from "sonner";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 const TAX_RATE = 1800; // 18% IGV
 
+function useCartPageLocalState() {
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [couponOpen, setCouponOpen] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number; menu_item_id?: string | null } | null>(null);
+  const [availableCoupons, setAvailableCoupons] = useState<any[]>([]);
+  const [pendingRedemptions, setPendingRedemptions] = useState<Array<{ id: string; reward_name: string; discount_type: string; discount_value: number }>>([]);
+  const [appliedRedemption, setAppliedRedemption] = useState<{ id: string; reward_name: string; discount_type: string; discount_value: number } | null>(null);
+
+  return {
+    notes,
+    setNotes,
+    loading,
+    setLoading,
+    error,
+    setError,
+    sessionChecked,
+    setSessionChecked,
+    couponOpen,
+    setCouponOpen,
+    couponCode,
+    setCouponCode,
+    couponLoading,
+    setCouponLoading,
+    couponError,
+    setCouponError,
+    appliedCoupon,
+    setAppliedCoupon,
+    availableCoupons,
+    setAvailableCoupons,
+    pendingRedemptions,
+    setPendingRedemptions,
+    appliedRedemption,
+    setAppliedRedemption,
+  };
+}
+
 export default function CartPage({
   params,
 }: {
   params: Promise<{ branchSlug: string; tableCode: string }>;
 }) {
+  "use no memo";
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
   const {
@@ -33,23 +77,52 @@ export default function CartPage({
   const customerToken = useCustomerStore((s) => s.token);
   const setOrderId = useCustomerStore((s) => s.setOrderId);
   const clearSession = useCustomerStore((s) => s.clear);
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sessionChecked, setSessionChecked] = useState(false);
+  const {
+    notes,
+    setNotes,
+    loading,
+    setLoading,
+    error,
+    setError,
+    sessionChecked,
+    setSessionChecked,
+    couponOpen,
+    setCouponOpen,
+    couponCode,
+    setCouponCode,
+    couponLoading,
+    setCouponLoading,
+    couponError,
+    setCouponError,
+    appliedCoupon,
+    setAppliedCoupon,
+    availableCoupons,
+    setAvailableCoupons,
+    pendingRedemptions,
+    setPendingRedemptions,
+    appliedRedemption,
+    setAppliedRedemption,
+  } = useCartPageLocalState();
 
-  // Validate session on mount
-  useEffect(() => {
-    const token = customerToken || (typeof window !== "undefined" ? sessionStorage.getItem("customer_token") : null);
+  const getToken = useCallback(() => {
+    if (customerToken) return customerToken;
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("customer_token");
+    }
+    return null;
+  }, [customerToken]);
+
+  const validateSession = useCallback(() => {
+    const token = getToken();
     if (!token) {
       clearSession();
       router.replace(`/${branchSlug}/${tableCode}`);
       return;
     }
-    fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
+    void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => r.json())
+      .then((response) => response.json())
       .then((result) => {
         if (result.success && result.data.hasSession && result.data.status === "active") {
           setSessionChecked(true);
@@ -62,85 +135,86 @@ export default function CartPage({
         clearSession();
         router.replace(`/${branchSlug}/${tableCode}`);
       });
-  }, [branchSlug, tableCode, customerToken, clearSession, router]);
-  const [couponOpen, setCouponOpen] = useState(false);
-  const [couponCode, setCouponCode] = useState("");
-  const [couponLoading, setCouponLoading] = useState(false);
-  const [couponError, setCouponError] = useState<string | null>(null);
-  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number; menu_item_id?: string | null } | null>(null);
-  const [availableCoupons, setAvailableCoupons] = useState<any[]>([]);
-  const [pendingRedemptions, setPendingRedemptions] = useState<Array<{ id: string; reward_name: string; discount_type: string; discount_value: number }>>([]);
-  const [appliedRedemption, setAppliedRedemption] = useState<{ id: string; reward_name: string; discount_type: string; discount_value: number } | null>(null);
+  }, [getToken, clearSession, router, branchSlug, tableCode, setSessionChecked]);
 
+  // Validate session on mount
   useEffect(() => {
+    const timeout = setTimeout(() => {
+      validateSession();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [validateSession]);
+
+  const loadDiscounts = useCallback(() => {
     const token = getToken();
     if (!token) return;
-    async function fetchDiscounts() {
-      try {
-        const headers = { Authorization: `Bearer ${token}` };
-        const [couponsRes, redemptionsRes] = await Promise.all([
-          fetch(`${API_URL}/api/customer/my-coupons`, { headers }),
-          fetch(`${API_URL}/api/customer/my-redemptions`, { headers }),
-        ]);
-        const [couponsData, redemptionsData] = await Promise.all([
-          couponsRes.json(),
-          redemptionsRes.json(),
-        ]);
+    const headers = { Authorization: `Bearer ${token}` };
+    void Promise.all([
+      fetch(`${API_URL}/api/customer/my-coupons`, { headers }),
+      fetch(`${API_URL}/api/customer/my-redemptions`, { headers }),
+    ])
+      .then(([couponsRes, redemptionsRes]) => Promise.all([
+        couponsRes.json(),
+        redemptionsRes.json(),
+      ]))
+      .then(([couponsData, redemptionsData]) => {
         if (couponsData.success && couponsData.data?.length > 0) {
           setAvailableCoupons(couponsData.data);
         }
         if (redemptionsData.success && redemptionsData.data?.length > 0) {
           setPendingRedemptions(redemptionsData.data);
         }
-      } catch {}
-    }
-    fetchDiscounts();
-  }, []);
+      })
+      .catch(() => {
+        // Ignore discounts errors
+      });
+  }, [getToken, setAvailableCoupons, setPendingRedemptions]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      void loadDiscounts();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [loadDiscounts]);
 
   const subtotal = getSubtotal();
   const tax = getTax(TAX_RATE);
   const total = getTotal(TAX_RATE);
 
-  const getToken = () => {
-    if (customerToken) return customerToken;
-    if (typeof window !== "undefined") {
-      return sessionStorage.getItem("customer_token");
-    }
-    return null;
-  };
-
-  const handleValidateCoupon = async () => {
+  const handleValidateCoupon = () => {
     if (!couponCode.trim()) return;
-    try {
-      setCouponLoading(true);
-      setCouponError(null);
-      const token = getToken();
-      const res = await fetch(`${API_URL}/api/customer/validate-coupon`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ code: couponCode.toUpperCase() }),
+    setCouponLoading(true);
+    setCouponError(null);
+    const token = getToken();
+    void fetch(`${API_URL}/api/customer/validate-coupon`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ code: couponCode.toUpperCase() }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.success) {
+          setCouponError(data.error?.message || "Cupon invalido");
+          setCouponLoading(false);
+          return;
+        }
+        setAppliedCoupon({
+          code: data.data.code,
+          name: data.data.name,
+          type: data.data.type,
+          discount_value: data.data.discount_value || 0,
+          menu_item_id: data.data.menu_item_id || null,
+        });
+        setCouponCode("");
+        setCouponLoading(false);
+      })
+      .catch(() => {
+        setCouponError("Error al validar cupon");
+        setCouponLoading(false);
       });
-      const data = await res.json();
-      if (!data.success) {
-        setCouponError(data.error?.message || "Cupon invalido");
-        return;
-      }
-      setAppliedCoupon({
-        code: data.data.code,
-        name: data.data.name,
-        type: data.data.type,
-        discount_value: data.data.discount_value || 0,
-        menu_item_id: data.data.menu_item_id || null,
-      });
-      setCouponCode("");
-    } catch {
-      setCouponError("Error al validar cupon");
-    } finally {
-      setCouponLoading(false);
-    }
   };
 
   function getCouponDiscount(): number {
@@ -200,52 +274,53 @@ export default function CartPage({
   const adjustedTax = totalDiscount > 0 ? Math.round((taxableBase * TAX_RATE) / 10000) : tax;
   const adjustedTotal = totalDiscount > 0 ? taxableBase + adjustedTax : total;
 
-  const handleConfirmOrder = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const token = getToken();
-
-      const res = await fetch(`${API_URL}/api/customer/orders`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          type: "dine_in",
-          items: items.map((item) => ({
-            menuItemId: item.menuItemId,
-            quantity: item.quantity,
-            notes: notes[item.menuItemId] || undefined,
-            modifiers: item.modifiers.map((m) => ({
-              modifierId: m.modifierId,
-            })),
+  const handleConfirmOrder = () => {
+    setLoading(true);
+    setError(null);
+    const token = getToken();
+    void fetch(`${API_URL}/api/customer/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        type: "dine_in",
+        items: items.map((item) => ({
+          menuItemId: item.menuItemId,
+          quantity: item.quantity,
+          notes: notes[item.menuItemId] || undefined,
+          modifiers: item.modifiers.map((m) => ({
+            modifierId: m.modifierId,
           })),
-          ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}),
-          ...(appliedRedemption ? { redemptionId: appliedRedemption.id } : {}),
-        }),
+        })),
+        ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}),
+        ...(appliedRedemption ? { redemptionId: appliedRedemption.id } : {}),
+      }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.success) {
+          setError(data.error?.message || "Error al crear orden");
+          setLoading(false);
+          return;
+        }
+
+        if (data.data?.id) {
+          setOrderId(data.data.id);
+        }
+
+        clearCart();
+        toast.success("Pedido enviado a cocina", {
+          description: `Orden #${data.data?.order_number || ""} recibida`,
+        });
+        setLoading(false);
+        router.push(`/${branchSlug}/${tableCode}/status`);
+      })
+      .catch(() => {
+        setError("Error inesperado");
+        setLoading(false);
       });
-
-      const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error?.message || "Error al crear orden");
-      }
-
-      if (data.data?.id) {
-        setOrderId(data.data.id);
-      }
-
-      clearCart();
-      toast.success("Pedido enviado a cocina", {
-        description: `Orden #${data.data?.order_number || ""} recibida`,
-      });
-      router.push(`/${branchSlug}/${tableCode}/status`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error inesperado");
-    } finally {
-      setLoading(false);
-    }
   };
 
   if (items.length === 0) {

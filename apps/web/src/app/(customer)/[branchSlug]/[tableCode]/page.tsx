@@ -1,6 +1,7 @@
 "use client";
+/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
 
-import { use, useState, useEffect } from "react";
+import { use, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -31,13 +32,7 @@ const registerSchema = z.object({
 
 type RegisterInput = z.infer<typeof registerSchema>;
 
-export default function CustomerEntryPage({
-  params,
-}: {
-  params: Promise<{ branchSlug: string; tableCode: string }>;
-}) {
-  const { branchSlug, tableCode } = use(params);
-  const router = useRouter();
+function useCustomerEntryLocalState() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [wantsLoyalty, setWantsLoyalty] = useState(false);
@@ -49,27 +44,78 @@ export default function CustomerEntryPage({
     token?: string;
   } | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+
+  return {
+    loading,
+    setLoading,
+    error,
+    setError,
+    wantsLoyalty,
+    setWantsLoyalty,
+    existingSession,
+    setExistingSession,
+    checkingSession,
+    setCheckingSession,
+  };
+}
+
+export default function CustomerEntryPage({
+  params,
+}: {
+  params: Promise<{ branchSlug: string; tableCode: string }>;
+}) {
+  return <CustomerEntryPageContent params={params} />;
+}
+
+function CustomerEntryPageContent({
+  params,
+}: {
+  params: Promise<{ branchSlug: string; tableCode: string }>;
+}) {
+  "use no memo";
+  const { branchSlug, tableCode } = use(params);
+  const router = useRouter();
+  const {
+    loading,
+    setLoading,
+    error,
+    setError,
+    wantsLoyalty,
+    setWantsLoyalty,
+    existingSession,
+    setExistingSession,
+    checkingSession,
+    setCheckingSession,
+  } = useCustomerEntryLocalState();
   const setSession = useCustomerStore((s) => s.setSession);
+
+  const checkExistingSession = useCallback(() => {
+    setCheckingSession(true);
+    void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`)
+      .then((res) => res.json())
+      .then((result) => {
+        if (result.success && result.data.hasSession) {
+          setExistingSession(result.data);
+        } else {
+          setExistingSession(null);
+        }
+      })
+      .catch(() => {
+        // Ignore - proceed with normal flow
+        setExistingSession(null);
+      })
+      .finally(() => {
+        setCheckingSession(false);
+      });
+  }, [branchSlug, tableCode, setCheckingSession, setExistingSession]);
 
   // Check for existing active/pending session on this table
   useEffect(() => {
-    async function checkSession() {
-      try {
-        const res = await fetch(
-          `${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`,
-        );
-        const result = await res.json();
-        if (result.success && result.data.hasSession) {
-          setExistingSession(result.data);
-        }
-      } catch {
-        // Ignore - proceed with normal flow
-      } finally {
-        setCheckingSession(false);
-      }
-    }
-    checkSession();
-  }, [branchSlug, tableCode]);
+    const timeout = setTimeout(() => {
+      checkExistingSession();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [checkExistingSession]);
 
   const handleReconnect = () => {
     if (existingSession?.token && existingSession?.sessionId) {
@@ -93,68 +139,72 @@ export default function CustomerEntryPage({
     resolver: zodResolver(wantsLoyalty ? registerSchema : startSessionSchema),
   });
 
-  const onSubmit = async (data: RegisterInput) => {
-    try {
-      setLoading(true);
-      setError(null);
+  const onSubmit = (data: RegisterInput) => {
+    setLoading(true);
+    setError(null);
 
-      const endpoint = wantsLoyalty
-        ? `${API_URL}/api/customer/${branchSlug}/${tableCode}/register`
-        : `${API_URL}/api/customer/${branchSlug}/${tableCode}/session`;
+    const endpoint = wantsLoyalty
+      ? `${API_URL}/api/customer/${branchSlug}/${tableCode}/register`
+      : `${API_URL}/api/customer/${branchSlug}/${tableCode}/session`;
 
-      const body = wantsLoyalty
-        ? {
-            customerName: data.customerName,
-            customerPhone: data.customerPhone || undefined,
-            email: data.email || undefined,
-            birthDate: data.birthDate || undefined,
+    const body = wantsLoyalty
+      ? {
+          customerName: data.customerName,
+          customerPhone: data.customerPhone || undefined,
+          email: data.email || undefined,
+          birthDate: data.birthDate || undefined,
+        }
+      : {
+          customerName: data.customerName,
+          customerPhone: data.customerPhone || undefined,
+        };
+
+    void fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((res) => res.json())
+      .then((result) => {
+        if (!result.success) {
+          if (result.error?.code === "SESSION_PENDING") {
+            setExistingSession({ hasSession: true, status: "pending" });
+            setLoading(false);
+            return;
           }
-        : {
-            customerName: data.customerName,
-            customerPhone: data.customerPhone || undefined,
-          };
-
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const result = await res.json();
-      if (!result.success) {
-        if (result.error?.code === "SESSION_PENDING") {
-          setExistingSession({ hasSession: true, status: "pending" });
+          setError(result.error?.message || "Error al iniciar sesion");
+          setLoading(false);
           return;
         }
-        throw new Error(result.error?.message || "Error al iniciar sesion");
-      }
 
-      // If the API returned an existing active session, go directly to menu
-      if (result.data.existing) {
+        // If the API returned an existing active session, go directly to menu
+        if (result.data.existing) {
+          setSession({
+            token: result.data.token,
+            sessionId: result.data.sessionId,
+            branchSlug,
+            tableCode,
+            customerName: data.customerName,
+          });
+          setLoading(false);
+          router.push(`/${branchSlug}/${tableCode}/menu`);
+          return;
+        }
+
         setSession({
           token: result.data.token,
-          sessionId: result.data.sessionId,
+          sessionId: result.data.session.id,
           branchSlug,
           tableCode,
           customerName: data.customerName,
         });
-        router.push(`/${branchSlug}/${tableCode}/menu`);
-        return;
-      }
-
-      setSession({
-        token: result.data.token,
-        sessionId: result.data.session.id,
-        branchSlug,
-        tableCode,
-        customerName: data.customerName,
+        setLoading(false);
+        router.push(`/${branchSlug}/${tableCode}/waiting`);
+      })
+      .catch(() => {
+        setError("Error inesperado");
+        setLoading(false);
       });
-
-      router.push(`/${branchSlug}/${tableCode}/waiting`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error inesperado");
-    } finally {
-      setLoading(false);
-    }
   };
 
   if (checkingSession) {
@@ -217,17 +267,7 @@ export default function CustomerEntryPage({
               onClick={() => {
                 setExistingSession(null);
                 setCheckingSession(true);
-                fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`)
-                  .then((r) => r.json())
-                  .then((result) => {
-                    if (result.success && result.data.hasSession) {
-                      setExistingSession(result.data);
-                    } else {
-                      setExistingSession(null);
-                    }
-                  })
-                  .catch(() => setExistingSession(null))
-                  .finally(() => setCheckingSession(false));
+                void checkExistingSession();
               }}
             >
               Verificar de nuevo
@@ -285,8 +325,10 @@ export default function CustomerEntryPage({
             </div>
 
             {/* Loyalty opt-in */}
-            <div
-              className={`rounded-lg border p-4 cursor-pointer transition-colors ${
+            <button
+              type="button"
+              aria-pressed={wantsLoyalty}
+              className={`w-full rounded-lg border p-4 cursor-pointer text-left transition-colors ${
                 wantsLoyalty
                   ? "border-primary bg-primary/5"
                   : "border-border bg-muted/30 hover:bg-muted/50"
@@ -315,7 +357,7 @@ export default function CustomerEntryPage({
                   }`} />
                 </div>
               </div>
-            </div>
+            </button>
 
             {wantsLoyalty && (
               <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">

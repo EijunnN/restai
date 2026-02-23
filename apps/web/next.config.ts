@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  reactCompiler: true,
+  reactCompiler: false,
   transpilePackages: ["@restai/ui", "@restai/validators", "@restai/types", "@restai/config"],
 };
 

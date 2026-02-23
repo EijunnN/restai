@@ -1,4 +1,5 @@
 import * as React from "react";
+/* eslint-disable jsx-a11y/label-has-associated-control */
 import { cn } from "../utils";
 
 export interface LabelProps

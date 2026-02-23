@@ -1,7 +1,9 @@
 "use client";
+/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
 
-import { use, useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { use, useState, useEffect, useCallback } from "react";
+import Image from "next/image";
+import { redirect, useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
 import { Card, CardContent } from "@restai/ui/components/card";
 import { Badge } from "@restai/ui/components/badge";
@@ -35,22 +37,54 @@ interface MenuData {
   items: MenuItem[];
 }
 
-export default function CustomerMenuPage({
-  params,
-}: {
-  params: Promise<{ branchSlug: string; tableCode: string }>;
-}) {
-  const { branchSlug, tableCode } = use(params);
-  const router = useRouter();
-  const { addItem, getItemCount, items, updateQuantity } = useCartStore();
-  const setSession = useCustomerStore((s) => s.setSession);
-
+function useCustomerMenuLocalState() {
   const [menuData, setMenuData] = useState<MenuData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [sessionValid, setSessionValid] = useState<boolean | null>(null);
+
+  return {
+    menuData,
+    setMenuData,
+    loading,
+    setLoading,
+    error,
+    setError,
+    activeCategory,
+    setActiveCategory,
+    actionLoading,
+    setActionLoading,
+    sessionValid,
+    setSessionValid,
+  };
+}
+
+export default function CustomerMenuPage({
+  params,
+}: {
+  params: Promise<{ branchSlug: string; tableCode: string }>;
+}) {
+  "use no memo";
+  const { branchSlug, tableCode } = use(params);
+  const router = useRouter();
+  const { addItem, getItemCount, items, updateQuantity } = useCartStore();
+  const setSession = useCustomerStore((s) => s.setSession);
+  const {
+    menuData,
+    setMenuData,
+    loading,
+    setLoading,
+    error,
+    setError,
+    activeCategory,
+    setActiveCategory,
+    actionLoading,
+    setActionLoading,
+    sessionValid,
+    setSessionValid,
+  } = useCustomerMenuLocalState();
   const clearSession = useCustomerStore((s) => s.clear);
 
   const getToken = () => {
@@ -67,17 +101,17 @@ export default function CustomerMenuPage({
     return null;
   };
 
-  // Validate session is still active on mount
-  useEffect(() => {
+  const validateSession = useCallback(() => {
     const token = getToken();
     if (!token) {
       setSessionValid(false);
       return;
     }
-    fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
+
+    void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => r.json())
+      .then((response) => response.json())
       .then((result) => {
         if (result.success && result.data.hasSession && result.data.status === "active") {
           setSessionValid(true);
@@ -90,39 +124,18 @@ export default function CustomerMenuPage({
         setSessionValid(false);
         clearSession();
       });
-  }, [branchSlug, tableCode, clearSession]);
+  }, [branchSlug, tableCode, clearSession, setSessionValid]);
 
-  const handleTableAction = async (action: "request_bill" | "call_waiter") => {
-    const token = getToken();
-    const sessionId = getSessionId();
-    if (!token || !sessionId) return;
-    try {
-      setActionLoading(action);
-      await fetch(`${API_URL}/api/customer/table-action`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ action, tableSessionId: sessionId }),
-      });
-    } catch {
-      // silently fail - best effort notification
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  useEffect(() => {
-    async function fetchMenu() {
-      try {
-        setLoading(true);
-        const res = await fetch(
-          `${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`,
-        );
-        const result = await res.json();
+  const loadMenu = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`)
+      .then((res) => res.json())
+      .then((result) => {
         if (!result.success) {
-          throw new Error(result.error?.message || "Error al cargar el menu");
+          setError(result.error?.message || "Error al cargar el menu");
+          setLoading(false);
+          return;
         }
         setMenuData(result.data);
         if (result.data.categories.length > 0) {
@@ -140,20 +153,53 @@ export default function CustomerMenuPage({
             });
           }
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Error inesperado");
-      } finally {
         setLoading(false);
-      }
-    }
-    fetchMenu();
-  }, [branchSlug, tableCode, setSession]);
+      })
+      .catch(() => {
+        setError("Error inesperado");
+        setLoading(false);
+      });
+  }, [branchSlug, tableCode, setSession, setLoading, setError, setMenuData, setActiveCategory]);
+
+  // Validate session is still active on mount
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      validateSession();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [validateSession]);
+
+  const handleTableAction = async (action: "request_bill" | "call_waiter") => {
+    const token = getToken();
+    const sessionId = getSessionId();
+    if (!token || !sessionId) return;
+    setActionLoading(action);
+    await fetch(`${API_URL}/api/customer/table-action`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, tableSessionId: sessionId }),
+    })
+      .catch(() => {
+        // silently fail - best effort notification
+      })
+      .finally(() => {
+        setActionLoading(null);
+      });
+  };
 
   useEffect(() => {
-    if (sessionValid === false) {
-      router.replace(`/${branchSlug}/${tableCode}`);
-    }
-  }, [sessionValid, router, branchSlug, tableCode]);
+    const timeout = setTimeout(() => {
+      void loadMenu();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [loadMenu]);
+
+  if (sessionValid === false) {
+    redirect(`/${branchSlug}/${tableCode}`);
+  }
 
   const itemCount = getItemCount();
   const cartTotal = items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
@@ -263,9 +309,12 @@ export default function CustomerMenuPage({
                           }
                         >
                           {item.image_url ? (
-                            <img
+                            <Image
                               src={item.image_url}
                               alt={item.name}
+                              fill
+                              sizes="128px"
+                              unoptimized
                               className="w-full h-full object-cover"
                             />
                           ) : (

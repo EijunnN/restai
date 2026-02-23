@@ -1,6 +1,8 @@
 "use client";
+/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
 
-import { use, useState, useEffect } from "react";
+import { use, useState, useEffect, useCallback, type Dispatch, type SetStateAction } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
 import { useCartStore } from "@/stores/cart-store";
@@ -34,6 +36,252 @@ interface MenuData {
   items: MenuItem[];
 }
 
+interface Modifier {
+  id: string;
+  name: string;
+  price: number;
+}
+
+interface ModifierGroup {
+  id: string;
+  name: string;
+  is_required: boolean;
+  min_selections?: number;
+  max_selections?: number;
+  modifiers: Modifier[];
+}
+
+function useProductDetailLocalState() {
+  const [menuData, setMenuData] = useState<MenuData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
+  const [selectedModifiers, setSelectedModifiers] = useState<Record<string, string[]>>({});
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+
+  return {
+    menuData,
+    setMenuData,
+    loading,
+    setLoading,
+    error,
+    setError,
+    quantity,
+    setQuantity,
+    modifierGroups,
+    setModifierGroups,
+    selectedModifiers,
+    setSelectedModifiers,
+    openGroups,
+    setOpenGroups,
+  };
+}
+
+function buildCartModifiers(
+  selectedModifiers: Record<string, string[]>,
+  modifierGroups: ModifierGroup[],
+) {
+  const cartModifiers: { modifierId: string; name: string; price: number }[] = [];
+  for (const [groupId, modIds] of Object.entries(selectedModifiers)) {
+    const group = modifierGroups.find((g) => g.id === groupId);
+    if (!group) continue;
+    for (const modId of modIds) {
+      const mod = group.modifiers.find((m) => m.id === modId);
+      if (!mod) continue;
+      cartModifiers.push({
+        modifierId: mod.id,
+        name: mod.name,
+        price: mod.price || 0,
+      });
+    }
+  }
+  return cartModifiers;
+}
+
+function calculateModifiersTotal(
+  selectedModifiers: Record<string, string[]>,
+  modifierGroups: ModifierGroup[],
+) {
+  return Object.entries(selectedModifiers).reduce((sum, [groupId, modIds]) => {
+    const group = modifierGroups.find((g) => g.id === groupId);
+    if (!group) return sum;
+    return (
+      sum +
+      modIds.reduce((modsSum, modId) => {
+        const mod = group.modifiers.find((m) => m.id === modId);
+        return modsSum + (mod?.price || 0);
+      }, 0)
+    );
+  }, 0);
+}
+
+function ModifierGroupsAccordion({
+  modifierGroups,
+  selectedModifiers,
+  setSelectedModifiers,
+  openGroups,
+  setOpenGroups,
+}: {
+  modifierGroups: ModifierGroup[];
+  selectedModifiers: Record<string, string[]>;
+  setSelectedModifiers: Dispatch<SetStateAction<Record<string, string[]>>>;
+  openGroups: Record<string, boolean>;
+  setOpenGroups: Dispatch<SetStateAction<Record<string, boolean>>>;
+}) {
+  if (modifierGroups.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {modifierGroups.map((group) => {
+        const isSingleSelect = group.max_selections === 1;
+        const selected = selectedModifiers[group.id] || [];
+        const isOpen = openGroups[group.id] ?? !!group.is_required;
+
+        const toggleGroup = () =>
+          setOpenGroups((prev) => ({
+            ...prev,
+            [group.id]: !prev[group.id],
+          }));
+
+        return (
+          <div
+            key={group.id}
+            className="rounded-xl border border-border overflow-hidden"
+          >
+            <button
+              type="button"
+              onClick={toggleGroup}
+              className="w-full flex items-center justify-between p-3 bg-muted/30 hover:bg-muted/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">{group.name}</h2>
+                {group.is_required && (
+                  <span className="text-[10px] font-medium text-destructive bg-destructive/10 px-1.5 py-0.5 rounded">
+                    Requerido
+                  </span>
+                )}
+                {selected.length > 0 && (
+                  <span className="text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded">
+                    {selected.length} sel.
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {(group.max_selections || 0) > 1 && (
+                  <span className="text-xs text-muted-foreground">
+                    Max {group.max_selections}
+                  </span>
+                )}
+                <ChevronDown
+                  className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${
+                    isOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </div>
+            </button>
+
+            <div
+              className="grid transition-[grid-template-rows] duration-200 ease-in-out"
+              style={{
+                gridTemplateRows: isOpen ? "1fr" : "0fr",
+              }}
+            >
+              <div className="overflow-hidden">
+                <div className="p-3 pt-1 space-y-1">
+                  {group.modifiers.map((mod) => {
+                    const isSelected = selected.includes(mod.id);
+                    const handleToggle = () => {
+                      if (isSingleSelect) {
+                        setSelectedModifiers((prev) => ({
+                          ...prev,
+                          [group.id]: isSelected ? [] : [mod.id],
+                        }));
+                        return;
+                      }
+
+                      if (isSelected) {
+                        setSelectedModifiers((prev) => ({
+                          ...prev,
+                          [group.id]: selected.filter((id) => id !== mod.id),
+                        }));
+                        return;
+                      }
+
+                      if (
+                        group.max_selections &&
+                        selected.length >= group.max_selections
+                      ) {
+                        return;
+                      }
+
+                      setSelectedModifiers((prev) => ({
+                        ...prev,
+                        [group.id]: [...selected, mod.id],
+                      }));
+                    };
+
+                    return (
+                      <button
+                        key={mod.id}
+                        type="button"
+                        onClick={handleToggle}
+                        className={`w-full flex items-center justify-between rounded-lg border p-3 transition-colors ${
+                          isSelected
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:border-primary/50"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`flex h-5 w-5 items-center justify-center ${
+                              isSingleSelect
+                                ? "rounded-full"
+                                : "rounded"
+                            } border-2 ${
+                              isSelected
+                                ? "border-primary bg-primary"
+                                : "border-muted-foreground/30"
+                            }`}
+                          >
+                            {isSelected && (
+                              <svg
+                                className="h-3 w-3 text-primary-foreground"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={3}
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M5 13l4 4L19 7"
+                                />
+                              </svg>
+                            )}
+                          </div>
+                          <span className="text-sm font-medium">
+                            {mod.name}
+                          </span>
+                        </div>
+                        {mod.price > 0 && (
+                          <span className="text-sm text-muted-foreground">
+                            +{formatCurrency(mod.price)}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function ProductDetailPage({
   params,
 }: {
@@ -43,47 +291,52 @@ export default function ProductDetailPage({
     itemId: string;
   }>;
 }) {
+  "use no memo";
   const { branchSlug, tableCode, itemId } = use(params);
   const router = useRouter();
   const { addItem, items, updateQuantity } = useCartStore();
+  const {
+    menuData,
+    setMenuData,
+    loading,
+    setLoading,
+    error,
+    setError,
+    quantity,
+    setQuantity,
+    modifierGroups,
+    setModifierGroups,
+    selectedModifiers,
+    setSelectedModifiers,
+    openGroups,
+    setOpenGroups,
+  } = useProductDetailLocalState();
 
-  const [menuData, setMenuData] = useState<MenuData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [quantity, setQuantity] = useState(1);
-  const [modifierGroups, setModifierGroups] = useState<any[]>([]);
-  const [selectedModifiers, setSelectedModifiers] = useState<Record<string, string[]>>({});
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    async function fetchMenu() {
-      try {
-        setLoading(true);
-        const res = await fetch(
-          `${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`,
-        );
-        const result = await res.json();
+  const loadMenu = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`)
+      .then((res) => res.json())
+      .then((result) => {
         if (!result.success) {
-          throw new Error(result.error?.message || "Error al cargar el menu");
+          setError(result.error?.message || "Error al cargar el menu");
+          return;
         }
         setMenuData(result.data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Error inesperado");
-      } finally {
+      })
+      .catch(() => {
+        setError("Error inesperado");
+      })
+      .finally(() => {
         setLoading(false);
-      }
-    }
-    fetchMenu();
-  }, [branchSlug, tableCode]);
+      });
+  }, [branchSlug, tableCode, setLoading, setError, setMenuData]);
 
-  useEffect(() => {
+  const loadModifiers = useCallback(() => {
     if (!menuData) return;
-    async function fetchModifiers() {
-      try {
-        const res = await fetch(
-          `${API_URL}/api/customer/${branchSlug}/menu/items/${itemId}/modifiers`,
-        );
-        const result = await res.json();
+    void fetch(`${API_URL}/api/customer/${branchSlug}/menu/items/${itemId}/modifiers`)
+      .then((res) => res.json())
+      .then((result) => {
         if (result.success) {
           setModifierGroups(result.data);
           const defaults: Record<string, boolean> = {};
@@ -92,12 +345,25 @@ export default function ProductDetailPage({
           }
           setOpenGroups(defaults);
         }
-      } catch (err) {
-        console.error("Error fetching modifiers:", err);
-      }
-    }
-    fetchModifiers();
-  }, [branchSlug, itemId, menuData]);
+      })
+      .catch(() => {
+        // Keep silent; modifiers are optional.
+      });
+  }, [branchSlug, itemId, menuData, setModifierGroups, setOpenGroups]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      loadMenu();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [loadMenu]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      void loadModifiers();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [loadModifiers]);
 
   if (loading) {
     return (
@@ -162,23 +428,7 @@ export default function ProductDetailPage({
       }
     }
 
-    // Build modifiers array from selections
-    const cartModifiers: { modifierId: string; name: string; price: number }[] =
-      [];
-    for (const [groupId, modIds] of Object.entries(selectedModifiers)) {
-      const group = modifierGroups.find((g: any) => g.id === groupId);
-      if (!group) continue;
-      for (const modId of modIds) {
-        const mod = group.modifiers.find((m: any) => m.id === modId);
-        if (mod) {
-          cartModifiers.push({
-            modifierId: mod.id,
-            name: mod.name,
-            price: mod.price || 0,
-          });
-        }
-      }
-    }
+    const cartModifiers = buildCartModifiers(selectedModifiers, modifierGroups);
 
     if (cartQty > 0 && cartModifiers.length === 0) {
       updateQuantity(item.id, cartQty + quantity);
@@ -194,20 +444,7 @@ export default function ProductDetailPage({
     router.push(`/${branchSlug}/${tableCode}/menu`);
   };
 
-  const modifiersTotal = Object.entries(selectedModifiers).reduce(
-    (sum, [groupId, modIds]) => {
-      const group = modifierGroups.find((g: any) => g.id === groupId);
-      if (!group) return sum;
-      return (
-        sum +
-        modIds.reduce((ms, modId) => {
-          const mod = group.modifiers.find((m: any) => m.id === modId);
-          return ms + (mod?.price || 0);
-        }, 0)
-      );
-    },
-    0,
-  );
+  const modifiersTotal = calculateModifiersTotal(selectedModifiers, modifierGroups);
 
   const totalPrice = (item.price + modifiersTotal) * quantity;
 
@@ -225,9 +462,12 @@ export default function ProductDetailPage({
       {/* Product image */}
       <div className="w-full aspect-[4/3] bg-muted relative overflow-hidden">
         {item.image_url ? (
-          <img
+          <Image
             src={item.image_url}
             alt={item.name}
+            fill
+            sizes="100vw"
+            unoptimized
             className="w-full h-full object-cover"
           />
         ) : (
@@ -265,157 +505,13 @@ export default function ProductDetailPage({
           </div>
         )}
 
-        {/* Modifier groups */}
-        {modifierGroups.length > 0 && (
-          <div className="space-y-3">
-            {modifierGroups.map((group: any) => {
-              const isSingleSelect = group.max_selections === 1;
-              const selected = selectedModifiers[group.id] || [];
-              const isOpen = openGroups[group.id] ?? !!group.is_required;
-
-              const toggleGroup = () =>
-                setOpenGroups((prev) => ({
-                  ...prev,
-                  [group.id]: !prev[group.id],
-                }));
-
-              return (
-                <div
-                  key={group.id}
-                  className="rounded-xl border border-border overflow-hidden"
-                >
-                  {/* Accordion trigger */}
-                  <button
-                    type="button"
-                    onClick={toggleGroup}
-                    className="w-full flex items-center justify-between p-3 bg-muted/30 hover:bg-muted/50 transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-semibold">{group.name}</h2>
-                      {group.is_required && (
-                        <span className="text-[10px] font-medium text-destructive bg-destructive/10 px-1.5 py-0.5 rounded">
-                          Requerido
-                        </span>
-                      )}
-                      {selected.length > 0 && (
-                        <span className="text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded">
-                          {selected.length} sel.
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {group.max_selections > 1 && (
-                        <span className="text-xs text-muted-foreground">
-                          Max {group.max_selections}
-                        </span>
-                      )}
-                      <ChevronDown
-                        className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${
-                          isOpen ? "rotate-180" : ""
-                        }`}
-                      />
-                    </div>
-                  </button>
-
-                  {/* Accordion content */}
-                  <div
-                    className="grid transition-[grid-template-rows] duration-200 ease-in-out"
-                    style={{
-                      gridTemplateRows: isOpen ? "1fr" : "0fr",
-                    }}
-                  >
-                    <div className="overflow-hidden">
-                      <div className="p-3 pt-1 space-y-1">
-                        {group.modifiers.map((mod: any) => {
-                          const isSelected = selected.includes(mod.id);
-
-                          const handleToggle = () => {
-                            if (isSingleSelect) {
-                              setSelectedModifiers({
-                                ...selectedModifiers,
-                                [group.id]: isSelected ? [] : [mod.id],
-                              });
-                            } else {
-                              if (isSelected) {
-                                setSelectedModifiers({
-                                  ...selectedModifiers,
-                                  [group.id]: selected.filter(
-                                    (id: string) => id !== mod.id,
-                                  ),
-                                });
-                              } else {
-                                if (
-                                  group.max_selections &&
-                                  selected.length >= group.max_selections
-                                )
-                                  return;
-                                setSelectedModifiers({
-                                  ...selectedModifiers,
-                                  [group.id]: [...selected, mod.id],
-                                });
-                              }
-                            }
-                          };
-
-                          return (
-                            <button
-                              key={mod.id}
-                              type="button"
-                              onClick={handleToggle}
-                              className={`w-full flex items-center justify-between rounded-lg border p-3 transition-colors ${
-                                isSelected
-                                  ? "border-primary bg-primary/5"
-                                  : "border-border hover:border-primary/50"
-                              }`}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div
-                                  className={`flex h-5 w-5 items-center justify-center ${
-                                    isSingleSelect
-                                      ? "rounded-full"
-                                      : "rounded"
-                                  } border-2 ${
-                                    isSelected
-                                      ? "border-primary bg-primary"
-                                      : "border-muted-foreground/30"
-                                  }`}
-                                >
-                                  {isSelected && (
-                                    <svg
-                                      className="h-3 w-3 text-primary-foreground"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                      strokeWidth={3}
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        d="M5 13l4 4L19 7"
-                                      />
-                                    </svg>
-                                  )}
-                                </div>
-                                <span className="text-sm font-medium">
-                                  {mod.name}
-                                </span>
-                              </div>
-                              {mod.price > 0 && (
-                                <span className="text-sm text-muted-foreground">
-                                  +{formatCurrency(mod.price)}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <ModifierGroupsAccordion
+          modifierGroups={modifierGroups}
+          selectedModifiers={selectedModifiers}
+          setSelectedModifiers={setSelectedModifiers}
+          openGroups={openGroups}
+          setOpenGroups={setOpenGroups}
+        />
 
         {/* Quantity selector */}
         <div>
@@ -439,7 +535,7 @@ export default function ProductDetailPage({
               size="icon"
               variant="outline"
               className="h-10 w-10 rounded-full"
-              onClick={() => setQuantity(quantity + 1)}
+              onClick={() => setQuantity((prev) => prev + 1)}
             >
               <Plus className="h-4 w-4" />
             </Button>

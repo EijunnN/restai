@@ -152,12 +152,15 @@ export function NotificationBell() {
     }
   }, [open]);
 
-  // Mark as read when panel opens
-  useEffect(() => {
-    if (open) {
-      markAllRead();
-    }
-  }, [open, markAllRead]);
+  const handleTogglePanel = useCallback(() => {
+    setOpen((prevOpen) => {
+      const nextOpen = !prevOpen;
+      if (nextOpen) {
+        markAllRead();
+      }
+      return nextOpen;
+    });
+  }, [markAllRead]);
 
   return (
     <>
@@ -186,7 +189,7 @@ export function NotificationBell() {
       {/* Bell + Panel */}
       <div className="relative" ref={panelRef}>
         <button
-          onClick={() => setOpen(!open)}
+          onClick={handleTogglePanel}
           className="relative p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
         >
           <Bell className="h-5 w-5" />
