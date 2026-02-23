@@ -55,17 +55,19 @@ function DatePicker({
           variant="outline"
           disabled={disabled}
           className={cn(
-            "w-full justify-start text-left font-normal",
+            "w-full justify-start text-left font-normal overflow-hidden",
             !selected && "text-muted-foreground",
             className
           )}
         >
           <CalendarIcon className="mr-2 h-4 w-4" />
-          {selected ? (
-            format(selected, "PPP", { locale: es })
-          ) : (
-            <span>{placeholder}</span>
-          )}
+          <span className="truncate">
+            {selected ? (
+              format(selected, "PPP", { locale: es })
+            ) : (
+              placeholder
+            )}
+          </span>
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align="start">
