@@ -4,6 +4,10 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 let refreshPromise: Promise<string | null> | null = null;
 
+type ApiFetchOptions = RequestInit & {
+  includeBranchHeader?: boolean;
+};
+
 async function refreshAccessToken(): Promise<string | null> {
   const { refreshToken, setAccessToken, logout } = useAuthStore.getState();
   if (!refreshToken) return null;
@@ -27,17 +31,24 @@ async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
-export async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
+export async function apiFetch<T = any>(path: string, options?: ApiFetchOptions): Promise<T> {
   const { accessToken, selectedBranchId } = useAuthStore.getState();
+  const {
+    includeBranchHeader = true,
+    headers: customHeaders,
+    ...requestOptions
+  } = options ?? {};
 
   const makeRequest = async (token: string | null) => {
     return fetch(`${API_URL}${path}`, {
-      ...options,
+      ...requestOptions,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(selectedBranchId ? { "x-branch-id": selectedBranchId } : {}),
-        ...options?.headers,
+        ...(includeBranchHeader && selectedBranchId
+          ? { "x-branch-id": selectedBranchId }
+          : {}),
+        ...customHeaders,
       },
     });
   };

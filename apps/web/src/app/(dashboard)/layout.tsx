@@ -38,6 +38,13 @@ interface NavGroup {
   items: { href: string; label: string; icon: React.ElementType }[];
 }
 
+interface Branch {
+  id: string;
+  name: string;
+  slug: string;
+  address: string | null;
+}
+
 const navGroups: NavGroup[] = [
   {
     label: "General",
@@ -115,15 +122,18 @@ export default function DashboardLayout({
 
   const { data: org } = useOrgSettings();
   const { data: branches } = useBranches();
+  const availableBranches = branches ?? [];
+  const canSwitchBranch = availableBranches.length > 1;
 
-  const currentBranch = branches?.find((b: any) => b.id === selectedBranchId);
+  const currentBranch = availableBranches.find((branch: Branch) => branch.id === selectedBranchId);
 
   const handleBranchChange = useCallback(
     (branchId: string) => {
+      if (branchId === selectedBranchId) return;
       setSelectedBranch(branchId);
       queryClient.invalidateQueries();
     },
-    [setSelectedBranch, queryClient],
+    [selectedBranchId, setSelectedBranch, queryClient],
   );
 
   useEffect(() => {
@@ -131,6 +141,19 @@ export default function DashboardLayout({
       router.push("/login");
     }
   }, [isAuthenticated, router]);
+
+  useEffect(() => {
+    if (availableBranches.length === 0) return;
+
+    const selectedBranchStillAllowed = selectedBranchId
+      ? availableBranches.some((branch: Branch) => branch.id === selectedBranchId)
+      : false;
+
+    if (!selectedBranchStillAllowed) {
+      setSelectedBranch(availableBranches[0].id);
+      queryClient.invalidateQueries();
+    }
+  }, [availableBranches, selectedBranchId, setSelectedBranch, queryClient]);
 
   if (!user) {
     return (
@@ -178,7 +201,7 @@ export default function DashboardLayout({
         </div>
 
         {/* Branch selector */}
-        {!collapsed && branches && branches.length > 1 && (
+        {!collapsed && canSwitchBranch && (
           <div className="px-3 py-2 border-b border-sidebar-border">
             <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
               Sede activa
@@ -188,7 +211,7 @@ export default function DashboardLayout({
                 <SelectValue placeholder="Seleccionar sede" />
               </SelectTrigger>
               <SelectContent>
-                {branches.map((branch: any) => (
+                {availableBranches.map((branch: Branch) => (
                   <SelectItem key={branch.id} value={branch.id}>
                     {branch.name}
                   </SelectItem>
@@ -199,7 +222,7 @@ export default function DashboardLayout({
         )}
 
         {/* Branch name display (single branch or collapsed) */}
-        {!collapsed && branches && branches.length === 1 && currentBranch && (
+        {!collapsed && availableBranches.length === 1 && currentBranch && (
           <div className="px-3 py-2 border-b border-sidebar-border">
             <div className="flex items-center gap-2">
               <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -329,20 +352,16 @@ export default function DashboardLayout({
 
             <div className="flex items-center gap-3">
               {/* Mobile branch selector */}
-              {user.branches && user.branches.length > 1 && (
+              {canSwitchBranch && (
                 <div className="md:hidden">
                   <Select value={selectedBranchId || undefined} onValueChange={handleBranchChange}>
                     <SelectTrigger className="h-auto text-xs py-1.5 w-auto min-w-[8rem]">
                       <SelectValue placeholder="Sede" />
                     </SelectTrigger>
                     <SelectContent>
-                      {branches ? branches.map((branch: any) => (
+                      {availableBranches.map((branch: Branch) => (
                         <SelectItem key={branch.id} value={branch.id}>
                           {branch.name}
-                        </SelectItem>
-                      )) : user.branches.map((branchId: string) => (
-                        <SelectItem key={branchId} value={branchId}>
-                          Sede {branchId.slice(0, 8)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -393,7 +412,7 @@ export default function DashboardLayout({
               </div>
 
               {/* Mobile branch selector */}
-              {branches && branches.length > 1 && (
+              {canSwitchBranch && (
                 <div className="px-3 py-2 border-b border-sidebar-border">
                   <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
                     Sede activa
@@ -403,7 +422,7 @@ export default function DashboardLayout({
                       <SelectValue placeholder="Seleccionar sede" />
                     </SelectTrigger>
                     <SelectContent>
-                      {branches.map((branch: any) => (
+                      {availableBranches.map((branch: Branch) => (
                         <SelectItem key={branch.id} value={branch.id}>
                           {branch.name}
                         </SelectItem>
@@ -413,7 +432,7 @@ export default function DashboardLayout({
                 </div>
               )}
 
-              {currentBranch && (!branches || branches.length <= 1) && (
+              {currentBranch && availableBranches.length <= 1 && (
                 <div className="px-3 py-2 border-b border-sidebar-border">
                   <div className="flex items-center gap-2">
                     <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
