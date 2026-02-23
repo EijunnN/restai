@@ -168,3 +168,21 @@ Despues de ejecutar `db:seed`:
 5. El cliente navega el menu, agrega items al carrito y hace pedidos
 6. La cocina ve los pedidos en tiempo real (Kanban)
 7. El personal gestiona pagos e imprime tickets
+
+## POS en dashboard (estado actual)
+
+- La pantalla `http://localhost:3000/pos` permite crear ordenes rapidas para staff.
+- Actualmente soporta tipo de orden (`dine_in`, `takeout`, `delivery`) y carrito completo.
+- En la version actual no existe seleccion explicita de mesa/sesion desde POS.
+
+## Roadmap (corto plazo)
+
+- **POS con contexto de servicio (prioridad alta)**
+  - Selector de contexto: `Mesa`, `Mostrador/Takeout`, `Delivery`.
+  - Si es `Mesa`, obligar seleccion de mesa y asociar `table_session_id`.
+  - Si es `Mostrador` o `Delivery`, permitir orden sin mesa.
+  - Para `Delivery`, agregar campos minimos de despacho (contacto y direccion/referencia).
+- **Mesa y solicitudes**
+  - Filtro rapido en `/tables`: "Mostrar solo mesas con solicitud".
+- **Experiencia cliente**
+  - Unificar feedback/cooldown de solicitudes tambien en `/menu` (igual que en `/status`).
