@@ -1,6 +1,7 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
+import type { PaymentMethodShare } from "@/hooks/use-reports";
 import {
   PieChart,
   Pie,
@@ -10,14 +11,14 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-const PIE_COLORS = ["#7c3aed", "#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#6b7280"];
+const PIE_COLORS = ["#0f766e", "#2563eb", "#16a34a", "#d97706", "#e11d48", "#4b5563"];
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={`animate-pulse bg-muted rounded ${className ?? ""}`} />;
 }
 
 interface PaymentMethodsChartProps {
-  paymentMethods: any[];
+  paymentMethods: PaymentMethodShare[];
   isLoading: boolean;
 }
 
@@ -43,7 +44,7 @@ export function PaymentMethodsChart({ paymentMethods, isLoading }: PaymentMethod
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {paymentMethods.map((_: any, index: number) => (
+                  {paymentMethods.map((_, index: number) => (
                     <Cell
                       key={index}
                       fill={PIE_COLORS[index % PIE_COLORS.length]}

@@ -2,6 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { formatCurrency } from "@/lib/utils";
+import type { SalesReportDay } from "@/hooks/use-reports";
 import {
   AreaChart,
   Area,
@@ -17,7 +18,7 @@ function Skeleton({ className }: { className?: string }) {
 }
 
 interface SalesChartProps {
-  days: any[];
+  days: SalesReportDay[];
   isLoading: boolean;
 }
 

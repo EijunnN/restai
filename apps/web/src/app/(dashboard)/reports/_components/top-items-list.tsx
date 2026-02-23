@@ -2,13 +2,14 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { formatCurrency } from "@/lib/utils";
+import type { TopItemReport } from "@/hooks/use-reports";
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={`animate-pulse bg-muted rounded ${className ?? ""}`} />;
 }
 
 interface TopItemsListProps {
-  topItems: any[];
+  topItems: TopItemReport[];
   isLoading: boolean;
 }
 
@@ -40,7 +41,7 @@ export function TopItemsList({ topItems, isLoading }: TopItemsListProps) {
           </p>
         ) : (
           <div className="space-y-3">
-            {topItems.map((item: any, index: number) => (
+            {topItems.map((item, index: number) => (
               <div
                 key={item.name || index}
                 className="flex items-center justify-between p-3 rounded-lg border"
