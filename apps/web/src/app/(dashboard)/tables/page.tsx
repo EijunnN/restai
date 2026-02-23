@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { Button } from "@restai/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { Badge } from "@restai/ui/components/badge";
@@ -61,6 +61,15 @@ interface TableServiceRequestIndicator {
   customerName: string;
 }
 
+interface PendingSessionRequest {
+  id: string;
+  customer_name: string;
+  customer_phone: string | null;
+  started_at: string;
+  table_id: string;
+  table_number: number;
+}
+
 export default function TablesPage() {
   const [activeTab, setActiveTab] = useState("all");
   const [viewMode, setViewMode] = useState<"grid" | "planner">("grid");
@@ -71,6 +80,7 @@ export default function TablesPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "table" | "space"; id: string; name: string } | null>(null);
   const [historyDialog, setHistoryDialog] = useState<any>(null);
   const [assignDialog, setAssignDialog] = useState<any>(null);
+  const [pendingSessions, setPendingSessions] = useState<PendingSessionRequest[]>([]);
   const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
   const [requestsDialogOpen, setRequestsDialogOpen] = useState(false);
   const { accessToken, selectedBranchId } = useAuthStore();
@@ -81,17 +91,24 @@ export default function TablesPage() {
   const updateTableStatus = useUpdateTableStatus();
   const deleteTable = useDeleteTable();
   const deleteSpace = useDeleteSpace();
-  const { data: pendingData } = usePendingSessions();
+  const { data: pendingData, refetch: refetchPendingSessions } = usePendingSessions();
   const approveSession = useApproveSession();
   const rejectSession = useRejectSession();
   const { data: branchSettingsData } = useBranchSettings();
 
   const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
-  const pendingSessions: any[] = pendingData ?? [];
   const spaces: any[] = spacesData ?? [];
   const allTables: any[] = tablesData?.tables ?? [];
   const branchSlug: string = tablesData?.branchSlug ?? "";
   const isLoading = spacesLoading || tablesLoading;
+  const currentTableIds = useMemo(
+    () => new Set(allTables.map((table: any) => String(table.id))),
+    [allTables]
+  );
+
+  useEffect(() => {
+    setPendingSessions((pendingData ?? []) as PendingSessionRequest[]);
+  }, [pendingData]);
 
   const filteredTables = useMemo(() => {
     if (activeTab === "all") return allTables;
@@ -141,6 +158,50 @@ export default function TablesPage() {
   }, [serviceRequests]);
 
   const handleWsMessage = useCallback((msg: WsMessage) => {
+    if (msg.type === "auth:success") {
+      void refetchPendingSessions();
+      return;
+    }
+
+    if (msg.type === "session:pending") {
+      const payload = msg.payload as {
+        sessionId: string;
+        tableId: string;
+        tableNumber: number;
+        customerName?: string;
+      };
+
+      if (!currentTableIds.has(String(payload.tableId))) {
+        return;
+      }
+
+      setPendingSessions((prev) => {
+        if (prev.some((session) => session.id === payload.sessionId)) {
+          return prev;
+        }
+        return [
+          {
+            id: payload.sessionId,
+            customer_name: payload.customerName || "Cliente",
+            customer_phone: null,
+            started_at: new Date(msg.timestamp).toISOString(),
+            table_id: payload.tableId,
+            table_number: payload.tableNumber,
+          },
+          ...prev,
+        ];
+      });
+      return;
+    }
+
+    if (msg.type === "session:approved" || msg.type === "session:rejected") {
+      const payload = msg.payload as { sessionId: string };
+      setPendingSessions((prev) =>
+        prev.filter((session) => session.id !== payload.sessionId)
+      );
+      return;
+    }
+
     if (msg.type !== "table:request_bill" && msg.type !== "table:call_waiter") {
       return;
     }
@@ -179,7 +240,7 @@ export default function TablesPage() {
         ? `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita la cuenta`
         : `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita mozo`
     );
-  }, []);
+  }, [currentTableIds, refetchPendingSessions]);
 
   useWebSocket(
     selectedBranchId ? [`branch:${selectedBranchId}`] : [],

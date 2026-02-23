@@ -151,7 +151,9 @@ export function usePendingSessions() {
   return useQuery({
     queryKey: ["tables", "sessions", "pending"],
     queryFn: () => apiFetch("/api/tables/sessions/pending"),
-    refetchInterval: 5000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
   });
 }
 
