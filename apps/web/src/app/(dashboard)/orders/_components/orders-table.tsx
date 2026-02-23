@@ -26,6 +26,15 @@ function Skeleton({ className }: { className?: string }) {
   return <div className={`animate-pulse bg-muted rounded ${className ?? ""}`} />;
 }
 
+function InlineActionLoading({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className="h-1.5 w-6 rounded-full bg-current/35 animate-pulse" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 function getNextStatus(status: string): string | null {
   const flow: Record<string, string> = {
     pending: "confirmed",
@@ -45,6 +54,9 @@ interface OrdersTableProps {
   page: number;
   onPageChange: (page: number) => void;
   updateStatusPending: boolean;
+  updatingOrderId?: string | null;
+  updatingTargetStatus?: string | null;
+  activeChargeOrderId?: string | null;
   onUpdateStatus: (id: string, status: string) => void;
   onPrintReceipt: (order: any) => void;
   onCharge?: (order: any) => void;
@@ -58,6 +70,9 @@ export function OrdersTable({
   page,
   onPageChange,
   updateStatusPending,
+  updatingOrderId,
+  updatingTargetStatus,
+  activeChargeOrderId,
   onUpdateStatus,
   onPrintReceipt,
   onCharge,
@@ -145,6 +160,12 @@ export function OrdersTable({
                     const createdAt = order.created_at || "";
                     const paymentStatus = order.payment_status || "unpaid";
                     const payConfig = paymentStatusConfig[paymentStatus] || paymentStatusConfig.unpaid;
+                    const isUpdatingThisOrder = updateStatusPending && updatingOrderId === order.id;
+                    const isUpdatingCurrentStep =
+                      isUpdatingThisOrder &&
+                      !!nextStatus &&
+                      updatingTargetStatus === nextStatus;
+                    const isOpeningCharge = activeChargeOrderId === order.id;
 
                     return (
                       <tr
@@ -182,20 +203,33 @@ export function OrdersTable({
                               <Button
                                 variant="outline"
                                 size="sm"
+                                className="active:translate-y-px active:scale-[0.98]"
                                 disabled={updateStatusPending}
                                 onClick={() => onUpdateStatus(order.id, nextStatus)}
                               >
-                                {statusConfig[nextStatus]?.label || nextStatus}
+                                {isUpdatingCurrentStep ? (
+                                  <InlineActionLoading label="Actualizando..." />
+                                ) : (
+                                  statusConfig[nextStatus]?.label || nextStatus
+                                )}
                               </Button>
                             )}
                             {paymentStatus !== "paid" && onCharge && (
                               <Button
                                 variant="outline"
                                 size="sm"
+                                className="active:translate-y-px active:scale-[0.98]"
+                                disabled={isOpeningCharge}
                                 onClick={() => onCharge(order)}
                               >
-                                <DollarSign className="h-3 w-3 mr-1" />
-                                Cobrar
+                                {isOpeningCharge ? (
+                                  <InlineActionLoading label="Abriendo..." />
+                                ) : (
+                                  <>
+                                    <DollarSign className="h-3 w-3 mr-1" />
+                                    Cobrar
+                                  </>
+                                )}
                               </Button>
                             )}
                             <Button

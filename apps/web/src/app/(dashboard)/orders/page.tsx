@@ -25,6 +25,8 @@ export default function OrdersPage() {
   const { data: orgSettings } = useOrgSettings();
   const { data: branchSettings } = useBranchSettings();
   const printReceipt = usePrintReceipt();
+  const updatingOrderId = updateStatus.isPending ? updateStatus.variables?.id ?? null : null;
+  const updatingTargetStatus = updateStatus.isPending ? updateStatus.variables?.status ?? null : null;
 
   const handlePrintReceipt = async (order: any) => {
     try {
@@ -109,6 +111,9 @@ export default function OrdersPage() {
         page={page}
         onPageChange={setPage}
         updateStatusPending={updateStatus.isPending}
+        updatingOrderId={updatingOrderId}
+        updatingTargetStatus={updatingTargetStatus}
+        activeChargeOrderId={chargeOrderId}
         onUpdateStatus={(id, status) => updateStatus.mutate({ id, status })}
         onPrintReceipt={handlePrintReceipt}
         onCharge={(order) => setChargeOrderId(order.id)}
