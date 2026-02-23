@@ -1,10 +1,16 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { Button } from "@restai/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { Badge } from "@restai/ui/components/badge";
 import { Tabs, TabsList, TabsTrigger } from "@restai/ui/components/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@restai/ui/components/dialog";
 import {
   Plus,
   RefreshCw,
@@ -12,9 +18,13 @@ import {
   X,
   Bell,
   LayoutGrid,
-  Map,
+  Map as MapIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useWebSocket } from "@/hooks/use-websocket";
+import { useAuthStore } from "@/stores/auth-store";
+import type { WsMessage } from "@restai/types";
+import { toast } from "sonner";
 import {
   useTables,
   useUpdateTableStatus,
@@ -36,6 +46,21 @@ import { CreateSpaceDialog, EditSpaceDialog, SpaceInfoCard } from "./_components
 import { HistoryDialog } from "./_components/history-dialog";
 import { AssignmentDialog } from "./_components/assignment-dialog";
 
+interface TableServiceRequest {
+  id: string;
+  type: "request_bill" | "call_waiter";
+  tableId: string;
+  tableNumber: number;
+  tableSessionId: string;
+  customerName: string;
+  timestamp: number;
+}
+
+interface TableServiceRequestIndicator {
+  type: "request_bill" | "call_waiter";
+  customerName: string;
+}
+
 export default function TablesPage() {
   const [activeTab, setActiveTab] = useState("all");
   const [viewMode, setViewMode] = useState<"grid" | "planner">("grid");
@@ -46,6 +71,9 @@ export default function TablesPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "table" | "space"; id: string; name: string } | null>(null);
   const [historyDialog, setHistoryDialog] = useState<any>(null);
   const [assignDialog, setAssignDialog] = useState<any>(null);
+  const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
+  const [requestsDialogOpen, setRequestsDialogOpen] = useState(false);
+  const { accessToken, selectedBranchId } = useAuthStore();
 
   // Data hooks
   const { data: spacesData, isLoading: spacesLoading } = useSpaces();
@@ -76,6 +104,95 @@ export default function TablesPage() {
     available: allTables.filter((t: any) => t.status === "available").length,
     occupied: allTables.filter((t: any) => t.status === "occupied").length,
     reserved: allTables.filter((t: any) => t.status === "reserved").length,
+  };
+
+  const requestByTableId = useMemo<Record<string, TableServiceRequestIndicator>>(() => {
+    const latestByTable = new Map<string, TableServiceRequest>();
+    for (const request of serviceRequests) {
+      const current = latestByTable.get(request.tableId);
+      if (!current || request.timestamp > current.timestamp) {
+        latestByTable.set(request.tableId, request);
+      }
+    }
+
+    const result: Record<string, TableServiceRequestIndicator> = {};
+    for (const [tableId, request] of latestByTable.entries()) {
+      result[tableId] = {
+        type: request.type,
+        customerName: request.customerName,
+      };
+    }
+
+    return result;
+  }, [serviceRequests]);
+
+  const requestSummary = useMemo(() => {
+    const requestBillCount = serviceRequests.filter(
+      (request) => request.type === "request_bill"
+    ).length;
+    const callWaiterCount = serviceRequests.filter(
+      (request) => request.type === "call_waiter"
+    ).length;
+    return {
+      total: serviceRequests.length,
+      requestBillCount,
+      callWaiterCount,
+    };
+  }, [serviceRequests]);
+
+  const handleWsMessage = useCallback((msg: WsMessage) => {
+    if (msg.type !== "table:request_bill" && msg.type !== "table:call_waiter") {
+      return;
+    }
+
+    const payload = msg.payload as {
+      tableId: string;
+      tableNumber: number;
+      tableSessionId: string;
+      customerName?: string;
+    };
+
+    const requestType: TableServiceRequest["type"] =
+      msg.type === "table:request_bill" ? "request_bill" : "call_waiter";
+    const requestId = `${payload.tableSessionId}:${requestType}`;
+
+    setServiceRequests((prev) => {
+      if (prev.some((request) => request.id === requestId)) {
+        return prev;
+      }
+      return [
+        {
+          id: requestId,
+          type: requestType,
+          tableId: payload.tableId,
+          tableNumber: payload.tableNumber,
+          tableSessionId: payload.tableSessionId,
+          customerName: payload.customerName || "Cliente",
+          timestamp: msg.timestamp,
+        },
+        ...prev,
+      ].slice(0, 25);
+    });
+
+    toast.info(
+      requestType === "request_bill"
+        ? `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita la cuenta`
+        : `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita mozo`
+    );
+  }, []);
+
+  useWebSocket(
+    selectedBranchId ? [`branch:${selectedBranchId}`] : [],
+    handleWsMessage,
+    accessToken || undefined
+  );
+
+  const dismissServiceRequest = (id: string) => {
+    setServiceRequests((prev) => prev.filter((request) => request.id !== id));
+  };
+
+  const clearServiceRequests = () => {
+    setServiceRequests([]);
   };
 
   const handleStatusChange = (tableId: string, newStatus: string) => {
@@ -144,7 +261,7 @@ export default function TablesPage() {
                 className="rounded-l-none"
                 onClick={() => setViewMode("planner")}
               >
-                <Map className="h-4 w-4" />
+                <MapIcon className="h-4 w-4" />
               </Button>
             </div>
             <Button variant="outline" onClick={() => setCreateSpaceDialog(true)}>
@@ -227,6 +344,25 @@ export default function TablesPage() {
         </Card>
       )}
 
+      {/* Table service requests summary */}
+      {serviceRequests.length > 0 && (
+        <Card className="border-2 border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-950/20">
+          <CardContent className="p-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-blue-600" />
+              <p className="text-sm font-medium">
+                Solicitudes activas: {requestSummary.total}
+              </p>
+              <Badge variant="outline">Cuenta: {requestSummary.requestBillCount}</Badge>
+              <Badge variant="outline">Mozo: {requestSummary.callWaiterCount}</Badge>
+            </div>
+            <Button size="sm" onClick={() => setRequestsDialogOpen(true)}>
+              Ver solicitudes
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tabs: All / Per Space / Unassigned */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="flex items-center gap-2 overflow-x-auto">
@@ -264,7 +400,10 @@ export default function TablesPage() {
         {/* View: Grid or Floor Planner */}
         {viewMode === "planner" ? (
           <div className="mt-4">
-            <FloorPlannerView tables={filteredTables} />
+            <FloorPlannerView
+              tables={filteredTables}
+              requestByTableId={requestByTableId}
+            />
           </div>
         ) : (
           <GridView
@@ -272,6 +411,7 @@ export default function TablesPage() {
             isLoading={isLoading}
             waiterAssignmentEnabled={waiterAssignmentEnabled}
             statusChangePending={updateTableStatus.isPending}
+            requestByTableId={requestByTableId}
             onQr={setQrDialog}
             onHistory={setHistoryDialog}
             onAssign={setAssignDialog}
@@ -284,6 +424,57 @@ export default function TablesPage() {
       </Tabs>
 
       {/* Dialogs */}
+      <Dialog open={requestsDialogOpen} onOpenChange={setRequestsDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Solicitudes de mesa ({serviceRequests.length})
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+            {serviceRequests.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-6">
+                No hay solicitudes activas.
+              </p>
+            ) : (
+              serviceRequests.map((request) => (
+                <div
+                  key={request.id}
+                  className="flex items-center justify-between p-3 rounded-lg bg-background border"
+                >
+                  <div>
+                    <p className="font-medium">Mesa {request.tableNumber}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {request.customerName} ·{" "}
+                      {request.type === "request_bill"
+                        ? "Solicita la cuenta"
+                        : "Solicita mozo"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">
+                      {new Date(request.timestamp).toLocaleTimeString("es-PE", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </Badge>
+                    <Button size="sm" onClick={() => dismissServiceRequest(request.id)}>
+                      Atendido
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          {serviceRequests.length > 0 && (
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={clearServiceRequests}>
+                Limpiar todo
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       <QrDialog table={qrDialog} branchSlug={branchSlug} onClose={() => setQrDialog(null)} />
       <CreateTableDialog open={createTableDialog} onOpenChange={setCreateTableDialog} spaces={spaces} />
       <CreateSpaceDialog open={createSpaceDialog} onOpenChange={setCreateSpaceDialog} />

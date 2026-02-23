@@ -95,7 +95,7 @@ export function NotificationBell() {
       if (msg.type === "table:call_waiter") {
         addNotification({
           type: "call_waiter",
-          message: `Mesa ${payload.tableNumber}: Cliente solicita al mozo`,
+          message: `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita al mozo`,
           tableNumber: payload.tableNumber,
           tableId: payload.tableId,
           timestamp: msg.timestamp,
@@ -103,7 +103,7 @@ export function NotificationBell() {
       } else if (msg.type === "table:request_bill") {
         addNotification({
           type: "request_bill",
-          message: `Mesa ${payload.tableNumber}: Cliente solicita la cuenta`,
+          message: `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita la cuenta`,
           tableNumber: payload.tableNumber,
           tableId: payload.tableId,
           timestamp: msg.timestamp,

@@ -3,6 +3,11 @@
 import { cn } from "@/lib/utils";
 import { TableCard } from "./table-card";
 
+interface TableServiceRequestIndicator {
+  type: "request_bill" | "call_waiter";
+  customerName: string;
+}
+
 function Skeleton({ className }: { className?: string }) {
   return (
     <div className={cn("animate-pulse rounded-2xl bg-muted/50 p-4 flex flex-col gap-3", className)}>
@@ -26,6 +31,7 @@ interface GridViewProps {
   isLoading: boolean;
   waiterAssignmentEnabled: boolean;
   statusChangePending: boolean;
+  requestByTableId: Record<string, TableServiceRequestIndicator>;
   onQr: (table: any) => void;
   onHistory: (table: any) => void;
   onAssign: (table: any) => void;
@@ -38,6 +44,7 @@ export function GridView({
   isLoading,
   waiterAssignmentEnabled,
   statusChangePending,
+  requestByTableId,
   onQr,
   onHistory,
   onAssign,
@@ -56,6 +63,7 @@ export function GridView({
               table={table}
               waiterAssignmentEnabled={waiterAssignmentEnabled}
               statusChangePending={statusChangePending}
+              serviceRequest={requestByTableId[table.id]}
               onQr={onQr}
               onHistory={onHistory}
               onAssign={onAssign}

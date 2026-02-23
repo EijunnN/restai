@@ -13,14 +13,21 @@ import {
   History,
   UserPlus,
   Circle,
+  BellRing,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { statusOptions } from "./constants";
+
+interface TableServiceRequestIndicator {
+  type: "request_bill" | "call_waiter";
+  customerName: string;
+}
 
 interface TableCardProps {
   table: any;
   waiterAssignmentEnabled: boolean;
   statusChangePending: boolean;
+  serviceRequest?: TableServiceRequestIndicator;
   onQr: (table: any) => void;
   onHistory: (table: any) => void;
   onAssign: (table: any) => void;
@@ -78,6 +85,7 @@ export function TableCard({
   table,
   waiterAssignmentEnabled,
   statusChangePending,
+  serviceRequest,
   onQr,
   onHistory,
   onAssign,
@@ -85,17 +93,47 @@ export function TableCard({
   onStatusChange,
 }: TableCardProps) {
   const s = STATUS[table.status] || STATUS.available;
+  const hasServiceRequest = !!serviceRequest;
+  const requestAccent =
+    serviceRequest?.type === "request_bill"
+      ? "ring-2 ring-blue-500/70"
+      : "ring-2 ring-orange-500/70";
+  const requestLabel =
+    serviceRequest?.type === "request_bill"
+      ? "Solicita cuenta"
+      : "Solicita mozo";
 
   return (
-    <div className={cn("rounded-2xl p-4 flex flex-col gap-3 transition-shadow duration-200 hover:shadow-lg", s.bg)}>
+    <div
+      className={cn(
+        "rounded-2xl p-4 flex flex-col gap-3 transition-shadow duration-200 hover:shadow-lg",
+        s.bg,
+        hasServiceRequest && requestAccent
+      )}
+    >
       {/* Header: number + status */}
       <div className="flex items-center justify-between">
         <p className={cn("text-[2.5rem] font-black leading-none tracking-tight tabular-nums", s.number)}>
           {table.number}
         </p>
-        <span className={cn("text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/60 dark:bg-white/10", s.text)}>
-          {s.label}
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span className={cn("text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/60 dark:bg-white/10", s.text)}>
+            {s.label}
+          </span>
+          {serviceRequest && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                serviceRequest.type === "request_bill"
+                  ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                  : "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
+              )}
+            >
+              <BellRing className="h-3 w-3" />
+              {requestLabel}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Capacity */}

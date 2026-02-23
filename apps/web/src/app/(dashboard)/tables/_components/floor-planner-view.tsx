@@ -12,7 +12,18 @@ import { cn } from "@/lib/utils";
 import { useUpdateTablePosition } from "@/hooks/use-tables";
 import { statusConfig, plannerStatusColors } from "./constants";
 
-export function FloorPlannerView({ tables }: { tables: any[] }) {
+interface TableServiceRequestIndicator {
+  type: "request_bill" | "call_waiter";
+  customerName: string;
+}
+
+export function FloorPlannerView({
+  tables,
+  requestByTableId,
+}: {
+  tables: any[];
+  requestByTableId: Record<string, TableServiceRequestIndicator>;
+}) {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -171,6 +182,12 @@ export function FloorPlannerView({ tables }: { tables: any[] }) {
             const posY = isBeingDragged ? dragTablePos.y : (localPos?.y ?? table.position_y);
             const size = getTableSize(table.capacity);
             const colors = plannerStatusColors[table.status] || plannerStatusColors.available;
+            const serviceRequest = requestByTableId[table.id];
+            const hasServiceRequest = !!serviceRequest;
+            const requestOutline =
+              serviceRequest?.type === "request_bill"
+                ? "ring-2 ring-blue-500/70"
+                : "ring-2 ring-orange-500/70";
 
             return (
               <div
@@ -180,6 +197,7 @@ export function FloorPlannerView({ tables }: { tables: any[] }) {
                   "absolute rounded-lg border-2 flex flex-col items-center justify-center select-none transition-shadow",
                   colors.bg,
                   colors.border,
+                  hasServiceRequest && requestOutline,
                   isBeingDragged ? "shadow-lg z-50 opacity-90" : "shadow-sm hover:shadow-md cursor-grab",
                 )}
                 style={{
@@ -199,6 +217,21 @@ export function FloorPlannerView({ tables }: { tables: any[] }) {
                 <span className={cn("text-[9px] mt-0.5", colors.text)}>
                   {statusConfig[table.status]?.label}
                 </span>
+                {serviceRequest && (
+                  <span
+                    title={`${serviceRequest.customerName}: ${
+                      serviceRequest.type === "request_bill"
+                        ? "solicita cuenta"
+                        : "solicita mozo"
+                    }`}
+                    className={cn(
+                      "absolute -top-1 -right-1 h-3 w-3 rounded-full border border-background shadow-sm",
+                      serviceRequest.type === "request_bill"
+                        ? "bg-blue-500"
+                        : "bg-orange-500"
+                    )}
+                  />
+                )}
               </div>
             );
           })}
