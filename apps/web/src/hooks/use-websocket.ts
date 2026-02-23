@@ -30,9 +30,6 @@ export function useWebSocket(
         if (token) {
           ws.send(JSON.stringify({ type: "auth", token }));
         }
-        rooms.forEach((room) => {
-          ws.send(JSON.stringify({ type: "join", room }));
-        });
       };
 
       ws.onmessage = (event) => {

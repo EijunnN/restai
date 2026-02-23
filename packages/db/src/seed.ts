@@ -1,8 +1,21 @@
 import { db, schema } from "./index";
 import { hash } from "@node-rs/argon2";
+import { eq } from "drizzle-orm";
 
 async function seed() {
   console.log("🌱 Seeding database...");
+
+  const [existingOrg] = await db
+    .select({ id: schema.organizations.id })
+    .from(schema.organizations)
+    .where(eq(schema.organizations.slug, "demo"))
+    .limit(1);
+
+  if (existingOrg) {
+    console.log("ℹ️ Seed ya fue ejecutado anteriormente (slug: demo).");
+    console.log("   No se realizaron cambios para evitar duplicados.");
+    process.exit(0);
+  }
 
   // 1. Create organization
   const [org] = await db

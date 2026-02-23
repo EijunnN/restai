@@ -82,7 +82,10 @@ export function useUpdateOrderStatus() {
         method: "PATCH",
         body: JSON.stringify({ status }),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["orders"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["kitchen"] });
+    },
   });
 }
 

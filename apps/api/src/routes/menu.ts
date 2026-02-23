@@ -173,6 +173,25 @@ menu.post(
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
+    const [category] = await db
+      .select({ id: schema.menuCategories.id })
+      .from(schema.menuCategories)
+      .where(
+        and(
+          eq(schema.menuCategories.id, body.categoryId),
+          eq(schema.menuCategories.branch_id, tenant.branchId),
+          eq(schema.menuCategories.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!category) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Categoría no encontrada" } },
+        404,
+      );
+    }
+
     const [item] = await db
       .insert(schema.menuItems)
       .values({
@@ -302,6 +321,26 @@ menu.post(
   zValidator("json", createModifierSchema),
   async (c) => {
     const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const [group] = await db
+      .select({ id: schema.modifierGroups.id })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, body.groupId),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!group) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Grupo no encontrado" } },
+        404,
+      );
+    }
 
     const [modifier] = await db
       .insert(schema.modifiers)
@@ -326,6 +365,38 @@ menu.post(
   async (c) => {
     const { id } = c.req.valid("param");
     const { groupId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const [item] = await db
+      .select({ id: schema.menuItems.id })
+      .from(schema.menuItems)
+      .where(
+        and(
+          eq(schema.menuItems.id, id),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    const [group] = await db
+      .select({ id: schema.modifierGroups.id })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, groupId),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!item || !group) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item o grupo no encontrado" } },
+        404,
+      );
+    }
 
     await db
       .insert(schema.menuItemModifierGroups)
@@ -450,6 +521,32 @@ menu.patch(
   async (c) => {
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const [existingModifier] = await db
+      .select({
+        id: schema.modifiers.id,
+      })
+      .from(schema.modifiers)
+      .innerJoin(
+        schema.modifierGroups,
+        eq(schema.modifiers.group_id, schema.modifierGroups.id),
+      )
+      .where(
+        and(
+          eq(schema.modifiers.id, id),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!existingModifier) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Modificador no encontrado" } },
+        404,
+      );
+    }
 
     const updateData: Record<string, any> = {};
     if (body.name !== undefined) updateData.name = body.name;
@@ -480,6 +577,32 @@ menu.delete(
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [existingModifier] = await db
+      .select({
+        id: schema.modifiers.id,
+      })
+      .from(schema.modifiers)
+      .innerJoin(
+        schema.modifierGroups,
+        eq(schema.modifiers.group_id, schema.modifierGroups.id),
+      )
+      .where(
+        and(
+          eq(schema.modifiers.id, id),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!existingModifier) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Modificador no encontrado" } },
+        404,
+      );
+    }
 
     const [deleted] = await db
       .delete(schema.modifiers)
@@ -504,6 +627,26 @@ menu.get(
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [item] = await db
+      .select({ id: schema.menuItems.id })
+      .from(schema.menuItems)
+      .where(
+        and(
+          eq(schema.menuItems.id, id),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!item) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
+        404,
+      );
+    }
 
     const links = await db
       .select()
@@ -519,9 +662,13 @@ menu.get(
       .select()
       .from(schema.modifierGroups)
       .where(
-        groupIds.length === 1
-          ? eq(schema.modifierGroups.id, groupIds[0])
-          : inArray(schema.modifierGroups.id, groupIds)
+        and(
+          groupIds.length === 1
+            ? eq(schema.modifierGroups.id, groupIds[0])
+            : inArray(schema.modifierGroups.id, groupIds),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        )
       );
 
     // Also fetch modifiers for these groups
@@ -553,6 +700,38 @@ menu.delete(
   async (c) => {
     const itemId = c.req.param("id");
     const groupId = c.req.param("groupId");
+    const tenant = c.get("tenant") as any;
+
+    const [item] = await db
+      .select({ id: schema.menuItems.id })
+      .from(schema.menuItems)
+      .where(
+        and(
+          eq(schema.menuItems.id, itemId),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    const [group] = await db
+      .select({ id: schema.modifierGroups.id })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, groupId),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!item || !group) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item o grupo no encontrado" } },
+        404,
+      );
+    }
 
     const [deleted] = await db
       .delete(schema.menuItemModifierGroups)

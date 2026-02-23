@@ -387,6 +387,25 @@ coupons.get(
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [coupon] = await db
+      .select({ id: schema.coupons.id })
+      .from(schema.coupons)
+      .where(
+        and(
+          eq(schema.coupons.id, id),
+          eq(schema.coupons.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!coupon) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cupon no encontrado" } },
+        404,
+      );
+    }
 
     const assignments = await db
       .select({

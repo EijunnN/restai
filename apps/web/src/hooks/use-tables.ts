@@ -162,6 +162,8 @@ export function useApproveSession() {
       apiFetch(`/api/tables/sessions/${id}/approve`, { method: "PATCH" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tables"] });
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+      qc.invalidateQueries({ queryKey: ["tables", "sessions", "pending"] });
     },
   });
 }
@@ -173,6 +175,8 @@ export function useRejectSession() {
       apiFetch(`/api/tables/sessions/${id}/reject`, { method: "PATCH" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tables"] });
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+      qc.invalidateQueries({ queryKey: ["tables", "sessions", "pending"] });
     },
   });
 }
@@ -185,6 +189,7 @@ export function useEndSession() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tables"] });
       qc.invalidateQueries({ queryKey: ["sessions"] });
+      qc.invalidateQueries({ queryKey: ["tables", "sessions", "pending"] });
     },
   });
 }

@@ -280,7 +280,11 @@ orders.patch(
 
     // Verify order belongs to branch
     const [order] = await db
-      .select({ id: schema.orders.id, order_number: schema.orders.order_number })
+      .select({
+        id: schema.orders.id,
+        order_number: schema.orders.order_number,
+        table_session_id: schema.orders.table_session_id,
+      })
       .from(schema.orders)
       .where(
         and(
@@ -343,6 +347,9 @@ orders.patch(
     };
     await wsManager.publish(`branch:${tenant.branchId}`, itemPayload);
     await wsManager.publish(`branch:${tenant.branchId}:kitchen`, itemPayload);
+    if (order.table_session_id) {
+      await wsManager.publish(`session:${order.table_session_id}`, itemPayload);
+    }
 
     return c.json({ success: true, data: updated });
   },

@@ -68,6 +68,48 @@ inventory.post(
   ),
   async (c) => {
     const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const [menuItem] = await db
+      .select({ id: schema.menuItems.id })
+      .from(schema.menuItems)
+      .where(
+        and(
+          eq(schema.menuItems.id, body.menuItemId),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!menuItem) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item de menú no encontrado" } },
+        404,
+      );
+    }
+
+    const inventoryItemIds = body.ingredients.map((ing) => ing.inventoryItemId);
+    const inventoryItems = await db
+      .select({ id: schema.inventoryItems.id })
+      .from(schema.inventoryItems)
+      .where(
+        and(
+          inArray(schema.inventoryItems.id, inventoryItemIds),
+          eq(schema.inventoryItems.branch_id, tenant.branchId),
+          eq(schema.inventoryItems.organization_id, tenant.organizationId),
+        ),
+      );
+
+    if (inventoryItems.length !== inventoryItemIds.length) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "Hay ingredientes que no pertenecen a la sucursal" },
+        },
+        400,
+      );
+    }
 
     // Delete existing recipe ingredients for this menu item
     await db
@@ -97,6 +139,26 @@ inventory.get(
   zValidator("param", z.object({ menuItemId: z.string().uuid() })),
   async (c) => {
     const { menuItemId } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [menuItem] = await db
+      .select({ id: schema.menuItems.id })
+      .from(schema.menuItems)
+      .where(
+        and(
+          eq(schema.menuItems.id, menuItemId),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!menuItem) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item de menú no encontrado" } },
+        404,
+      );
+    }
 
     const result = await db
       .select({
@@ -112,7 +174,13 @@ inventory.get(
         schema.inventoryItems,
         eq(schema.recipeIngredients.inventory_item_id, schema.inventoryItems.id),
       )
-      .where(eq(schema.recipeIngredients.menu_item_id, menuItemId));
+      .where(
+        and(
+          eq(schema.recipeIngredients.menu_item_id, menuItemId),
+          eq(schema.inventoryItems.branch_id, tenant.branchId),
+          eq(schema.inventoryItems.organization_id, tenant.organizationId),
+        ),
+      );
 
     return c.json({ success: true, data: result });
   },
@@ -145,6 +213,27 @@ inventory.post(
   async (c) => {
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
+
+    if (body.categoryId) {
+      const [category] = await db
+        .select({ id: schema.inventoryCategories.id })
+        .from(schema.inventoryCategories)
+        .where(
+          and(
+            eq(schema.inventoryCategories.id, body.categoryId),
+            eq(schema.inventoryCategories.branch_id, tenant.branchId),
+            eq(schema.inventoryCategories.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
+
+      if (!category) {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Categoría de inventario no encontrada" } },
+          404,
+        );
+      }
+    }
 
     const [item] = await db
       .insert(schema.inventoryItems)
@@ -183,6 +272,27 @@ inventory.patch(
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
+
+    if (body.categoryId !== undefined && body.categoryId !== null) {
+      const [category] = await db
+        .select({ id: schema.inventoryCategories.id })
+        .from(schema.inventoryCategories)
+        .where(
+          and(
+            eq(schema.inventoryCategories.id, body.categoryId),
+            eq(schema.inventoryCategories.branch_id, tenant.branchId),
+            eq(schema.inventoryCategories.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
+
+      if (!category) {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Categoría de inventario no encontrada" } },
+          404,
+        );
+      }
+    }
 
     const updateData: Record<string, any> = {};
     if (body.name !== undefined) updateData.name = body.name;
@@ -223,6 +333,26 @@ inventory.post(
   async (c) => {
     const body = c.req.valid("json");
     const user = c.get("user") as any;
+    const tenant = c.get("tenant") as any;
+
+    const [item] = await db
+      .select({ id: schema.inventoryItems.id })
+      .from(schema.inventoryItems)
+      .where(
+        and(
+          eq(schema.inventoryItems.id, body.itemId),
+          eq(schema.inventoryItems.branch_id, tenant.branchId),
+          eq(schema.inventoryItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!item) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
+        404,
+      );
+    }
 
     try {
       const movement = await recordMovement({
@@ -264,6 +394,25 @@ inventory.get("/movements", requirePermission("inventory:read"), zValidator("que
   }
 
   if (itemId) {
+    const [item] = await db
+      .select({ id: schema.inventoryItems.id })
+      .from(schema.inventoryItems)
+      .where(
+        and(
+          eq(schema.inventoryItems.id, itemId),
+          eq(schema.inventoryItems.branch_id, tenant.branchId),
+          eq(schema.inventoryItems.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!item) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
+        404,
+      );
+    }
+
     const result = await db
       .select({
         id: schema.inventoryMovements.id,

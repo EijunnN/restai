@@ -156,8 +156,8 @@ Esto levanta ambas apps simultaneamente con Turborepo:
 
 Despues de ejecutar `db:seed`:
 
-- **Email:** `admin@demo.com`
-- **Password:** `password123`
+- **Email:** `admin@restai.pe`
+- **Password:** `admin12345`
 
 ## Flujo del cliente (QR)
 

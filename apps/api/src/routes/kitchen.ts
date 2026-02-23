@@ -74,7 +74,12 @@ kitchen.patch(
 
     // Verify order belongs to branch
     const [order] = await db
-      .select({ id: schema.orders.id, branch_id: schema.orders.branch_id, order_number: schema.orders.order_number })
+      .select({
+        id: schema.orders.id,
+        branch_id: schema.orders.branch_id,
+        order_number: schema.orders.order_number,
+        table_session_id: schema.orders.table_session_id,
+      })
       .from(schema.orders)
       .where(eq(schema.orders.id, item.order_id))
       .limit(1);
@@ -114,6 +119,9 @@ kitchen.patch(
     };
     await wsManager.publish(`branch:${tenant.branchId}`, itemPayload);
     await wsManager.publish(`branch:${tenant.branchId}:kitchen`, itemPayload);
+    if (order.table_session_id) {
+      await wsManager.publish(`session:${order.table_session_id}`, itemPayload);
+    }
 
     return c.json({ success: true, data: updated });
   },

@@ -240,7 +240,12 @@ tables.patch(
     const [updated] = await db
       .update(schema.tables)
       .set({ status })
-      .where(eq(schema.tables.id, id))
+      .where(
+        and(
+          eq(schema.tables.id, id),
+          eq(schema.tables.branch_id, tenant.branchId),
+        ),
+      )
       .returning();
 
     // Broadcast table status change
@@ -364,7 +369,7 @@ tables.get("/sessions", requirePermission("tables:read"), async (c) => {
 });
 
 // GET /sessions/pending - List pending sessions for branch
-tables.get("/sessions/pending", async (c) => {
+tables.get("/sessions/pending", requirePermission("tables:read"), async (c) => {
   const tenant = c.get("tenant") as any;
 
   const sessions = await db
@@ -421,6 +426,7 @@ tables.get(
 // PATCH /sessions/:id/approve - Approve pending session
 tables.patch(
   "/sessions/:id/approve",
+  requirePermission("tables:update"),
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
@@ -434,6 +440,11 @@ tables.patch(
 
       // Broadcast approval
       await wsManager.publish(`branch:${tenant.branchId}`, {
+        type: "session:approved",
+        payload: { sessionId: id, tableId: result.tableId },
+        timestamp: Date.now(),
+      });
+      await wsManager.publish(`session:${id}`, {
         type: "session:approved",
         payload: { sessionId: id, tableId: result.tableId },
         timestamp: Date.now(),
@@ -455,6 +466,7 @@ tables.patch(
 // PATCH /sessions/:id/reject - Reject pending session
 tables.patch(
   "/sessions/:id/reject",
+  requirePermission("tables:update"),
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
@@ -468,6 +480,11 @@ tables.patch(
 
       // Broadcast rejection
       await wsManager.publish(`branch:${tenant.branchId}`, {
+        type: "session:rejected",
+        payload: { sessionId: id, tableId: result.tableId },
+        timestamp: Date.now(),
+      });
+      await wsManager.publish(`session:${id}`, {
         type: "session:rejected",
         payload: { sessionId: id, tableId: result.tableId },
         timestamp: Date.now(),
@@ -633,6 +650,32 @@ tables.post(
       return c.json(
         { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
         404,
+      );
+    }
+
+    const [targetUser] = await db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .innerJoin(
+        schema.userBranches,
+        eq(schema.users.id, schema.userBranches.user_id),
+      )
+      .where(
+        and(
+          eq(schema.users.id, userId),
+          eq(schema.users.organization_id, tenant.organizationId),
+          eq(schema.userBranches.branch_id, tenant.branchId),
+        ),
+      )
+      .limit(1);
+
+    if (!targetUser) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "BAD_REQUEST", message: "El usuario no pertenece a esta organización/sucursal" },
+        },
+        400,
       );
     }
 

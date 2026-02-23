@@ -36,6 +36,7 @@ export async function handleWsMessage(
         if (payload.role === "customer") {
           await manager.joinRoom(clientId, `branch:${payload.branch}`);
           await manager.joinRoom(clientId, `table:${payload.table}`);
+          await manager.joinRoom(clientId, `session:${payload.sub}`);
         } else if (payload.branches) {
           for (const branchId of payload.branches) {
             await manager.joinRoom(clientId, `branch:${branchId}`);

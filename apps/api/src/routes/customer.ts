@@ -437,6 +437,24 @@ customer.get("/:branchSlug/menu/items/:itemId/modifiers", async (c) => {
     );
   }
 
+  const [item] = await db
+    .select({ id: schema.menuItems.id })
+    .from(schema.menuItems)
+    .where(
+      and(
+        eq(schema.menuItems.id, itemId),
+        eq(schema.menuItems.branch_id, branch.id),
+      ),
+    )
+    .limit(1);
+
+  if (!item) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
+      404,
+    );
+  }
+
   // Get linked modifier groups for this item
   const links = await db
     .select()
@@ -717,6 +735,22 @@ customer.post("/orders", customerAuth, requireActiveSession, zValidator("json", 
 
   // Broadcast
   await wsManager.publish(`branch:${branchId}`, {
+    type: "order:new",
+    payload: {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      status: order.status,
+      items: createdItems.map((i) => ({
+        id: i.id,
+        name: i.name,
+        quantity: i.quantity,
+        status: i.status,
+      })),
+    },
+    timestamp: Date.now(),
+  });
+
+  await wsManager.publish(`session:${session.id}`, {
     type: "order:new",
     payload: {
       orderId: order.id,

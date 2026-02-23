@@ -10,6 +10,8 @@ export type WsMessageType =
   | "session:started"
   | "session:ended"
   | "session:pending"
+  | "session:approved"
+  | "session:rejected"
   | "kitchen:alert"
   | "ping"
   | "pong";

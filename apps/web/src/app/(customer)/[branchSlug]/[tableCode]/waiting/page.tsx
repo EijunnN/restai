@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@rest
 import { Button } from "@restai/ui/components/button";
 import { Loader2, Clock, CheckCircle2, XCircle } from "lucide-react";
 import { useCustomerStore } from "@/stores/customer-store";
+import { useWebSocket } from "@/hooks/use-websocket";
+import type { WsMessage } from "@restai/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
@@ -17,8 +19,22 @@ export default function WaitingPage({
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
   const sessionId = useCustomerStore((s) => s.sessionId);
+  const token = useCustomerStore((s) => s.token);
   const [status, setStatus] = useState<"pending" | "active" | "rejected">("pending");
   const [error, setError] = useState<string | null>(null);
+
+  useWebSocket(
+    sessionId ? [`session:${sessionId}`] : [],
+    (msg: WsMessage) => {
+      if (msg.type === "session:approved") {
+        setStatus("active");
+        router.push(`/${branchSlug}/${tableCode}/menu`);
+      } else if (msg.type === "session:rejected") {
+        setStatus("rejected");
+      }
+    },
+    token || undefined,
+  );
 
   useEffect(() => {
     if (!sessionId) return;
@@ -41,7 +57,7 @@ export default function WaitingPage({
     };
 
     poll();
-    const interval = setInterval(poll, 3000);
+    const interval = setInterval(poll, 15000);
     return () => clearInterval(interval);
   }, [sessionId, branchSlug, tableCode, router]);
 
