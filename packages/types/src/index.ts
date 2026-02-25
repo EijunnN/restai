@@ -14,7 +14,8 @@ export type WsMessageType =
   | "session:rejected"
   | "kitchen:alert"
   | "ping"
-  | "pong";
+  | "pong"
+  | "auth:success";
 
 export interface WsMessage<T = unknown> {
   type: WsMessageType;

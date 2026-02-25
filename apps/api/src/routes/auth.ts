@@ -49,29 +49,50 @@ auth.post("/register", zValidator("json", registerOrgSchema), async (c) => {
 
   const passwordHash = await hashPassword(body.password);
 
-  // Create organization
-  const [org] = await db
-    .insert(schema.organizations)
-    .values({ name: body.organizationName, slug: body.slug })
-    .returning();
+  // Create org + user + default branch in a single transaction
+  const result = await db.transaction(async (tx) => {
+    const [org] = await tx
+      .insert(schema.organizations)
+      .values({ name: body.organizationName, slug: body.slug })
+      .returning();
 
-  // Create admin user
-  const [user] = await db
-    .insert(schema.users)
-    .values({
-      organization_id: org.id,
-      email: body.email,
-      password_hash: passwordHash,
-      name: body.name,
-      role: "org_admin",
-    })
-    .returning({ id: schema.users.id, email: schema.users.email, name: schema.users.name, role: schema.users.role });
+    const [user] = await tx
+      .insert(schema.users)
+      .values({
+        organization_id: org.id,
+        email: body.email,
+        password_hash: passwordHash,
+        name: body.name,
+        role: "org_admin",
+      })
+      .returning({ id: schema.users.id, email: schema.users.email, name: schema.users.name, role: schema.users.role });
+
+    // Create default branch
+    const [branch] = await tx
+      .insert(schema.branches)
+      .values({
+        organization_id: org.id,
+        name: "Sede Principal",
+        slug: body.slug,
+      })
+      .returning({ id: schema.branches.id });
+
+    // Link user to branch
+    await tx.insert(schema.userBranches).values({
+      user_id: user.id,
+      branch_id: branch.id,
+    });
+
+    return { org, user, branchId: branch.id };
+  });
+
+  const { org, user, branchId } = result;
 
   const accessToken = await signAccessToken({
     sub: user.id,
     org: org.id,
     role: user.role,
-    branches: [],
+    branches: [branchId],
   });
   const refreshToken = await signRefreshToken({ sub: user.id });
 
@@ -87,8 +108,14 @@ auth.post("/register", zValidator("json", registerOrgSchema), async (c) => {
     {
       success: true,
       data: {
-        user: { id: user.id, email: user.email, name: user.name, role: user.role },
-        organization: { id: org.id, name: org.name, slug: org.slug },
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          organizationId: org.id,
+          branches: [branchId],
+        },
         accessToken,
         refreshToken,
       },

@@ -249,15 +249,6 @@ export default function CustomerMenuPage({
     );
   }
 
-  if (sessionValid === false) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Redirigiendo...</p>
-      </div>
-    );
-  }
-
   if (error || !menuData) {
     return (
       <div className="p-6 mt-12 text-center">
