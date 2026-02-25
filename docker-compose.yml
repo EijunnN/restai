@@ -38,7 +38,7 @@ services:
   migrate:
     build:
       context: .
-      dockerfile: apps/api/Dockerfile
+      dockerfile: Dockerfile.api
       target: builder
     container_name: restai-migrate
     working_dir: /app/packages/db
@@ -56,7 +56,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: apps/api/Dockerfile
+      dockerfile: Dockerfile.api
     container_name: restai-api
     restart: unless-stopped
     environment:
@@ -94,7 +94,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?required}
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?required}

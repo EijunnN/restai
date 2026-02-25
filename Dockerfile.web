@@ -1,0 +1,63 @@
+# ── Stage 1: install dependencies ─────────────────────────────────────
+FROM oven/bun:1.3.8-alpine AS base
+WORKDIR /app
+
+# Copy workspace root files
+COPY package.json bun.lock turbo.json ./
+
+# Copy ALL workspace package.json files (bun.lock expects full workspace)
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/config/package.json packages/config/package.json
+COPY packages/types/package.json packages/types/package.json
+COPY packages/ui/package.json packages/ui/package.json
+COPY packages/validators/package.json packages/validators/package.json
+
+RUN bun install --frozen-lockfile
+
+# ── Stage 2: build ────────────────────────────────────────────────────
+FROM base AS builder
+WORKDIR /app
+
+# Build-time env (baked into client JS)
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+
+# Copy source code (workspace packages + web)
+COPY packages/ packages/
+COPY apps/web/ apps/web/
+
+# Ensure public dir exists (may be empty)
+RUN mkdir -p apps/web/public
+
+# Build Next.js (standalone output)
+RUN cd apps/web && bunx next build
+
+# ── Stage 3: production runner ────────────────────────────────────────
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Non-root user
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -S appuser -u 1001 -G appgroup
+
+# Copy standalone server
+COPY --from=builder /app/apps/web/.next/standalone ./
+# Copy static assets
+COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+# Copy public folder if it exists
+COPY --from=builder --chown=appuser:appgroup /app/apps/web/public ./apps/web/public
+
+USER appuser
+
+EXPOSE 3000
+
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+CMD ["node", "apps/web/server.js"]
