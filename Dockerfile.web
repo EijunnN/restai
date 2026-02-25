@@ -21,10 +21,8 @@ FROM base AS builder
 WORKDIR /app
 
 # Build-time env (baked into client JS)
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_WS_URL
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+ENV NEXT_PUBLIC_API_URL=https://api.hosteleria.me
+ENV NEXT_PUBLIC_WS_URL=wss://api.hosteleria.me
 
 # Copy source code (workspace packages + web)
 COPY packages/ packages/
