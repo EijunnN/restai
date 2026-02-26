@@ -36,7 +36,19 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS
 const app = new Hono<AppEnv>();
 
 // Global middleware
-app.use("*", cors({ origin: CORS_ORIGINS, credentials: true }));
+app.use(
+  "*",
+  cors({
+    origin: (origin) => {
+      if (CORS_ORIGINS.includes(origin)) return origin;
+      return CORS_ORIGINS[0];
+    },
+    credentials: true,
+    allowHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"],
+    maxAge: 86400,
+  })
+);
 app.use("*", secureHeaders());
 app.use("*", logger());
 app.onError(errorHandler);
