@@ -65,26 +65,52 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    ports:
-      - "3001:3001"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 10s
       timeout: 5s
       start_period: 15s
       retries: 3
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.restai-api.rule=Host(`api.hosteleria.me`)
+      - traefik.http.routers.restai-api.entrypoints=https
+      - traefik.http.routers.restai-api.tls.certresolver=letsencrypt
+      - traefik.http.routers.restai-api.tls=true
+      - traefik.http.services.restai-api.loadbalancer.server.port=3001
+      - traefik.http.routers.restai-api-http.rule=Host(`api.hosteleria.me`)
+      - traefik.http.routers.restai-api-http.entrypoints=http
+      - traefik.http.routers.restai-api-http.middlewares=redirect-to-https
+    networks:
+      - default
+      - easypanel
 
   web:
     build:
       context: .
       dockerfile: Dockerfile.web
     restart: unless-stopped
-    ports:
-      - "3100:3000"
     depends_on:
       api:
         condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.restai-web.rule=Host(`app.hosteleria.me`)
+      - traefik.http.routers.restai-web.entrypoints=https
+      - traefik.http.routers.restai-web.tls.certresolver=letsencrypt
+      - traefik.http.routers.restai-web.tls=true
+      - traefik.http.services.restai-web.loadbalancer.server.port=3000
+      - traefik.http.routers.restai-web-http.rule=Host(`app.hosteleria.me`)
+      - traefik.http.routers.restai-web-http.entrypoints=http
+      - traefik.http.routers.restai-web-http.middlewares=redirect-to-https
+    networks:
+      - default
+      - easypanel
 
 volumes:
   pgdata:
   redisdata:
+
+networks:
+  easypanel:
+    external: true
