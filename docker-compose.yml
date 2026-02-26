@@ -65,6 +65,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    ports:
+      - "3001:3001"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 10s
@@ -77,6 +79,8 @@ services:
       context: .
       dockerfile: Dockerfile.web
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     depends_on:
       api:
         condition: service_healthy
