@@ -65,42 +65,26 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    ports:
+      - "3001:3001"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 10s
       timeout: 5s
       start_period: 15s
       retries: 3
-    ports:
-      - "3001:3001"
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.restai-api.rule=Host(`api.hosteleria.me`)
-      - traefik.http.services.restai-api.loadbalancer.server.port=3001
-    networks:
-      - default
-      - easypanel
 
   web:
     build:
       context: .
       dockerfile: Dockerfile.web
     restart: unless-stopped
+    ports:
+      - "3100:3000"
     depends_on:
       api:
         condition: service_healthy
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.restai-web.rule=Host(`app.hosteleria.me`)
-      - traefik.http.services.restai-web.loadbalancer.server.port=3000
-    networks:
-      - default
-      - easypanel
 
 volumes:
   pgdata:
   redisdata:
-
-networks:
-  easypanel:
-    external: true
