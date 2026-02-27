@@ -44,7 +44,7 @@ app.use(
       return CORS_ORIGINS[0];
     },
     credentials: true,
-    allowHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Branch-Id"],
     allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"],
     maxAge: 86400,
   })
