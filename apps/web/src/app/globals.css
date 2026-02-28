@@ -105,3 +105,8 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes slide-shimmer {
+  0% { transform: translateX(-100px); }
+  50%, 100% { transform: translateX(500px); }
+}

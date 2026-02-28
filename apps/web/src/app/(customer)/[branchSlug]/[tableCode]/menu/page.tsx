@@ -5,12 +5,11 @@ import { use, useState, useEffect, useCallback } from "react";
 import Image from "next/image";
 import { redirect, useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
-import { Card, CardContent } from "@restai/ui/components/card";
 import { Badge } from "@restai/ui/components/badge";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency, cn } from "@/lib/utils";
-import { ShoppingCart, Plus, Minus, Loader2, ImageOff, UtensilsCrossed, Receipt, Bell, CheckCircle2 } from "lucide-react";
+import { ShoppingCart, Plus, Minus, Loader2, UtensilsCrossed, Receipt, Bell, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -253,7 +252,7 @@ export default function CustomerMenuPage({
     return (
       <div className="p-6 mt-12 text-center">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
-          <ImageOff className="h-8 w-8 text-destructive" />
+          <UtensilsCrossed className="h-8 w-8 text-destructive" />
         </div>
         <p className="text-destructive font-medium mb-2">Error</p>
         <p className="text-sm text-muted-foreground mb-4">{error || "Error al cargar menu"}</p>
@@ -269,19 +268,19 @@ export default function CustomerMenuPage({
     menuItems.filter((i) => i.category_id === catId && i.is_available);
 
   return (
-    <div className="relative pb-32">
-      {/* Category tabs */}
+    <div className="relative pb-40">
+      {/* Category tabs — sticky underline style */}
       <div className="sticky top-[49px] z-30 bg-background/95 backdrop-blur border-b border-border">
-        <div className="flex overflow-x-auto no-scrollbar gap-2 p-3">
+        <div className="flex overflow-x-auto no-scrollbar">
           {categories.map((cat) => (
             <button
               key={cat.id}
               onClick={() => setActiveCategory(cat.id)}
               className={cn(
-                "px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all",
+                "flex-1 min-w-0 px-3 py-3 text-xs font-medium uppercase tracking-wider whitespace-nowrap text-center transition-colors border-b-2",
                 activeCategory === cat.id
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "bg-secondary text-secondary-foreground hover:bg-accent",
+                  ? "text-foreground border-foreground"
+                  : "text-muted-foreground border-transparent hover:text-foreground/70",
               )}
             >
               {cat.name}
@@ -290,30 +289,31 @@ export default function CustomerMenuPage({
         </div>
       </div>
 
-      {/* Menu items */}
-      <div className="p-4 space-y-6">
+      {/* Product grid */}
+      <div className="p-4">
         {categories.map((category) => (
           <div
             key={category.id}
             className={cn(activeCategory !== category.id && "hidden")}
           >
-            <h2 className="text-lg font-bold mb-3">{category.name}</h2>
-            <div className="space-y-3">
-              {itemsByCategory(category.id).length === 0 && (
-                <p className="text-sm text-muted-foreground py-8 text-center">
-                  No hay productos disponibles en esta categoria
-                </p>
-              )}
-              {itemsByCategory(category.id).map((item) => {
-                const qty = getItemQty(item.id);
-                return (
-                  <Card key={item.id} className="overflow-hidden">
-                    <CardContent className="p-0">
-                      <div className="flex">
-                        {/* Clickable image area */}
+            {itemsByCategory(category.id).length === 0 ? (
+              <p className="text-sm text-muted-foreground py-12 text-center">
+                No hay productos disponibles en esta categoria
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                {itemsByCategory(category.id).map((item) => {
+                  const qty = getItemQty(item.id);
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl bg-secondary overflow-hidden shadow-lg flex flex-col"
+                    >
+                      {/* Image container */}
+                      <div className="relative w-full h-40">
                         <button
                           type="button"
-                          className="shrink-0 w-28 h-28 sm:w-32 sm:h-32 relative cursor-pointer"
+                          className="w-full h-full cursor-pointer"
                           onClick={() =>
                             router.push(
                               `/${branchSlug}/${tableCode}/menu/${item.id}`,
@@ -325,142 +325,143 @@ export default function CustomerMenuPage({
                               src={item.image_url}
                               alt={item.name}
                               fill
-                              sizes="128px"
+                              sizes="(max-width: 768px) 50vw, 200px"
                               unoptimized
-                              className="w-full h-full object-cover"
+                              className="object-cover"
                             />
                           ) : (
                             <div className="w-full h-full bg-muted flex items-center justify-center">
-                              <UtensilsCrossed className="h-8 w-8 text-muted-foreground/50" />
+                              <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" />
                             </div>
                           )}
                         </button>
-                        {/* Info area */}
-                        <div className="flex-1 min-w-0 p-3 flex flex-col justify-between">
-                          <div>
+
+                        {/* Floating add/quantity button */}
+                        {qty > 0 ? (
+                          <div className="absolute bottom-2 right-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm rounded-lg border border-white/10 px-1.5 py-1">
                             <button
                               type="button"
-                              className="text-left w-full cursor-pointer"
-                              onClick={() =>
-                                router.push(
-                                  `/${branchSlug}/${tableCode}/menu/${item.id}`,
-                                )
-                              }
+                              className="w-7 h-7 flex items-center justify-center text-foreground hover:text-primary transition-colors"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateQuantity(item.id, qty - 1);
+                              }}
                             >
-                              <h3 className="font-semibold leading-tight line-clamp-1">
-                                {item.name}
-                              </h3>
-                              {item.description && (
-                                <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                                  {item.description}
-                                </p>
-                              )}
+                              <Minus className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="w-5 text-center text-xs font-bold text-foreground">
+                              {qty}
+                            </span>
+                            <button
+                              type="button"
+                              className="w-7 h-7 flex items-center justify-center text-foreground hover:text-primary transition-colors"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAddItem(item);
+                              }}
+                            >
+                              <Plus className="h-3.5 w-3.5" />
                             </button>
                           </div>
-                          <div className="flex items-center justify-between mt-2">
-                            <p className="text-base font-bold text-primary">
-                              {formatCurrency(item.price)}
-                            </p>
-                            {qty > 0 ? (
-                              <div className="flex items-center gap-1">
-                                <Button
-                                  size="icon"
-                                  variant="outline"
-                                  className="h-8 w-8 rounded-full"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    updateQuantity(item.id, qty - 1);
-                                  }}
-                                >
-                                  <Minus className="h-3.5 w-3.5" />
-                                </Button>
-                                <span className="w-7 text-center font-bold text-sm">
-                                  {qty}
-                                </span>
-                                <Button
-                                  size="icon"
-                                  className="h-8 w-8 rounded-full"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleAddItem(item);
-                                  }}
-                                >
-                                  <Plus className="h-3.5 w-3.5" />
-                                </Button>
-                              </div>
-                            ) : (
-                              <Button
-                                size="sm"
-                                className="rounded-full h-8 px-3"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleAddItem(item);
-                                }}
-                              >
-                                <Plus className="h-4 w-4 mr-1" />
-                                Agregar
-                              </Button>
-                            )}
-                          </div>
-                        </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="absolute bottom-2 right-2 w-12 h-12 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm rounded-lg border border-white/10 text-foreground hover:bg-black/70 transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAddItem(item);
+                            }}
+                          >
+                            <Plus className="h-4 w-4" />
+                            <span className="text-[9px] font-medium leading-none mt-0.5">Agregar</span>
+                          </button>
+                        )}
                       </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </div>
+
+                      {/* Product info */}
+                      <button
+                        type="button"
+                        className="p-3 flex flex-col flex-1 text-left cursor-pointer"
+                        onClick={() =>
+                          router.push(
+                            `/${branchSlug}/${tableCode}/menu/${item.id}`,
+                          )
+                        }
+                      >
+                        <h3 className="text-sm font-bold text-foreground leading-tight line-clamp-2">
+                          {item.name}
+                        </h3>
+                        {item.description && (
+                          <p className="text-xs text-muted-foreground leading-snug line-clamp-2 mt-1 mb-3">
+                            {item.description}
+                          </p>
+                        )}
+                        <p className="text-sm font-bold text-foreground mt-auto">
+                          {formatCurrency(item.price)}
+                        </p>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ))}
       </div>
 
       {/* Floating action bar + cart */}
-      <div className="fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur border-t border-border">
+      <div className="fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur border-t border-border z-40">
         {/* Action buttons */}
-        <div className="flex gap-2 px-4 pt-3 pb-2 max-w-lg mx-auto">
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 h-9 text-xs gap-1.5"
+        <div className="flex gap-3 px-4 pt-3 pb-2 max-w-lg mx-auto">
+          <button
+            type="button"
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 bg-secondary rounded-lg py-3 transition-colors",
+              actionLoading !== null || actionSent.request_bill
+                ? "opacity-50 cursor-not-allowed"
+                : "hover:bg-secondary/80 active:bg-secondary/70",
+            )}
             disabled={actionLoading !== null || actionSent.request_bill}
             onClick={() => handleTableAction("request_bill")}
           >
             {actionSent.request_bill ? (
-              <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
             ) : (
-              <Receipt className="h-3.5 w-3.5" />
+              <Receipt className="h-4 w-4 text-foreground shrink-0" />
             )}
-            {actionLoading === "request_bill"
-              ? "Enviando..."
-              : actionSent.request_bill
-                ? "Cuenta Solicitada"
-                : "Pedir la Cuenta"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 h-9 text-xs gap-1.5"
+            <span className="text-xs font-medium text-foreground">
+              {actionLoading === "request_bill"
+                ? "Enviando..."
+                : actionSent.request_bill
+                  ? "Cuenta Solicitada"
+                  : "Pedir la Cuenta"}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 bg-secondary rounded-lg py-3 transition-colors",
+              actionLoading !== null || actionSent.call_waiter
+                ? "opacity-50 cursor-not-allowed"
+                : "hover:bg-secondary/80 active:bg-secondary/70",
+            )}
             disabled={actionLoading !== null || actionSent.call_waiter}
             onClick={() => handleTableAction("call_waiter")}
           >
             {actionSent.call_waiter ? (
-              <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
             ) : (
-              <Bell className="h-3.5 w-3.5" />
+              <Bell className="h-4 w-4 text-foreground shrink-0" />
             )}
-            {actionLoading === "call_waiter"
-              ? "Enviando..."
-              : actionSent.call_waiter
-                ? "Mozo Solicitado"
-                : "Llamar al Mozo"}
-          </Button>
+            <span className="text-xs font-medium text-foreground">
+              {actionLoading === "call_waiter"
+                ? "Enviando..."
+                : actionSent.call_waiter
+                  ? "Mozo Solicitado"
+                  : "Llamar al Mozo"}
+            </span>
+          </button>
         </div>
-        {(actionSent.request_bill || actionSent.call_waiter) && (
-          <div className="px-4 pb-2">
-            <div className="max-w-lg mx-auto rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300">
-              Tu solicitud fue enviada al personal del restaurante.
-            </div>
-          </div>
-        )}
         {/* Cart button */}
         {itemCount > 0 && (
           <div className="px-4 pb-4">

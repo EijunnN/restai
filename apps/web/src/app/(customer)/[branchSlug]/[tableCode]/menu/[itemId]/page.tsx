@@ -6,7 +6,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
 import { useCartStore } from "@/stores/cart-store";
-import { formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
 import {
   ArrowLeft,
   Plus,
@@ -147,22 +147,22 @@ function ModifierGroupsAccordion({
         return (
           <div
             key={group.id}
-            className="rounded-xl border border-border overflow-hidden"
+            className="rounded-xl bg-secondary/50 overflow-hidden"
           >
             <button
               type="button"
               onClick={toggleGroup}
-              className="w-full flex items-center justify-between p-3 bg-muted/30 hover:bg-muted/50 transition-colors"
+              className="w-full flex items-center justify-between p-4 hover:bg-secondary/70 transition-colors"
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2.5">
                 <h2 className="text-sm font-semibold">{group.name}</h2>
                 {group.is_required && (
-                  <span className="text-[10px] font-medium text-destructive bg-destructive/10 px-1.5 py-0.5 rounded">
+                  <span className="text-[10px] font-semibold text-red-400 bg-red-400/10 px-1.5 py-0.5 rounded-full">
                     Requerido
                   </span>
                 )}
                 {selected.length > 0 && (
-                  <span className="text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded">
+                  <span className="text-[10px] font-semibold text-foreground/70 bg-foreground/10 px-1.5 py-0.5 rounded-full">
                     {selected.length} sel.
                   </span>
                 )}
@@ -174,9 +174,10 @@ function ModifierGroupsAccordion({
                   </span>
                 )}
                 <ChevronDown
-                  className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${
-                    isOpen ? "rotate-180" : ""
-                  }`}
+                  className={cn(
+                    "h-4 w-4 text-muted-foreground transition-transform duration-200",
+                    isOpen && "rotate-180",
+                  )}
                 />
               </div>
             </button>
@@ -188,7 +189,7 @@ function ModifierGroupsAccordion({
               }}
             >
               <div className="overflow-hidden">
-                <div className="p-3 pt-1 space-y-1">
+                <div className="px-3 pb-3 space-y-1.5">
                   {group.modifiers.map((mod) => {
                     const isSelected = selected.includes(mod.id);
                     const handleToggle = () => {
@@ -226,27 +227,26 @@ function ModifierGroupsAccordion({
                         key={mod.id}
                         type="button"
                         onClick={handleToggle}
-                        className={`w-full flex items-center justify-between rounded-lg border p-3 transition-colors ${
+                        className={cn(
+                          "w-full flex items-center justify-between rounded-xl p-3 transition-colors",
                           isSelected
-                            ? "border-primary bg-primary/5"
-                            : "border-border hover:border-primary/50"
-                        }`}
+                            ? "bg-secondary border border-foreground/30"
+                            : "bg-transparent border border-transparent hover:bg-secondary/80",
+                        )}
                       >
                         <div className="flex items-center gap-3">
                           <div
-                            className={`flex h-5 w-5 items-center justify-center ${
-                              isSingleSelect
-                                ? "rounded-full"
-                                : "rounded"
-                            } border-2 ${
+                            className={cn(
+                              "flex h-5 w-5 items-center justify-center border-2 transition-colors",
+                              isSingleSelect ? "rounded-full" : "rounded-md",
                               isSelected
-                                ? "border-primary bg-primary"
-                                : "border-muted-foreground/30"
-                            }`}
+                                ? "border-foreground bg-foreground"
+                                : "border-muted-foreground/40",
+                            )}
                           >
                             {isSelected && (
                               <svg
-                                className="h-3 w-3 text-primary-foreground"
+                                className="h-3 w-3 text-background"
                                 fill="none"
                                 viewBox="0 0 24 24"
                                 stroke="currentColor"
@@ -368,7 +368,7 @@ export default function ProductDetailPage({
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         <p className="text-sm text-muted-foreground">Cargando producto...</p>
       </div>
     );
@@ -415,7 +415,6 @@ export default function ProductDetailPage({
   const cartQty = cartItem?.quantity || 0;
 
   const handleAddToCart = () => {
-    // Check required modifier groups
     for (const group of modifierGroups) {
       if (group.is_required) {
         const sel = selectedModifiers[group.id] || [];
@@ -449,125 +448,124 @@ export default function ProductDetailPage({
   const totalPrice = (item.price + modifiersTotal) * quantity;
 
   return (
-    <div className="relative pb-28">
-      {/* Back button - floating over image */}
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="absolute top-3 left-3 z-10 flex items-center justify-center h-10 w-10 rounded-full bg-background/80 backdrop-blur shadow-md transition-colors hover:bg-background"
-      >
-        <ArrowLeft className="h-5 w-5" />
-      </button>
-
-      {/* Product image */}
-      <div className="w-full aspect-[4/3] bg-muted relative overflow-hidden">
+    <div className="relative min-h-dvh pb-28">
+      {/* Hero image section */}
+      <div className="relative w-full h-72 bg-muted overflow-hidden">
         {item.image_url ? (
-          <Image
-            src={item.image_url}
-            alt={item.name}
-            fill
-            sizes="100vw"
-            unoptimized
-            className="w-full h-full object-cover"
-          />
+          <>
+            <Image
+              src={item.image_url}
+              alt={item.name}
+              fill
+              sizes="100vw"
+              unoptimized
+              className="object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-background via-background/60 to-transparent" />
+          </>
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+          <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-muted">
             <UtensilsCrossed className="h-16 w-16 text-muted-foreground/30" />
             <p className="text-sm text-muted-foreground/50">Sin imagen</p>
+            <div className="absolute inset-0 bg-gradient-to-t from-background via-background/60 to-transparent" />
           </div>
         )}
+
+        {/* Floating back button */}
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="absolute top-4 left-4 z-10 flex items-center justify-center h-10 w-10 rounded-full bg-black/40 backdrop-blur-md transition-colors hover:bg-black/60"
+        >
+          <ArrowLeft className="h-5 w-5 text-white" />
+        </button>
       </div>
 
-      {/* Product info */}
-      <div className="p-5 space-y-4">
-        {/* Category badge + name */}
-        <div>
-          {category && (
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">
-              {category.name}
-            </p>
-          )}
-          <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
-          <p className="text-xl font-bold text-primary mt-2">
-            {formatCurrency(item.price)}
-          </p>
-        </div>
-
-        {/* Description */}
-        {item.description && (
+      {/* Content section - overlapping the image */}
+      <div className="relative z-10 -mt-8 rounded-t-3xl bg-background">
+        <div className="p-5 pt-6 space-y-5">
+          {/* Category badge + name + price */}
           <div>
-            <h2 className="text-sm font-semibold text-muted-foreground mb-1">
-              Descripcion
-            </h2>
-            <p className="text-sm text-foreground/80 leading-relaxed">
+            {category && (
+              <p className="text-xs text-muted-foreground tracking-wide uppercase mb-1.5">
+                {category.name}
+              </p>
+            )}
+            <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
+            <p className="text-xl font-bold text-foreground mt-2">
+              {formatCurrency(item.price)}
+            </p>
+          </div>
+
+          {/* Description */}
+          {item.description && (
+            <p className="text-sm text-muted-foreground leading-relaxed">
               {item.description}
             </p>
-          </div>
-        )}
+          )}
 
-        <ModifierGroupsAccordion
-          modifierGroups={modifierGroups}
-          selectedModifiers={selectedModifiers}
-          setSelectedModifiers={setSelectedModifiers}
-          openGroups={openGroups}
-          setOpenGroups={setOpenGroups}
-        />
+          {/* Modifier groups */}
+          <ModifierGroupsAccordion
+            modifierGroups={modifierGroups}
+            selectedModifiers={selectedModifiers}
+            setSelectedModifiers={setSelectedModifiers}
+            openGroups={openGroups}
+            setOpenGroups={setOpenGroups}
+          />
 
-        {/* Quantity selector */}
-        <div>
-          <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-            Cantidad
-          </h2>
-          <div className="flex items-center gap-4">
-            <Button
-              size="icon"
-              variant="outline"
-              className="h-10 w-10 rounded-full"
-              onClick={() => setQuantity(Math.max(1, quantity - 1))}
-              disabled={quantity <= 1}
-            >
-              <Minus className="h-4 w-4" />
-            </Button>
-            <span className="text-xl font-bold w-8 text-center">
-              {quantity}
-            </span>
-            <Button
-              size="icon"
-              variant="outline"
-              className="h-10 w-10 rounded-full"
-              onClick={() => setQuantity((prev) => prev + 1)}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-          </div>
+          {/* Already in cart indicator */}
+          {cartQty > 0 && (
+            <div className="flex items-center gap-2.5 bg-secondary/50 rounded-xl px-4 py-3">
+              <ShoppingCart className="h-4 w-4 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">
+                Ya tienes{" "}
+                <span className="font-semibold text-foreground">{cartQty}</span>{" "}
+                en tu carrito
+              </p>
+            </div>
+          )}
         </div>
-
-        {/* Cart info if already in cart */}
-        {cartQty > 0 && (
-          <div className="rounded-lg bg-muted/50 border border-border px-4 py-3">
-            <p className="text-sm text-muted-foreground">
-              Ya tienes{" "}
-              <span className="font-semibold text-foreground">{cartQty}</span>{" "}
-              en tu carrito
-            </p>
-          </div>
-        )}
       </div>
 
-      {/* Fixed bottom: Add to cart button */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/95 backdrop-blur border-t border-border">
-        <div className="max-w-lg mx-auto">
-          <Button
-            className="w-full h-14 text-base font-semibold rounded-xl"
+      {/* Fixed bottom CTA with quantity controls */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
+        <div className="max-w-lg mx-auto flex items-center gap-3">
+          {/* Quantity controls */}
+          <div className="flex items-center bg-secondary rounded-2xl shrink-0">
+            <button
+              type="button"
+              onClick={() => setQuantity(Math.max(1, quantity - 1))}
+              disabled={quantity <= 1}
+              className="h-14 w-12 rounded-l-2xl flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10 disabled:opacity-30"
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+            <span className="text-lg font-bold min-w-[2rem] text-center text-foreground">
+              {quantity}
+            </span>
+            <button
+              type="button"
+              onClick={() => setQuantity((prev) => prev + 1)}
+              className="h-14 w-12 rounded-r-2xl flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+          {/* Add to cart button */}
+          <button
+            type="button"
             onClick={handleAddToCart}
             disabled={!item.is_available}
+            className={cn(
+              "flex-1 h-14 rounded-2xl font-semibold text-base flex items-center justify-between px-5 transition-colors",
+              item.is_available
+                ? "bg-foreground text-background hover:bg-foreground/90"
+                : "bg-muted text-muted-foreground cursor-not-allowed",
+            )}
           >
-            <ShoppingCart className="h-5 w-5 mr-2" />
-            <span>Agregar al Carrito</span>
-            <span className="ml-auto font-bold">
-              {formatCurrency(totalPrice)}
-            </span>
-          </Button>
+            <span>Agregar</span>
+            <span className="font-bold">{formatCurrency(totalPrice)}</span>
+          </button>
         </div>
       </div>
     </div>

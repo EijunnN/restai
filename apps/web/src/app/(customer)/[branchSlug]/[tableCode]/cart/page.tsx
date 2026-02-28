@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
 
-import { use, useState, useEffect, useCallback } from "react";
+import { use, useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
 import { Card, CardContent } from "@restai/ui/components/card";
@@ -9,7 +9,7 @@ import { Input } from "@restai/ui/components/input";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency } from "@/lib/utils";
-import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift } from "lucide-react";
+import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -55,6 +55,142 @@ function useCartPageLocalState() {
     appliedRedemption,
     setAppliedRedemption,
   };
+}
+
+function SlideToConfirm({ onConfirm, label }: { onConfirm: () => void; label: string }) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const currentOffset = useRef(0);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const THUMB_W = 64;
+  const PAD = 4;
+
+  const getMax = () => (trackRef.current ? trackRef.current.offsetWidth - THUMB_W - PAD * 2 : 250);
+
+  const updateVisuals = (x: number) => {
+    const max = getMax();
+    const clamped = Math.max(0, Math.min(x, max));
+    currentOffset.current = clamped;
+    if (thumbRef.current) thumbRef.current.style.transform = `translateX(${clamped}px)`;
+    if (labelRef.current) labelRef.current.style.opacity = `${1 - clamped / max}`;
+    if (fillRef.current) fillRef.current.style.width = `${clamped + THUMB_W + PAD}px`;
+  };
+
+  const snapBack = () => {
+    if (thumbRef.current) {
+      thumbRef.current.style.transition = "transform 0.3s cubic-bezier(0.4,0,0.2,1)";
+      thumbRef.current.style.transform = "translateX(0px)";
+    }
+    if (labelRef.current) {
+      labelRef.current.style.transition = "opacity 0.3s";
+      labelRef.current.style.opacity = "1";
+    }
+    if (fillRef.current) {
+      fillRef.current.style.transition = "width 0.3s cubic-bezier(0.4,0,0.2,1)";
+      fillRef.current.style.width = `${THUMB_W + PAD}px`;
+    }
+    currentOffset.current = 0;
+    setTimeout(() => {
+      if (thumbRef.current) thumbRef.current.style.transition = "none";
+      if (labelRef.current) labelRef.current.style.transition = "none";
+      if (fillRef.current) fillRef.current.style.transition = "none";
+    }, 300);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (confirmed) return;
+    e.preventDefault();
+    isDragging.current = true;
+    startX.current = e.clientX - currentOffset.current;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isDragging.current || confirmed) return;
+    updateVisuals(e.clientX - startX.current);
+  };
+
+  const handlePointerUp = () => {
+    if (!isDragging.current || confirmed) return;
+    isDragging.current = false;
+    const max = getMax();
+    if (currentOffset.current >= max * 0.8) {
+      updateVisuals(max);
+      setConfirmed(true);
+      onConfirm();
+    } else {
+      snapBack();
+    }
+  };
+
+  return (
+    <div
+      ref={trackRef}
+      className="relative h-16 rounded-2xl bg-foreground overflow-hidden select-none"
+    >
+      {/* Shimmer animation hint */}
+      {!confirmed && (
+        <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl">
+          <div
+            className="absolute inset-y-0 w-24 bg-gradient-to-r from-transparent via-background/10 to-transparent"
+            style={{ animation: "slide-shimmer 2.5s ease-in-out infinite" }}
+          />
+        </div>
+      )}
+
+      {/* Fill behind thumb */}
+      <div
+        ref={fillRef}
+        className="absolute inset-y-0 left-0 rounded-2xl"
+        style={{
+          width: THUMB_W + PAD,
+          background: confirmed
+            ? "oklch(0.55 0.18 142)"
+            : "rgba(255,255,255,0.08)",
+        }}
+      />
+
+      {/* Label — offset to center in the area right of the thumb */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ paddingLeft: THUMB_W + PAD }}>
+        <span
+          ref={labelRef}
+          className="text-sm font-semibold text-background/70 tracking-wide"
+        >
+          {confirmed ? "Pedido confirmado" : label}
+        </span>
+      </div>
+
+      {/* Draggable thumb */}
+      <div
+        ref={thumbRef}
+        className="absolute top-1 left-1 w-[60px] h-[56px] rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing"
+        style={{
+          background: confirmed ? "oklch(0.55 0.18 142)" : "var(--background)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          touchAction: "none",
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      >
+        {confirmed ? (
+          <Check className="h-6 w-6 text-white" />
+        ) : (
+          <div className="flex items-center -space-x-1.5">
+            <ChevronRight className="h-5 w-5 text-foreground/40" />
+            <ChevronRight className="h-5 w-5 text-foreground/70" />
+            <ChevronRight className="h-5 w-5 text-foreground" />
+          </div>
+        )}
+      </div>
+
+    </div>
+  );
 }
 
 export default function CartPage({
@@ -619,15 +755,21 @@ export default function CartPage({
         </CardContent>
       </Card>
 
-      {/* Fixed bottom CTA */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/95 backdrop-blur border-t border-border">
-        <Button
-          className="w-full max-w-lg mx-auto h-14 text-base font-semibold"
-          onClick={handleConfirmOrder}
-          disabled={loading}
-        >
-          {loading ? "Enviando pedido..." : `Confirmar Pedido · ${formatCurrency(adjustedTotal)}`}
-        </Button>
+      {/* Fixed bottom — Slide to confirm */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
+        <div className="max-w-lg mx-auto">
+          {loading ? (
+            <div className="h-14 rounded-2xl bg-foreground flex items-center justify-center gap-2">
+              <div className="h-4 w-4 border-2 border-background/30 border-t-background rounded-full animate-spin" />
+              <span className="text-background font-semibold">Enviando pedido...</span>
+            </div>
+          ) : (
+            <SlideToConfirm
+              onConfirm={handleConfirmOrder}
+              label={`Desliza para confirmar · ${formatCurrency(adjustedTotal)}`}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
