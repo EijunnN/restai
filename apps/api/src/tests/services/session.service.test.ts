@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { createTestOrg, createTestBranch, createTestTable, cleanup } from "../setup";
+import { createTestOrg, createTestBranch, createTestTable, createTestCategory, createTestMenuItem, cleanup } from "../setup";
 import { createSession, approveSession, rejectSession, endSession, expireStale } from "../../services/session.service";
 import { db, schema } from "@restai/db";
 import { eq } from "drizzle-orm";
@@ -148,5 +148,119 @@ describe("session.service", () => {
     expect(updated.status).toBe("rejected");
 
     await db.delete(schema.tableSessions).where(eq(schema.tableSessions.id, stale.id));
+  });
+
+  // ── Edge Cases ──────────────────────────────────────────────────────
+
+  it("endSession blocks when session has open orders", async () => {
+    const session = await createSession({
+      tableId,
+      branchId,
+      organizationId: orgId,
+      customerName: "WithOrders",
+      token: "tok_open_orders",
+      status: "active",
+    });
+
+    await db.update(schema.tables).set({ status: "occupied" }).where(eq(schema.tables.id, tableId));
+
+    // Create an open order linked to this session
+    const cat = await createTestCategory(branchId, orgId);
+    const menuItem = await createTestMenuItem(branchId, orgId, cat.id);
+    const [order] = await db.insert(schema.orders).values({
+      organization_id: orgId,
+      branch_id: branchId,
+      table_session_id: session.id,
+      order_number: "TEST-SESS-001",
+      type: "dine_in",
+      status: "preparing", // not completed/cancelled
+      subtotal: 1000,
+      tax: 180,
+      discount: 0,
+      total: 1180,
+    }).returning();
+
+    let caughtError: Error | null = null;
+    try {
+      await endSession({ sessionId: session.id, branchId });
+    } catch (e: any) {
+      caughtError = e;
+    }
+    expect(caughtError).not.toBeNull();
+    expect(caughtError!.message).toBe("SESSION_HAS_OPEN_ORDERS");
+
+    // Complete the order, then endSession should work
+    await db.update(schema.orders).set({ status: "completed" }).where(eq(schema.orders.id, order.id));
+    const result = await endSession({ sessionId: session.id, branchId });
+    expect(result.session.status).toBe("completed");
+
+    await db.delete(schema.tableSessions).where(eq(schema.tableSessions.id, session.id));
+  });
+
+  it("double approveSession race — second call fails", async () => {
+    const session = await createSession({
+      tableId,
+      branchId,
+      organizationId: orgId,
+      customerName: "RaceTest",
+      token: "tok_race",
+      status: "pending",
+    });
+
+    // First approve succeeds
+    await approveSession({ sessionId: session.id, branchId });
+
+    // Second approve fails (no longer pending)
+    let caughtError: Error | null = null;
+    try {
+      await approveSession({ sessionId: session.id, branchId });
+    } catch (e: any) {
+      caughtError = e;
+    }
+    expect(caughtError).not.toBeNull();
+    expect(caughtError!.message).toBe("PENDING_SESSION_NOT_FOUND");
+
+    await endSession({ sessionId: session.id, branchId });
+    await db.delete(schema.tableSessions).where(eq(schema.tableSessions.id, session.id));
+  });
+
+  it("expireStale skips active sessions with open orders", async () => {
+    const table2 = await createTestTable(branchId, orgId, 999);
+    const [activeSession] = await db.insert(schema.tableSessions).values({
+      table_id: table2.id,
+      branch_id: branchId,
+      organization_id: orgId,
+      customer_name: "ActiveWithOrder",
+      token: "tok_active_order",
+      status: "active",
+      expires_at: new Date(Date.now() - 60_000), // expired
+    }).returning();
+
+    // Create open order
+    const cat = await createTestCategory(branchId, orgId);
+    const menuItem = await createTestMenuItem(branchId, orgId, cat.id);
+    await db.insert(schema.orders).values({
+      organization_id: orgId,
+      branch_id: branchId,
+      table_session_id: activeSession.id,
+      order_number: "TEST-SESS-002",
+      type: "dine_in",
+      status: "pending",
+      subtotal: 500,
+      tax: 90,
+      discount: 0,
+      total: 590,
+    });
+
+    await expireStale();
+
+    // Session should NOT be expired because it has open orders
+    const [sess] = await db.select().from(schema.tableSessions).where(eq(schema.tableSessions.id, activeSession.id)).limit(1);
+    expect(sess.status).toBe("active");
+
+    // Cleanup
+    await db.delete(schema.orders).where(eq(schema.orders.table_session_id, activeSession.id));
+    await db.delete(schema.tableSessions).where(eq(schema.tableSessions.id, activeSession.id));
+    await db.delete(schema.tables).where(eq(schema.tables.id, table2.id));
   });
 });

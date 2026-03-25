@@ -6,6 +6,7 @@ export interface WsClient {
   rooms: Set<string>;
   userId?: string;
   sessionId?: string;
+  tokenExp?: number; // token expiry as unix timestamp (seconds)
 }
 
 export class WebSocketManager {
@@ -28,8 +29,8 @@ export class WebSocketManager {
     return this.clients.get(id);
   }
 
-  addClient(id: string, ws: any, userId?: string, sessionId?: string) {
-    this.clients.set(id, { ws, rooms: new Set(), userId, sessionId });
+  addClient(id: string, ws: any, userId?: string, sessionId?: string, tokenExp?: number) {
+    this.clients.set(id, { ws, rooms: new Set(), userId, sessionId, tokenExp });
   }
 
   removeClient(id: string) {
@@ -79,6 +80,34 @@ export class WebSocketManager {
         client.ws.send(message);
       }
     }
+  }
+
+  /**
+   * Disconnects clients whose JWT token has expired.
+   * Returns the number of disconnected clients.
+   */
+  evictExpired(): number {
+    const now = Math.floor(Date.now() / 1000);
+    let evicted = 0;
+
+    for (const [id, client] of this.clients) {
+      if (client.tokenExp && client.tokenExp < now) {
+        try {
+          client.ws.send(JSON.stringify({ type: "auth:expired", message: "Token expired", timestamp: Date.now() }));
+          client.ws.close(4001, "Token expired");
+        } catch {
+          // Client may already be disconnected
+        }
+        this.removeClient(id);
+        evicted++;
+      }
+    }
+
+    return evicted;
+  }
+
+  get clientCount(): number {
+    return this.clients.size;
   }
 
   async publish(room: string, data: object) {

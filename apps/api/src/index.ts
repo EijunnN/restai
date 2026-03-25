@@ -35,7 +35,7 @@ const server = Bun.serve({
   websocket: {
     async open(ws) {
       const data = ws.data as any;
-      wsManager.addClient(data.id, ws, data.payload.sub);
+      wsManager.addClient(data.id, ws, data.payload.sub, undefined, data.payload.exp);
 
       // Auto-join rooms based on pre-verified token payload
       if (data.payload.role === "customer") {
@@ -68,10 +68,19 @@ const sessionExpiryInterval = setInterval(() => {
   });
 }, 60_000);
 
+// WS heartbeat: evict clients with expired tokens (every 30 seconds)
+const wsHeartbeatInterval = setInterval(() => {
+  const evicted = wsManager.evictExpired();
+  if (evicted > 0) {
+    logger.info("WS heartbeat: evicted expired clients", { count: evicted });
+  }
+}, 30_000);
+
 // Graceful shutdown
 async function shutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`);
   clearInterval(sessionExpiryInterval);
+  clearInterval(wsHeartbeatInterval);
   server.stop();
   try {
     await redis.quit();

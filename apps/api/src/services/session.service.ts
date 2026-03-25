@@ -1,4 +1,4 @@
-import { eq, and, desc, gte, lte, lt, inArray, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lte, lt, inArray, notInArray, sql, not } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { logger } from "../lib/logger.js";
 
@@ -153,6 +153,22 @@ export async function endSession(params: {
     throw new Error("ACTIVE_SESSION_NOT_FOUND");
   }
 
+  // Check for open orders (not completed/cancelled)
+  const [openOrder] = await db
+    .select({ id: schema.orders.id, status: schema.orders.status })
+    .from(schema.orders)
+    .where(
+      and(
+        eq(schema.orders.table_session_id, params.sessionId),
+        notInArray(schema.orders.status, ["completed", "cancelled"]),
+      ),
+    )
+    .limit(1);
+
+  if (openOrder) {
+    throw new Error("SESSION_HAS_OPEN_ORDERS");
+  }
+
   // Update session + table status in a transaction
   return await db.transaction(async (tx) => {
     const [updated] = await tx
@@ -303,22 +319,52 @@ export async function expireStale(): Promise<number> {
     )
     .returning({ table_id: schema.tableSessions.table_id });
 
-  // Expire active sessions (safety net)
-  const expiredActive = await db
-    .update(schema.tableSessions)
-    .set({ status: "completed", ended_at: now })
+  // Expire active sessions (safety net) — skip sessions with open orders
+  // First find expired active sessions, then filter out those with open orders
+  const expiredActiveCandidates = await db
+    .select({ id: schema.tableSessions.id, table_id: schema.tableSessions.table_id })
+    .from(schema.tableSessions)
     .where(
       and(
         eq(schema.tableSessions.status, "active"),
         lt(schema.tableSessions.expires_at, now),
       ),
-    )
-    .returning({ table_id: schema.tableSessions.table_id });
+    );
+
+  const safeToExpire: string[] = [];
+  const expiredActiveTableIds: string[] = [];
+
+  for (const candidate of expiredActiveCandidates) {
+    const [openOrder] = await db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.table_session_id, candidate.id),
+          notInArray(schema.orders.status, ["completed", "cancelled"]),
+        ),
+      )
+      .limit(1);
+
+    if (!openOrder) {
+      safeToExpire.push(candidate.id);
+      expiredActiveTableIds.push(candidate.table_id);
+    }
+  }
+
+  let expiredActiveCount = 0;
+  if (safeToExpire.length > 0) {
+    await db
+      .update(schema.tableSessions)
+      .set({ status: "completed", ended_at: now })
+      .where(inArray(schema.tableSessions.id, safeToExpire));
+    expiredActiveCount = safeToExpire.length;
+  }
 
   // Reset tables to available
   const tableIds = [
     ...expiredPending.map((r) => r.table_id),
-    ...expiredActive.map((r) => r.table_id),
+    ...expiredActiveTableIds,
   ];
 
   if (tableIds.length > 0) {
@@ -330,9 +376,9 @@ export async function expireStale(): Promise<number> {
 
     logger.info("Expired stale sessions", {
       pending: expiredPending.length,
-      active: expiredActive.length,
+      active: expiredActiveCount,
     });
   }
 
-  return expiredPending.length + expiredActive.length;
+  return expiredPending.length + expiredActiveCount;
 }

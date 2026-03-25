@@ -106,4 +106,50 @@ describe("order.service", () => {
     expect(caughtError).not.toBeNull();
     expect(caughtError!.message).toContain("no encontrado");
   });
+
+  // ── Edge Cases ──────────────────────────────────────────────────────
+
+  it("createOrder with mix of valid and invalid items fails atomically", async () => {
+    const validItem = await createTestMenuItem(branchId, orgId, catId);
+
+    let caughtError: Error | null = null;
+    try {
+      await createOrder({
+        organizationId: orgId,
+        branchId,
+        items: [
+          { menuItemId: validItem.id, quantity: 1 },
+          { menuItemId: crypto.randomUUID(), quantity: 1 }, // invalid
+        ],
+        type: "dine_in",
+      });
+    } catch (e: any) {
+      caughtError = e;
+    }
+    expect(caughtError).not.toBeNull();
+    expect(caughtError!.message).toContain("no encontrado");
+
+    // Verify no order was created (atomic rollback)
+    const orders = await db.select().from(schema.orders).where(eq(schema.orders.branch_id, branchId));
+    const orphan = orders.find((o) => o.order_number?.includes("should_not_exist"));
+    expect(orphan).toBeUndefined();
+  });
+
+  it("createOrder with multiple quantities of same item calculates correctly", async () => {
+    const item = await createTestMenuItem(branchId, orgId, catId, { price: 500 }); // 5.00
+
+    const result = await createOrder({
+      organizationId: orgId,
+      branchId,
+      items: [
+        { menuItemId: item.id, quantity: 3 },
+        { menuItemId: item.id, quantity: 2 },
+      ],
+      type: "dine_in",
+    });
+
+    // 5.00 * 3 + 5.00 * 2 = 25.00 = 2500 cents
+    expect(result.order.subtotal).toBe(2500);
+    expect(result.items.length).toBe(2);
+  });
 });

@@ -293,6 +293,37 @@ menu.delete(
   },
 );
 
+// PATCH /items/:id/restore (restore soft-deleted item)
+menu.patch(
+  "/items/:id/restore",
+  requirePermission("menu:update"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [restored] = await db
+      .update(schema.menuItems)
+      .set({ deleted_at: null })
+      .where(
+        and(
+          eq(schema.menuItems.id, id),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+        ),
+      )
+      .returning();
+
+    if (!restored) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
+        404,
+      );
+    }
+
+    return c.json({ success: true, data: restored });
+  },
+);
+
 // --- Modifier Groups ---
 
 // POST /modifier-groups
