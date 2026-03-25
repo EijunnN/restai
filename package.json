@@ -14,7 +14,9 @@
     "db:migrate": "bun run --filter @restai/db migrate",
     "db:push": "bun run --filter @restai/db push",
     "db:seed": "bun run --filter @restai/db seed",
-    "db:studio": "bun run --filter @restai/db studio"
+    "db:studio": "bun run --filter @restai/db studio",
+    "test": "turbo test",
+    "test:api": "bun run --filter @restai/api test"
   },
   "devDependencies": {
     "turbo": "^2.5.0",

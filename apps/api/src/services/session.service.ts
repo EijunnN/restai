@@ -1,5 +1,18 @@
-import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, desc, gte, lte, lt, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
+import { logger } from "../lib/logger.js";
+
+// TTL constants
+export const PENDING_TTL_MINUTES = 10;
+export const ACTIVE_TTL_HOURS = 8;
+
+function addMinutes(date: Date, minutes: number): Date {
+  return new Date(date.getTime() + minutes * 60_000);
+}
+
+function addHours(date: Date, hours: number): Date {
+  return new Date(date.getTime() + hours * 3_600_000);
+}
 
 // ── Create Session ──────────────────────────────────────────────────
 
@@ -12,6 +25,12 @@ export async function createSession(params: {
   token: string;
   status?: "active" | "pending";
 }) {
+  const now = new Date();
+  const status = params.status ?? "pending";
+  const expires_at = status === "pending"
+    ? addMinutes(now, PENDING_TTL_MINUTES)
+    : addHours(now, ACTIVE_TTL_HOURS);
+
   const [session] = await db
     .insert(schema.tableSessions)
     .values({
@@ -21,7 +40,8 @@ export async function createSession(params: {
       customer_name: params.customerName,
       customer_phone: params.customerPhone,
       token: params.token,
-      status: params.status ?? "pending",
+      status,
+      expires_at,
     })
     .returning();
 
@@ -51,11 +71,21 @@ export async function approveSession(params: {
     throw new Error("PENDING_SESSION_NOT_FOUND");
   }
 
+  // Check if session has expired
+  if (session.expires_at && new Date(session.expires_at) < new Date()) {
+    // Auto-reject expired session
+    await db
+      .update(schema.tableSessions)
+      .set({ status: "rejected", ended_at: new Date() })
+      .where(eq(schema.tableSessions.id, params.sessionId));
+    throw new Error("SESSION_EXPIRED");
+  }
+
   // Update session + table status in a transaction
   return await db.transaction(async (tx) => {
     const [updated] = await tx
       .update(schema.tableSessions)
-      .set({ status: "active" })
+      .set({ status: "active", expires_at: addHours(new Date(), ACTIVE_TTL_HOURS) })
       .where(eq(schema.tableSessions.id, params.sessionId))
       .returning();
 
@@ -249,4 +279,60 @@ export async function getTableHistory(params: {
       avg_duration_minutes: avgDuration,
     },
   };
+}
+
+// ── Expire Stale Sessions ───────────────────────────────────────────
+
+/**
+ * Auto-expires pending and active sessions that have passed their TTL.
+ * Resets associated tables to "available".
+ * Returns the number of expired sessions.
+ */
+export async function expireStale(): Promise<number> {
+  const now = new Date();
+
+  // Expire pending sessions
+  const expiredPending = await db
+    .update(schema.tableSessions)
+    .set({ status: "rejected", ended_at: now })
+    .where(
+      and(
+        eq(schema.tableSessions.status, "pending"),
+        lt(schema.tableSessions.expires_at, now),
+      ),
+    )
+    .returning({ table_id: schema.tableSessions.table_id });
+
+  // Expire active sessions (safety net)
+  const expiredActive = await db
+    .update(schema.tableSessions)
+    .set({ status: "completed", ended_at: now })
+    .where(
+      and(
+        eq(schema.tableSessions.status, "active"),
+        lt(schema.tableSessions.expires_at, now),
+      ),
+    )
+    .returning({ table_id: schema.tableSessions.table_id });
+
+  // Reset tables to available
+  const tableIds = [
+    ...expiredPending.map((r) => r.table_id),
+    ...expiredActive.map((r) => r.table_id),
+  ];
+
+  if (tableIds.length > 0) {
+    const uniqueTableIds = [...new Set(tableIds)];
+    await db
+      .update(schema.tables)
+      .set({ status: "available" })
+      .where(inArray(schema.tables.id, uniqueTableIds));
+
+    logger.info("Expired stale sessions", {
+      pending: expiredPending.length,
+      active: expiredActive.length,
+    });
+  }
+
+  return expiredPending.length + expiredActive.length;
 }

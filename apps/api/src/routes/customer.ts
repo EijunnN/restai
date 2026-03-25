@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, inArray, sql, desc, isNull } from "drizzle-orm";
+import { eq, and, inArray, sql, desc, isNull, gte } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   startSessionSchema,
@@ -15,8 +15,13 @@ import { findOrCreate } from "../services/customer.service.js";
 import { createOrder, OrderValidationError } from "../services/order.service.js";
 import { redeemReward } from "../services/loyalty.service.js";
 import * as sessionService from "../services/session.service.js";
+import { rateLimiter } from "../middleware/rate-limit.js";
 
 const customer = new Hono<AppEnv>();
+
+// Stricter rate limit for session creation (5 per 10 minutes per IP)
+customer.use("/:branchSlug/:tableCode/register", rateLimiter(5, 600_000, "session-create"));
+customer.use("/:branchSlug/:tableCode/session", rateLimiter(5, 600_000, "session-create"));
 const TABLE_ACTION_COOLDOWN_MS = 30_000;
 const tableActionCooldownBySession = new Map<string, number>();
 
@@ -76,6 +81,7 @@ customer.get("/:branchSlug/:tableCode/menu", async (c) => {
       and(
         eq(schema.menuItems.branch_id, branch.id),
         eq(schema.menuItems.is_available, true),
+        isNull(schema.menuItems.deleted_at),
       ),
     );
 
@@ -131,11 +137,15 @@ customer.post(
       });
     }
 
-    // Check if table has a pending session
+    // Check if table has a pending session (non-expired)
     const [pendingSession] = await db
       .select()
       .from(schema.tableSessions)
-      .where(and(eq(schema.tableSessions.table_id, table.id), eq(schema.tableSessions.status, "pending")))
+      .where(and(
+        eq(schema.tableSessions.table_id, table.id),
+        eq(schema.tableSessions.status, "pending"),
+        gte(schema.tableSessions.expires_at, new Date()),
+      ))
       .limit(1);
 
     if (pendingSession) {
@@ -143,6 +153,27 @@ customer.post(
         { success: false, error: { code: "SESSION_PENDING", message: "Esta mesa esta en espera de aprobacion" } },
         409,
       );
+    }
+
+    // Check if same phone has a pending session in any table of this branch
+    if (body.customerPhone) {
+      const [phonePending] = await db
+        .select({ id: schema.tableSessions.id })
+        .from(schema.tableSessions)
+        .where(and(
+          eq(schema.tableSessions.branch_id, branch.id),
+          eq(schema.tableSessions.customer_phone, body.customerPhone),
+          eq(schema.tableSessions.status, "pending"),
+          gte(schema.tableSessions.expires_at, new Date()),
+        ))
+        .limit(1);
+
+      if (phonePending) {
+        return c.json(
+          { success: false, error: { code: "SESSION_PENDING", message: "Ya tienes una sesion pendiente en esta sucursal" } },
+          409,
+        );
+      }
     }
 
     // Find existing customer or create new one (dedup by email/phone)
@@ -231,7 +262,7 @@ customer.get("/:branchSlug/:tableCode/check-session", async (c) => {
     });
   }
 
-  // Check for pending session
+  // Check for pending session (non-expired)
   const [pendingSession] = await db
     .select({
       id: schema.tableSessions.id,
@@ -243,6 +274,7 @@ customer.get("/:branchSlug/:tableCode/check-session", async (c) => {
       and(
         eq(schema.tableSessions.table_id, table.id),
         eq(schema.tableSessions.status, "pending"),
+        gte(schema.tableSessions.expires_at, new Date()),
       ),
     )
     .limit(1);
@@ -328,7 +360,7 @@ customer.post(
       });
     }
 
-    // Check if table has a pending session
+    // Check if table has a pending session (non-expired)
     const [pendingSession] = await db
       .select()
       .from(schema.tableSessions)
@@ -336,6 +368,7 @@ customer.post(
         and(
           eq(schema.tableSessions.table_id, table.id),
           eq(schema.tableSessions.status, "pending"),
+          gte(schema.tableSessions.expires_at, new Date()),
         ),
       )
       .limit(1);
@@ -351,6 +384,27 @@ customer.post(
         },
         409,
       );
+    }
+
+    // Check if same phone has a pending session in any table of this branch
+    if (body.customerPhone) {
+      const [phonePending] = await db
+        .select({ id: schema.tableSessions.id })
+        .from(schema.tableSessions)
+        .where(and(
+          eq(schema.tableSessions.branch_id, branch.id),
+          eq(schema.tableSessions.customer_phone, body.customerPhone),
+          eq(schema.tableSessions.status, "pending"),
+          gte(schema.tableSessions.expires_at, new Date()),
+        ))
+        .limit(1);
+
+      if (phonePending) {
+        return c.json(
+          { success: false, error: { code: "SESSION_PENDING", message: "Ya tienes una sesion pendiente en esta sucursal" } },
+          409,
+        );
+      }
     }
 
     // Link to existing customer if phone is provided (enables points accumulation)

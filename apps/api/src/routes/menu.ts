@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createCategorySchema,
@@ -147,10 +147,16 @@ menu.get("/items", requirePermission("menu:read"), async (c) => {
   const tenant = c.get("tenant") as any;
   const categoryId = c.req.query("categoryId");
 
+  const includeDeleted = c.req.query("include_deleted") === "true";
+
   const conditions = [
     eq(schema.menuItems.branch_id, tenant.branchId),
     eq(schema.menuItems.organization_id, tenant.organizationId),
   ];
+
+  if (!includeDeleted) {
+    conditions.push(isNull(schema.menuItems.deleted_at));
+  }
 
   if (categoryId) {
     conditions.push(eq(schema.menuItems.category_id, categoryId));
@@ -255,7 +261,7 @@ menu.patch(
   },
 );
 
-// DELETE /items/:id
+// DELETE /items/:id (soft delete)
 menu.delete(
   "/items/:id",
   requirePermission("menu:delete"),
@@ -264,24 +270,26 @@ menu.delete(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
-    const [deleted] = await db
-      .delete(schema.menuItems)
+    const [archived] = await db
+      .update(schema.menuItems)
+      .set({ deleted_at: new Date() })
       .where(
         and(
           eq(schema.menuItems.id, id),
           eq(schema.menuItems.branch_id, tenant.branchId),
+          isNull(schema.menuItems.deleted_at),
         ),
       )
       .returning();
 
-    if (!deleted) {
+    if (!archived) {
       return c.json(
         { success: false, error: { code: "NOT_FOUND", message: "Item no encontrado" } },
         404,
       );
     }
 
-    return c.json({ success: true, data: { message: "Item eliminado" } });
+    return c.json({ success: true, data: { message: "Item archivado" } });
   },
 );
 

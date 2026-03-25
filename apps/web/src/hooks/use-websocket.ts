@@ -20,16 +20,15 @@ export function useWebSocket(
 
     function attemptConnect() {
       if (cancelled) return;
+      if (!token) return; // Cannot connect without auth token
 
       const wsUrl = (
         process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
       ).replace("http", "ws");
-      const ws = new WebSocket(`${wsUrl}/ws`);
+      const ws = new WebSocket(`${wsUrl}/ws?token=${encodeURIComponent(token)}`);
 
       ws.onopen = () => {
-        if (token) {
-          ws.send(JSON.stringify({ type: "auth", token }));
-        }
+        // Auth happens on upgrade via query param, no need to send auth message
       };
 
       ws.onmessage = (event) => {

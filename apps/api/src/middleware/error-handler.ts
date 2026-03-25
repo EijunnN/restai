@@ -20,6 +20,7 @@ const KNOWN_ERROR_CODES: Record<string, number> = {
   INSUFFICIENT_POINTS: 400,
   PENDING_SESSION_NOT_FOUND: 404,
   ACTIVE_SESSION_NOT_FOUND: 404,
+  SESSION_EXPIRED: 410,
   TABLE_NOT_FOUND: 404,
 };
 
@@ -79,6 +80,12 @@ export const errorHandler: ErrorHandler = (err, c) => {
     return c.json(
       { success: false, error: { code: "NOT_FOUND", message: err.message } },
       404,
+    );
+  }
+  if (err.name === "InsufficientStockError") {
+    return c.json(
+      { success: false, error: { code: "INSUFFICIENT_STOCK", message: err.message } },
+      409,
     );
   }
 

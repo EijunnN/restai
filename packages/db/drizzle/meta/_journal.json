@@ -15,6 +15,13 @@
       "when": 1770620476442,
       "tag": "0001_loving_namor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774479333454,
+      "tag": "0002_shocking_lady_mastermind",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 
 /**
@@ -44,11 +44,11 @@ export async function recordMovement(params: {
     // Atomic stock update using SQL
     if (type === "purchase" || type === "adjustment") {
       await tx.update(schema.inventoryItems).set({
-        current_stock: sql`(${schema.inventoryItems.current_stock}::numeric + ${quantity})::text`,
+        current_stock: sql`${schema.inventoryItems.current_stock}::numeric + ${quantity}`,
       }).where(eq(schema.inventoryItems.id, itemId));
     } else {
       await tx.update(schema.inventoryItems).set({
-        current_stock: sql`(${schema.inventoryItems.current_stock}::numeric - ${quantity})::text`,
+        current_stock: sql`${schema.inventoryItems.current_stock}::numeric - ${quantity}`,
       }).where(eq(schema.inventoryItems.id, itemId));
     }
 
@@ -60,6 +60,7 @@ export async function recordMovement(params: {
  * Auto-deducts inventory for a completed order based on recipe ingredients.
  * Checks if inventory tracking is enabled for the branch.
  * Marks the order as inventory_deducted to prevent double deduction.
+ * Uses FOR UPDATE locks and conditional updates to prevent negative stock.
  */
 export async function deductForOrder(params: {
   orderId: string;
@@ -88,32 +89,88 @@ export async function deductForOrder(params: {
 
   // Wrap all deductions + flag in a transaction
   await db.transaction(async (tx) => {
+    // Collect all needed inventory item IDs first
+    const deductions: Array<{
+      inventoryItemId: string;
+      deductQty: number;
+      orderItemName: string;
+      orderItemQty: number;
+    }> = [];
+
     for (const orderItem of orderItemsList) {
-      const recipeIngredients = await tx
+      const ingredients = await tx
         .select()
         .from(schema.recipeIngredients)
         .where(eq(schema.recipeIngredients.menu_item_id, orderItem.menu_item_id));
 
-      for (const ingredient of recipeIngredients) {
-        const deductQty = parseFloat(ingredient.quantity_used) * orderItem.quantity;
-
-        await tx
-          .update(schema.inventoryItems)
-          .set({
-            current_stock: sql`(${schema.inventoryItems.current_stock}::numeric - ${deductQty})::text`,
-          })
-          .where(eq(schema.inventoryItems.id, ingredient.inventory_item_id));
-
-        await tx
-          .insert(schema.inventoryMovements)
-          .values({
-            item_id: ingredient.inventory_item_id,
-            type: "consumption",
-            quantity: String(deductQty),
-            reference: orderNumber,
-            notes: `Auto-consumo: ${orderItem.name} x${orderItem.quantity}`,
-          });
+      for (const ingredient of ingredients) {
+        deductions.push({
+          inventoryItemId: ingredient.inventory_item_id,
+          deductQty: parseFloat(ingredient.quantity_used) * orderItem.quantity,
+          orderItemName: orderItem.name,
+          orderItemQty: orderItem.quantity,
+        });
       }
+    }
+
+    if (deductions.length === 0) {
+      await tx
+        .update(schema.orders)
+        .set({ inventory_deducted: true })
+        .where(eq(schema.orders.id, orderId));
+      return;
+    }
+
+    // Lock all needed inventory items with FOR UPDATE to prevent concurrent modifications
+    const inventoryItemIds = [...new Set(deductions.map((d) => d.inventoryItemId))];
+    const lockedItems = await tx
+      .select()
+      .from(schema.inventoryItems)
+      .where(inArray(schema.inventoryItems.id, inventoryItemIds))
+      .for("update");
+
+    const stockMap = new Map(lockedItems.map((item) => [item.id, parseFloat(item.current_stock)]));
+
+    // Validate sufficient stock for all deductions
+    const aggregated = new Map<string, number>();
+    for (const d of deductions) {
+      aggregated.set(d.inventoryItemId, (aggregated.get(d.inventoryItemId) || 0) + d.deductQty);
+    }
+
+    for (const [itemId, totalQty] of aggregated) {
+      const available = stockMap.get(itemId);
+      if (available === undefined) {
+        const item = lockedItems.find((i) => i.id === itemId);
+        throw new InventoryItemNotFoundError(`Item de inventario no encontrado: ${item?.name || itemId}`);
+      }
+      if (available < totalQty) {
+        const item = lockedItems.find((i) => i.id === itemId);
+        throw new InsufficientStockError(
+          item?.name || itemId,
+          totalQty,
+          available,
+        );
+      }
+    }
+
+    // Apply deductions (stock validated above, rows locked)
+    for (const d of deductions) {
+      await tx
+        .update(schema.inventoryItems)
+        .set({
+          current_stock: sql`${schema.inventoryItems.current_stock}::numeric - ${d.deductQty}`,
+        })
+        .where(eq(schema.inventoryItems.id, d.inventoryItemId));
+
+      await tx
+        .insert(schema.inventoryMovements)
+        .values({
+          item_id: d.inventoryItemId,
+          type: "consumption",
+          quantity: String(d.deductQty),
+          reference: orderNumber,
+          notes: `Auto-consumo: ${d.orderItemName} x${d.orderItemQty}`,
+        });
     }
 
     await tx
@@ -130,5 +187,19 @@ export class InventoryItemNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InventoryItemNotFoundError";
+  }
+}
+
+/**
+ * Custom error for insufficient stock.
+ */
+export class InsufficientStockError extends Error {
+  constructor(
+    public itemName: string,
+    public required: number,
+    public available: number,
+  ) {
+    super(`Stock insuficiente para "${itemName}": necesario ${required}, disponible ${available}`);
+    this.name = "InsufficientStockError";
   }
 }

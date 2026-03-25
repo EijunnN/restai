@@ -49,12 +49,15 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     redemptionId,
   } = params;
 
-  // Get menu items for price calculation
+  // Get menu items for price calculation (exclude soft-deleted)
   const menuItemIds = items.map((i) => i.menuItemId);
   const menuItemsResult = await db
     .select()
     .from(schema.menuItems)
-    .where(inArray(schema.menuItems.id, menuItemIds));
+    .where(and(
+      inArray(schema.menuItems.id, menuItemIds),
+      isNull(schema.menuItems.deleted_at),
+    ));
 
   const menuItemMap = new Map(menuItemsResult.map((mi) => [mi.id, mi]));
 

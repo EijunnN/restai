@@ -1,4 +1,3 @@
-import { verifyAccessToken } from "../lib/jwt.js";
 import type { WebSocketManager } from "./manager.js";
 
 export async function handleWsMessage(
@@ -14,38 +13,15 @@ export async function handleWsMessage(
     return;
   }
 
-  const clientId = (ws.data as any)?.id;
-
   switch (data.type) {
     case "auth": {
-      if (!data.token) {
-        ws.send(JSON.stringify({ type: "error", message: "Token required" }));
-        return;
-      }
-
-      try {
-        const payload: any = await verifyAccessToken(data.token);
-        // Associate user with client
-        const client = manager.getClient(clientId);
-        if (client) {
-          client.userId = payload.sub;
-          client.sessionId = payload.sub;
-        }
-
-        // Auto-join relevant rooms based on role
-        if (payload.role === "customer") {
-          await manager.joinRoom(clientId, `branch:${payload.branch}`);
-          await manager.joinRoom(clientId, `table:${payload.table}`);
-          await manager.joinRoom(clientId, `session:${payload.sub}`);
-        } else if (payload.branches) {
-          for (const branchId of payload.branches) {
-            await manager.joinRoom(clientId, `branch:${branchId}`);
-          }
-        }
-
-        ws.send(JSON.stringify({ type: "auth:success", userId: payload.sub, timestamp: Date.now() }));
-      } catch {
-        ws.send(JSON.stringify({ type: "auth:error", message: "Invalid token", timestamp: Date.now() }));
+      // Auth now happens on WS upgrade. This is kept for backward compatibility.
+      const clientId = (ws.data as any)?.id;
+      const client = manager.getClient(clientId);
+      if (client?.userId) {
+        ws.send(JSON.stringify({ type: "auth:success", userId: client.userId, timestamp: Date.now() }));
+      } else {
+        ws.send(JSON.stringify({ type: "auth:error", message: "Not authenticated. Pass token as query param on connect.", timestamp: Date.now() }));
       }
       break;
     }

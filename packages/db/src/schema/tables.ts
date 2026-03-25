@@ -97,6 +97,7 @@ export const tableSessions = pgTable("table_sessions", {
   status: sessionStatusEnum("status").default("active").notNull(),
   started_at: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
   ended_at: timestamp("ended_at", { withTimezone: true }),
+  expires_at: timestamp("expires_at", { withTimezone: true }),
 }, (table) => [
   index("idx_sessions_table_status").on(table.table_id, table.status),
   index("idx_sessions_branch").on(table.branch_id),
