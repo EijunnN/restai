@@ -18,6 +18,7 @@ import { tableSessions } from "./tables";
 import { customers } from "./loyalty";
 import { menuItems } from "./menu";
 import { modifiers } from "./menu";
+import { users } from "./auth";
 
 export const orders = pgTable("orders", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -43,6 +44,10 @@ export const orders = pgTable("orders", {
   discount: integer("discount").notNull().default(0),
   total: integer("total").notNull().default(0),
   notes: text("notes"),
+  delivery_address: text("delivery_address"),
+  delivery_phone: varchar("delivery_phone", { length: 20 }),
+  delivery_fee: integer("delivery_fee").default(0).notNull(),
+  delivery_driver_id: uuid("delivery_driver_id").references(() => users.id, { onDelete: "set null" }),
   inventory_deducted: boolean("inventory_deducted").default(false).notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

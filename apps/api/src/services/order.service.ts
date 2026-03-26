@@ -24,6 +24,11 @@ interface CreateOrderParams {
   customerId?: string | null;
   couponCode?: string | null;
   redemptionId?: string | null;
+  // Delivery fields
+  deliveryAddress?: string | null;
+  deliveryPhone?: string | null;
+  deliveryFee?: number;
+  deliveryDriverId?: string | null;
 }
 
 interface CreateOrderResult {
@@ -47,6 +52,10 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     customerId,
     couponCode,
     redemptionId,
+    deliveryAddress,
+    deliveryPhone,
+    deliveryFee = 0,
+    deliveryDriverId,
   } = params;
 
   // Get menu items for price calculation (exclude soft-deleted)
@@ -166,7 +175,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     // IGV se calcula sobre la base imponible (subtotal - descuento)
     const taxableBase = subtotal - discount;
     const tax = Math.round((taxableBase * taxRate) / 10000);
-    const total = taxableBase + tax;
+    const total = taxableBase + tax + deliveryFee;
 
     const [order] = await tx
       .insert(schema.orders)
@@ -184,6 +193,10 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         discount,
         total,
         notes: notes || null,
+        delivery_address: deliveryAddress || null,
+        delivery_phone: deliveryPhone || null,
+        delivery_fee: deliveryFee,
+        delivery_driver_id: deliveryDriverId || null,
       })
       .returning();
 

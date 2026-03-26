@@ -4,6 +4,13 @@ import { Input } from "@restai/ui/components/input";
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@restai/ui/components/select";
+import {
   ShoppingCart,
   User,
   Plus,
@@ -12,8 +19,12 @@ import {
   Check,
   Loader2,
   UtensilsCrossed,
+  Phone,
+  MapPin,
+  Truck,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import { useStaffList } from "@/hooks/use-staff";
 import type { PosCartItem } from "../page";
 
 // ---------------------------------------------------------------------------
@@ -33,26 +44,54 @@ export function CartSidebar({
   onRemove,
   onClearCart,
   onCreateOrder,
+  deliveryPhone,
+  onDeliveryPhoneChange,
+  deliveryAddress,
+  onDeliveryAddressChange,
+  deliveryFee,
+  onDeliveryFeeChange,
+  deliveryDriverId,
+  onDeliveryDriverIdChange,
+  paymentMethod,
+  onPaymentMethodChange,
+  isPaid,
+  onIsPaidChange,
 }: {
   cart: PosCartItem[];
-  orderType: "dine_in" | "takeout";
+  orderType: "dine_in" | "takeout" | "delivery";
   customerName: string;
   orderNotes: string;
   isPending: boolean;
-  onOrderTypeChange: (type: "dine_in" | "takeout") => void;
+  onOrderTypeChange: (type: "dine_in" | "takeout" | "delivery") => void;
   onCustomerNameChange: (name: string) => void;
   onOrderNotesChange: (notes: string) => void;
   onUpdateQty: (lineId: string, qty: number) => void;
   onRemove: (lineId: string) => void;
   onClearCart: () => void;
   onCreateOrder: () => void;
+  deliveryPhone: string;
+  onDeliveryPhoneChange: (v: string) => void;
+  deliveryAddress: string;
+  onDeliveryAddressChange: (v: string) => void;
+  deliveryFee: string;
+  onDeliveryFeeChange: (v: string) => void;
+  deliveryDriverId: string;
+  onDeliveryDriverIdChange: (v: string) => void;
+  paymentMethod: string;
+  onPaymentMethodChange: (v: string) => void;
+  isPaid: boolean;
+  onIsPaidChange: (v: boolean) => void;
 }) {
+  const { data: staffData } = useStaffList();
+  const staffList: any[] = staffData ?? [];
+
   const subtotal = cart.reduce((sum, item) => {
     const modTotal = item.modifiers.reduce((ms, m) => ms + m.price, 0);
     return sum + (item.unitPrice + modTotal) * item.quantity;
   }, 0);
   const tax = Math.round((subtotal * 1800) / 10000); // 18% IGV
-  const total = subtotal + tax;
+  const deliveryFeeCents = orderType === "delivery" && deliveryFee ? Math.round(parseFloat(deliveryFee) * 100) : 0;
+  const total = subtotal + tax + deliveryFeeCents;
   const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
@@ -80,14 +119,14 @@ export function CartSidebar({
       </div>
 
       {/* Order type */}
-      <div className="flex gap-2 mb-3">
+      <div className="flex gap-1.5 mb-3">
         <Button
           variant={orderType === "dine_in" ? "default" : "outline"}
           size="sm"
           className="flex-1"
           onClick={() => onOrderTypeChange("dine_in")}
         >
-          Para aqui
+          Aqui
         </Button>
         <Button
           variant={orderType === "takeout" ? "default" : "outline"}
@@ -95,7 +134,16 @@ export function CartSidebar({
           className="flex-1"
           onClick={() => onOrderTypeChange("takeout")}
         >
-          Para llevar
+          Llevar
+        </Button>
+        <Button
+          variant={orderType === "delivery" ? "default" : "outline"}
+          size="sm"
+          className="flex-1"
+          onClick={() => onOrderTypeChange("delivery")}
+        >
+          <Truck className="h-3.5 w-3.5 mr-1" />
+          Delivery
         </Button>
       </div>
 
@@ -111,6 +159,75 @@ export function CartSidebar({
           />
         </div>
       </div>
+
+      {/* Delivery fields */}
+      {orderType === "delivery" && (
+        <div className="space-y-2 mb-3 p-2.5 rounded-lg border border-dashed">
+          <div className="relative">
+            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Telefono del cliente"
+              value={deliveryPhone}
+              onChange={(e) => onDeliveryPhoneChange(e.target.value)}
+              className="pl-9 text-sm"
+            />
+          </div>
+          <textarea
+            placeholder="Direccion de entrega (opcional - ubicacion por WSP)"
+            value={deliveryAddress}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onDeliveryAddressChange(e.target.value)}
+            className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[60px]"
+            rows={2}
+          />
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">S/</span>
+            <Input
+              type="number"
+              placeholder="Tarifa delivery"
+              value={deliveryFee}
+              onChange={(e) => onDeliveryFeeChange(e.target.value)}
+              className="pl-9 text-sm"
+              min="0"
+              step="0.5"
+            />
+          </div>
+          <Select value={deliveryDriverId || undefined} onValueChange={onDeliveryDriverIdChange}>
+            <SelectTrigger className="text-sm">
+              <SelectValue placeholder="Repartidor (opcional)" />
+            </SelectTrigger>
+            <SelectContent>
+              {staffList.map((s: any) => (
+                <SelectItem key={s.id} value={s.id}>
+                  {s.name} ({s.role})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={paymentMethod || undefined} onValueChange={onPaymentMethodChange}>
+            <SelectTrigger className="text-sm">
+              <SelectValue placeholder="Metodo de pago" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cash">Efectivo</SelectItem>
+              <SelectItem value="yape">Yape</SelectItem>
+              <SelectItem value="plin">Plin</SelectItem>
+              <SelectItem value="card">Tarjeta</SelectItem>
+              <SelectItem value="transfer">Transferencia</SelectItem>
+            </SelectContent>
+          </Select>
+          {paymentMethod && (
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-sm">Ya pago</span>
+              <input
+                type="checkbox"
+                checked={isPaid}
+                onChange={(e) => onIsPaidChange(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+            </label>
+          )}
+        </div>
+      )}
 
       {/* Cart items */}
       <div className="flex-1 overflow-y-auto space-y-1.5 mb-3">
@@ -229,6 +346,12 @@ export function CartSidebar({
             <span className="text-muted-foreground">IGV (18%)</span>
             <span>{formatCurrency(tax)}</span>
           </div>
+          {deliveryFeeCents > 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">Delivery</span>
+              <span>{formatCurrency(deliveryFeeCents)}</span>
+            </div>
+          )}
           <div className="flex justify-between font-bold text-lg pt-1.5 border-t">
             <span>Total</span>
             <span className="text-primary">{formatCurrency(total)}</span>

@@ -39,9 +39,16 @@ export default function PosPage() {
   const [cart, setCart] = useState<PosCartItem[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [orderNotes, setOrderNotes] = useState("");
-  const [orderType, setOrderType] = useState<"dine_in" | "takeout">("dine_in");
+  const [orderType, setOrderType] = useState<"dine_in" | "takeout" | "delivery">("dine_in");
   const [successDialog, setSuccessDialog] = useState(false);
   const [lastOrderNumber, setLastOrderNumber] = useState("");
+  // Delivery state
+  const [deliveryPhone, setDeliveryPhone] = useState("");
+  const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [deliveryFee, setDeliveryFee] = useState("");
+  const [deliveryDriverId, setDeliveryDriverId] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [isPaid, setIsPaid] = useState(false);
 
   // Modifier dialog state
   const [modDialogItem, setModDialogItem] = useState<any>(null);
@@ -106,7 +113,7 @@ export default function PosPage() {
   const handleCreateOrder = async () => {
     if (cart.length === 0) return;
     try {
-      const result = await createOrder.mutateAsync({
+      const orderData: any = {
         type: orderType,
         customerName: customerName || "Cliente POS",
         items: cart.map((item) => ({
@@ -116,12 +123,31 @@ export default function PosPage() {
           modifiers: item.modifiers.map((m) => ({ modifierId: m.modifierId })),
         })),
         notes: orderNotes || undefined,
-      });
+      };
+
+      if (orderType === "delivery") {
+        if (deliveryPhone) orderData.deliveryPhone = deliveryPhone;
+        if (deliveryAddress) orderData.deliveryAddress = deliveryAddress;
+        if (deliveryFee) orderData.deliveryFee = Math.round(parseFloat(deliveryFee) * 100);
+        if (deliveryDriverId) orderData.deliveryDriverId = deliveryDriverId;
+        if (paymentMethod) {
+          orderData.paymentMethod = paymentMethod;
+          orderData.isPaid = isPaid;
+        }
+      }
+
+      const result = await createOrder.mutateAsync(orderData);
 
       setLastOrderNumber(result.order_number || result.orderNumber || "");
       setCart([]);
       setCustomerName("");
       setOrderNotes("");
+      setDeliveryPhone("");
+      setDeliveryAddress("");
+      setDeliveryFee("");
+      setDeliveryDriverId("");
+      setPaymentMethod("");
+      setIsPaid(false);
       setSuccessDialog(true);
       toast.success("Orden creada exitosamente");
     } catch (err: any) {
@@ -156,6 +182,18 @@ export default function PosPage() {
         onRemove={removeFromCart}
         onClearCart={() => setCart([])}
         onCreateOrder={handleCreateOrder}
+        deliveryPhone={deliveryPhone}
+        onDeliveryPhoneChange={setDeliveryPhone}
+        deliveryAddress={deliveryAddress}
+        onDeliveryAddressChange={setDeliveryAddress}
+        deliveryFee={deliveryFee}
+        onDeliveryFeeChange={setDeliveryFee}
+        deliveryDriverId={deliveryDriverId}
+        onDeliveryDriverIdChange={setDeliveryDriverId}
+        paymentMethod={paymentMethod}
+        onPaymentMethodChange={setPaymentMethod}
+        isPaid={isPaid}
+        onIsPaidChange={setIsPaid}
       />
 
       <SuccessDialog

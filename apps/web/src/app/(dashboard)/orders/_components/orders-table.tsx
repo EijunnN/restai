@@ -172,8 +172,24 @@ export function OrdersTable({
                         key={order.id}
                         className="border-b last:border-0 hover:bg-muted/50 cursor-pointer transition-colors"
                       >
-                        <td className="p-3 font-medium text-sm">{orderNum}</td>
-                        <td className="p-3 text-sm">{table}</td>
+                        <td className="p-3 font-medium text-sm">
+                          {orderNum}
+                          {order.type === "delivery" && (
+                            <Badge variant="outline" className="ml-1.5 text-[10px] px-1 py-0 border-blue-300 text-blue-600">
+                              Delivery
+                            </Badge>
+                          )}
+                          {order.type === "takeout" && (
+                            <Badge variant="outline" className="ml-1.5 text-[10px] px-1 py-0 border-amber-300 text-amber-600">
+                              Llevar
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="p-3 text-sm">
+                          {order.type === "delivery"
+                            ? (order.delivery_phone || order.delivery_address || "Delivery")
+                            : table}
+                        </td>
                         <td className="p-3 text-sm hidden sm:table-cell">{customer}</td>
                         <td className="p-3">
                           <Badge variant={config.variant}>{config.label}</Badge>

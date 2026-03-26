@@ -125,6 +125,13 @@ export const createOrderSchema = z.object({
   items: z.array(createOrderItemSchema).min(1, "La orden debe tener al menos un item"),
   couponCode: z.string().max(50).optional(),
   redemptionId: z.string().uuid().optional(),
+  // Delivery fields
+  deliveryAddress: z.string().max(500).optional(),
+  deliveryPhone: z.string().max(20).optional(),
+  deliveryFee: z.number().int().min(0).optional(),
+  deliveryDriverId: z.string().uuid().optional(),
+  paymentMethod: z.enum(["cash", "card", "yape", "plin", "transfer", "other"]).optional(),
+  isPaid: z.boolean().optional(),
 });
 
 export const updateOrderStatusSchema = z.object({

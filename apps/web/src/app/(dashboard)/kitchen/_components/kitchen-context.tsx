@@ -56,6 +56,8 @@ export function useTimerTick(intervalMs = 10000) {
 interface KitchenContextValue {
   orders: any[];
   columns: { pending: any[]; preparing: any[]; ready: any[] };
+  sortedOrders: any[];
+  deliveryCount: number;
   advanceOrder: (orderId: string, currentStatus: string) => void;
   handleItemReady: (itemId: string) => void;
   handlePrint: (order: any) => void;
@@ -156,6 +158,17 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
     ready: orders.filter((o: any) => o.status === "ready"),
   };
 
+  // Sorted for ticket rail: pending (oldest first) → preparing → ready
+  const statusOrder: Record<string, number> = { pending: 0, preparing: 1, ready: 2 };
+  const sortedOrders = [...orders].sort((a, b) => {
+    const sa = statusOrder[a.status] ?? 3;
+    const sb = statusOrder[b.status] ?? 3;
+    if (sa !== sb) return sa - sb;
+    return new Date(a.created_at || a.createdAt || 0).getTime() - new Date(b.created_at || b.createdAt || 0).getTime();
+  });
+
+  const deliveryCount = orders.filter((o: any) => o.type === "delivery").length;
+
   const advanceOrder = (orderId: string, currentStatus: string) => {
     const newStatus =
       currentStatus === "pending"
@@ -177,6 +190,8 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
       value={{
         orders,
         columns,
+        sortedOrders,
+        deliveryCount,
         advanceOrder,
         handleItemReady,
         handlePrint,

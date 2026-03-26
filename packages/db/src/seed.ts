@@ -163,19 +163,178 @@ async function seed() {
 
   console.log(`✅ ${menuItems.length} items de menú creados`);
 
-  // 7. Create tables
-  for (let i = 1; i <= 12; i++) {
+  // 6b. Create modifier groups and modifiers
+  const modGroups = [
+    {
+      name: "Punto de coccion",
+      min_selections: 1,
+      max_selections: 1,
+      is_required: true,
+      modifiers: [
+        { name: "Termino medio", price: 0 },
+        { name: "Tres cuartos", price: 0 },
+        { name: "Bien cocido", price: 0 },
+      ],
+      // Link to: Lomo Saltado, Seco de Res
+      linkToItems: ["Lomo Saltado", "Seco de Res"],
+    },
+    {
+      name: "Proteina adicional",
+      min_selections: 0,
+      max_selections: 2,
+      is_required: false,
+      modifiers: [
+        { name: "Pollo extra", price: 500 },
+        { name: "Carne extra", price: 800 },
+        { name: "Camaron extra", price: 1200 },
+      ],
+      linkToItems: ["Arroz con Mariscos", "Ceviche Mixto", "Lomo Saltado"],
+    },
+    {
+      name: "Tamano de bebida",
+      min_selections: 1,
+      max_selections: 1,
+      is_required: true,
+      modifiers: [
+        { name: "Regular", price: 0 },
+        { name: "Grande", price: 400 },
+      ],
+      linkToItems: ["Chicha Morada", "Limonada Frozen"],
+    },
+    {
+      name: "Extras",
+      min_selections: 0,
+      max_selections: 3,
+      is_required: false,
+      modifiers: [
+        { name: "Arroz extra", price: 300 },
+        { name: "Papas extra", price: 400 },
+        { name: "Salsa criolla", price: 200 },
+        { name: "Aji extra", price: 100 },
+      ],
+      linkToItems: ["Lomo Saltado", "Aji de Gallina", "Seco de Res", "Arroz con Mariscos"],
+    },
+    {
+      name: "Nivel de picante",
+      min_selections: 1,
+      max_selections: 1,
+      is_required: false,
+      modifiers: [
+        { name: "Sin picante", price: 0 },
+        { name: "Poco picante", price: 0 },
+        { name: "Picante", price: 0 },
+        { name: "Muy picante", price: 0 },
+      ],
+      linkToItems: ["Ceviche Clasico", "Ceviche Mixto", "Tiradito Nikkei", "Lomo Saltado"],
+    },
+    {
+      name: "Tipo de leche",
+      min_selections: 1,
+      max_selections: 1,
+      is_required: false,
+      modifiers: [
+        { name: "Leche entera", price: 0 },
+        { name: "Leche deslactosada", price: 200 },
+      ],
+      linkToItems: ["Tres Leches"],
+    },
+  ];
+
+  // Build a map of item names to IDs for linking
+  const allCreatedItems = await db.select().from(schema.menuItems).where(eq(schema.menuItems.branch_id, branch.id));
+  const itemNameMap = new Map(allCreatedItems.map((i) => [i.name, i.id]));
+
+  let modGroupCount = 0;
+  let modCount = 0;
+  let linkCount = 0;
+
+  for (const group of modGroups) {
+    const [createdGroup] = await db
+      .insert(schema.modifierGroups)
+      .values({
+        branch_id: branch.id,
+        organization_id: org.id,
+        name: group.name,
+        min_selections: group.min_selections,
+        max_selections: group.max_selections,
+        is_required: group.is_required,
+      })
+      .returning();
+    modGroupCount++;
+
+    for (const mod of group.modifiers) {
+      await db.insert(schema.modifiers).values({
+        group_id: createdGroup.id,
+        name: mod.name,
+        price: mod.price,
+      });
+      modCount++;
+    }
+
+    for (const itemName of group.linkToItems) {
+      const itemId = itemNameMap.get(itemName);
+      if (itemId) {
+        await db
+          .insert(schema.menuItemModifierGroups)
+          .values({ item_id: itemId, group_id: createdGroup.id })
+          .onConflictDoNothing();
+        linkCount++;
+      }
+    }
+  }
+
+  console.log(`✅ ${modGroupCount} grupos de modificadores, ${modCount} modificadores, ${linkCount} vinculos`);
+
+  // 6c. Create spaces
+  const [salon] = await db
+    .insert(schema.spaces)
+    .values({ branch_id: branch.id, organization_id: org.id, name: "Salon", floor_number: 1, sort_order: 1 })
+    .returning();
+  const [terraza] = await db
+    .insert(schema.spaces)
+    .values({ branch_id: branch.id, organization_id: org.id, name: "Terraza", floor_number: 1, sort_order: 2 })
+    .returning();
+  const [barra] = await db
+    .insert(schema.spaces)
+    .values({ branch_id: branch.id, organization_id: org.id, name: "Barra", floor_number: 1, sort_order: 3 })
+    .returning();
+
+  console.log("✅ 3 espacios creados (Salon, Terraza, Barra)");
+
+  // 7. Create tables (assigned to spaces)
+  const tableConfigs = [
+    // Salon: mesas 1-6
+    { number: 1, capacity: 2, space_id: salon.id },
+    { number: 2, capacity: 2, space_id: salon.id },
+    { number: 3, capacity: 4, space_id: salon.id },
+    { number: 4, capacity: 4, space_id: salon.id },
+    { number: 5, capacity: 6, space_id: salon.id },
+    { number: 6, capacity: 6, space_id: salon.id },
+    // Terraza: mesas 7-10
+    { number: 7, capacity: 4, space_id: terraza.id },
+    { number: 8, capacity: 4, space_id: terraza.id },
+    { number: 9, capacity: 8, space_id: terraza.id },
+    { number: 10, capacity: 8, space_id: terraza.id },
+    // Barra: mesas 11-14
+    { number: 11, capacity: 1, space_id: barra.id },
+    { number: 12, capacity: 1, space_id: barra.id },
+    { number: 13, capacity: 2, space_id: barra.id },
+    { number: 14, capacity: 2, space_id: barra.id },
+  ];
+
+  for (const t of tableConfigs) {
     await db.insert(schema.tables).values({
       branch_id: branch.id,
       organization_id: org.id,
-      number: i,
-      capacity: i <= 4 ? 2 : i <= 8 ? 4 : 6,
-      qr_code: `demo-principal-T${i}-${Date.now().toString(36)}${i}`,
+      number: t.number,
+      capacity: t.capacity,
+      space_id: t.space_id,
+      qr_code: `demo-principal-T${t.number}-${Date.now().toString(36)}${t.number}`,
       status: "available",
     });
   }
 
-  console.log("✅ 12 mesas creadas");
+  console.log(`✅ ${tableConfigs.length} mesas creadas (Salon: 6, Terraza: 4, Barra: 4)`);
 
   // 8. Create loyalty program
   const [program] = await db

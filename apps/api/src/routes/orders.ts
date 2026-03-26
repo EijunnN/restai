@@ -118,6 +118,10 @@ orders.post(
         customerName: body.customerName,
         notes: body.notes,
         tableSessionId,
+        deliveryAddress: body.deliveryAddress,
+        deliveryPhone: body.deliveryPhone,
+        deliveryFee: body.deliveryFee,
+        deliveryDriverId: body.deliveryDriverId,
       });
     } catch (err) {
       if (err instanceof OrderValidationError) {
@@ -130,6 +134,18 @@ orders.post(
     }
 
     const { order, items: createdItems } = result;
+
+    // Auto-create payment if paymentMethod is provided (delivery flow)
+    if (body.paymentMethod) {
+      await db.insert(schema.payments).values({
+        order_id: order.id,
+        organization_id: tenant.organizationId,
+        branch_id: tenant.branchId,
+        method: body.paymentMethod as any,
+        amount: order.total,
+        status: body.isPaid ? "completed" : "pending",
+      });
+    }
 
     // Broadcast new order to branch and kitchen
     const orderPayload = {

@@ -5,8 +5,7 @@ import { Button } from "@restai/ui/components/button";
 import { RefreshCw, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { KitchenProvider, useKitchenContext } from "./_components/kitchen-context";
-import { KanbanBoard } from "./_components/kanban-board";
-import { MobileTabs } from "./_components/mobile-tabs";
+import { TicketRail } from "./_components/ticket-rail";
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={cn("animate-pulse bg-muted rounded", className)} />;
@@ -67,21 +66,13 @@ function KitchenContent() {
       </div>
 
       {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-1 min-h-0">
-          {Array.from({ length: 3 }).map((_, colIdx) => (
-            <div key={colIdx} className="space-y-3">
-              <Skeleton className="h-12 w-full rounded-lg" />
-              {Array.from({ length: 2 }).map((_, cardIdx) => (
-                <Skeleton key={cardIdx} className="h-40 w-full rounded-lg" />
-              ))}
-            </div>
+        <div className="flex gap-3 flex-1 min-h-0 overflow-hidden">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-64 w-[220px] flex-shrink-0 rounded-lg" />
           ))}
         </div>
       ) : (
-        <>
-          <MobileTabs />
-          <KanbanBoard />
-        </>
+        <TicketRail />
       )}
     </div>
   );
