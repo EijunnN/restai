@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { db } from "@restai/db";
 import { sql } from "drizzle-orm";
-import { getRedisStatus } from "../lib/redis.js";
+import { getRealtimeProvider } from "../infrastructure/container.js";
 
 const health = new Hono();
 
@@ -15,9 +15,11 @@ health.get("/", async (c) => {
     checks.database = "error";
   }
 
-  checks.redis = await getRedisStatus();
+  // El realtime se reporta por proveedor (sin acoplar Redis/ioredis aquí, para
+  // que health corra también en runtimes serverless/edge).
+  checks.realtime = getRealtimeProvider().name;
 
-  const allHealthy = Object.values(checks).every((v) => v === "ok");
+  const allHealthy = checks.database === "ok";
 
   return c.json(
     {

@@ -1,0 +1,33 @@
+# Despliegue de la API de RestAI como Cloudflare Worker (serverless, SIN contenedor).
+#
+# Requisitos previos (una vez):
+#   cd deploy/cloudflare-worker && bun install
+#   wrangler secret put DATABASE_URL          # Neon
+#   wrangler secret put JWT_SECRET
+#   wrangler secret put JWT_REFRESH_SECRET
+#   wrangler secret put SUNAT_ENCRYPTION_KEY
+#   # Realtime (elige uno y añade su secreto + cambia REALTIME_PROVIDER abajo):
+#   wrangler secret put ABLY_API_KEY          # si REALTIME_PROVIDER=ably
+#   # o PUSHER_APP_ID/KEY/SECRET + var PUSHER_CLUSTER, si REALTIME_PROVIDER=pusher
+#   wrangler deploy
+#
+# No necesita Docker ni el plan Containers: usa permisos estándar de Workers.
+name = "restai-api"
+main = "../../apps/api/src/worker.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# Cron Trigger: expira sesiones pendientes (reemplaza el setInterval del contenedor).
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Variables públicas (no secretas). Los secretos van con `wrangler secret put`.
+[vars]
+DATABASE_DRIVER = "neon"           # driver serverless de Neon (WebSocket)
+REALTIME_PROVIDER = "noop"         # cambia a "ably" o "pusher" cuando configures su secreto
+LOG_LEVEL = "info"
+CORS_ORIGINS = "https://app.tu-dominio.com"
+PUSHER_CLUSTER = ""                # solo si usas pusher

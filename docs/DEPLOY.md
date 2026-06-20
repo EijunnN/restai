@@ -52,6 +52,21 @@ En PaaS (Railway/Render/Fly): build con `Dockerfile.api` (API) y `Dockerfile.web
 
 ## Modo B — Cloudflare
 
+### B.1 Worker serverless (sin contenedor) — **opción por defecto**
+
+La API corre como **Cloudflare Worker** (sin Docker ni plan Containers). Posible
+porque el realtime se delega a Pusher/Ably (no hay WebSockets propios), el hashing
+usa WebCrypto, la DB usa el driver serverless de Neon **por-request**
+(`AsyncLocalStorage`) y el cron de sesiones es un **Cron Trigger**.
+
+- Config: [`deploy/cloudflare-worker/`](../deploy/cloudflare-worker) + workflow
+  [`deploy-api.yml`](../.github/workflows/deploy-api.yml) (push a `main`).
+- Realtime: pon `REALTIME_PROVIDER=ably` (o `pusher`) en `wrangler.toml` y añade el
+  secreto (`wrangler secret put ABLY_API_KEY`). Con `noop` la app va sin tiempo real.
+- Requiere `DATABASE_DRIVER=neon` (ya fijado en el `wrangler.toml`).
+
+### B.2 Containers (proceso completo, escala a cero)
+
 - **API → Cloudflare Containers** (corre `Dockerfile.api` sin cambios). El scaffold
   está en [`deploy/cloudflare/`](../deploy/cloudflare): un Worker mínimo + Durable
   Object que enruta hacia el contenedor.
