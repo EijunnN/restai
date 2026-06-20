@@ -17,6 +17,7 @@ interface AuthState {
   selectedBranchId: string | null;
   setAuth: (user: User, accessToken: string, refreshToken: string) => void;
   setAccessToken: (token: string) => void;
+  setTokens: (accessToken: string, refreshToken: string) => void;
   setSelectedBranch: (branchId: string) => void;
   logout: () => void;
   isAuthenticated: () => boolean;
@@ -42,6 +43,13 @@ export const useAuthStore = create<AuthState>()(
         set({ accessToken });
         if (typeof window !== "undefined") {
           localStorage.setItem("access_token", accessToken);
+        }
+      },
+      setTokens: (accessToken, refreshToken) => {
+        set({ accessToken, refreshToken });
+        if (typeof window !== "undefined") {
+          localStorage.setItem("access_token", accessToken);
+          localStorage.setItem("refresh_token", refreshToken);
         }
       },
       setSelectedBranch: (branchId) => {

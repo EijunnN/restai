@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, and, gt } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { registerOrgSchema, loginSchema } from "@restai/validators";
 import { hashPassword, verifyPassword } from "../lib/hash.js";
@@ -19,16 +19,20 @@ const auth = new Hono<AppEnv>();
 auth.post("/register", zValidator("json", registerOrgSchema), async (c) => {
   const body = c.req.valid("json");
 
+  // Normalize email (lowercase + trim) so lookups/inserts are case-insensitive
+  const email = body.email.trim().toLowerCase();
+
   // Check if email already exists
   const existing = await db
     .select({ id: schema.users.id })
     .from(schema.users)
-    .where(eq(schema.users.email, body.email))
+    .where(eq(schema.users.email, email))
     .limit(1);
 
   if (existing.length > 0) {
+    // Generic message: do not confirm an email exists in another org
     return c.json(
-      { success: false, error: { code: "CONFLICT", message: "El email ya está registrado" } },
+      { success: false, error: { code: "CONFLICT", message: "No se pudo crear el usuario" } },
       409,
     );
   }
@@ -60,7 +64,7 @@ auth.post("/register", zValidator("json", registerOrgSchema), async (c) => {
       .insert(schema.users)
       .values({
         organization_id: org.id,
-        email: body.email,
+        email,
         password_hash: passwordHash,
         name: body.name,
         role: "org_admin",
@@ -126,7 +130,8 @@ auth.post("/register", zValidator("json", registerOrgSchema), async (c) => {
 
 // POST /login
 auth.post("/login", zValidator("json", loginSchema), async (c) => {
-  const { email, password } = c.req.valid("json");
+  const { email: rawEmail, password } = c.req.valid("json");
+  const email = rawEmail.trim().toLowerCase();
 
   const [user] = await db
     .select()
@@ -220,6 +225,35 @@ auth.post(
       );
     }
 
+    // The presented JWT must correspond to a stored, unexpired refresh_tokens
+    // row. token_hash is a salted argon2 hash, so we fetch this user's
+    // non-expired rows and verify the token against each to find the match.
+    // A logout (which deletes rows) therefore actually revokes the token.
+    const candidates = await db
+      .select({ id: schema.refreshTokens.id, token_hash: schema.refreshTokens.token_hash })
+      .from(schema.refreshTokens)
+      .where(
+        and(
+          eq(schema.refreshTokens.user_id, user.id),
+          gt(schema.refreshTokens.expires_at, new Date()),
+        ),
+      );
+
+    let matchedTokenId: string | null = null;
+    for (const candidate of candidates) {
+      if (await verifyPassword(candidate.token_hash, refreshToken)) {
+        matchedTokenId = candidate.id;
+        break;
+      }
+    }
+
+    if (!matchedTokenId) {
+      return c.json(
+        { success: false, error: { code: "UNAUTHORIZED", message: "Refresh token inválido" } },
+        401,
+      );
+    }
+
     const userBranches = await db
       .select({ branch_id: schema.userBranches.branch_id })
       .from(schema.userBranches)
@@ -234,7 +268,21 @@ auth.post(
       branches: branchIds,
     });
 
-    return c.json({ success: true, data: { accessToken } });
+    // Rotate the refresh token: delete the used row, issue a new one.
+    const newRefreshToken = await signRefreshToken({ sub: user.id });
+    const newTokenHash = await hashPassword(newRefreshToken);
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(schema.refreshTokens)
+        .where(eq(schema.refreshTokens.id, matchedTokenId!));
+      await tx.insert(schema.refreshTokens).values({
+        user_id: user.id,
+        token_hash: newTokenHash,
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+    });
+
+    return c.json({ success: true, data: { accessToken, refreshToken: newRefreshToken } });
   },
 );
 

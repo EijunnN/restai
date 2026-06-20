@@ -9,7 +9,7 @@ type ApiFetchOptions = RequestInit & {
 };
 
 async function refreshAccessToken(): Promise<string | null> {
-  const { refreshToken, setAccessToken, logout } = useAuthStore.getState();
+  const { refreshToken, setAccessToken, setTokens, logout } = useAuthStore.getState();
   if (!refreshToken) return null;
 
   try {
@@ -20,7 +20,13 @@ async function refreshAccessToken(): Promise<string | null> {
     });
     const json = await res.json();
     if (json.success && json.data.accessToken) {
-      setAccessToken(json.data.accessToken);
+      // The server now rotates the refresh token: the old one is revoked and a
+      // new one is returned. Persist BOTH or the next refresh will fail.
+      if (json.data.refreshToken) {
+        setTokens(json.data.accessToken, json.data.refreshToken);
+      } else {
+        setAccessToken(json.data.accessToken);
+      }
       return json.data.accessToken;
     }
     logout();
