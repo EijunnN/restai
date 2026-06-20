@@ -3,18 +3,22 @@ import { logger } from "./lib/logger.js";
 import { redis } from "./lib/redis.js";
 import { verifyAccessToken } from "./lib/jwt.js";
 import { WebSocketManager } from "./infrastructure/realtime/bun-redis.adapter.js";
+import { createRealtimeProvider } from "./infrastructure/realtime/factory.js";
 import { Argon2Hasher } from "./infrastructure/security/argon2.adapter.js";
 import { useRealtime, useHasher } from "./infrastructure/container.js";
 import { handleWsMessage } from "./ws/handlers.js";
 import { expireStale } from "./services/session.service.js";
 
 // ── Composition root del runtime Bun (contenedor) ─────────────────────
-// Inyecta los adaptadores nativos: WebSockets+Redis (realtime) y argon2 (hashing).
-// En serverless/edge se usan otros entrypoints; por defecto el container resuelve
-// los adaptadores puros (NoopRealtime / WebCryptoHasher).
-const wsManager = new WebSocketManager();
-useRealtime(wsManager);
+// Elige el proveedor realtime por entorno (REALTIME_PROVIDER) e inyecta argon2.
+// El servidor WebSocket propio solo se activa si el proveedor es "websocket";
+// con Pusher/Ably la entrega corre por el proveedor cloud y /ws queda deshabilitado.
+const realtimeProvider = createRealtimeProvider();
+useRealtime(realtimeProvider);
 useHasher(new Argon2Hasher());
+
+const wsManager =
+  realtimeProvider instanceof WebSocketManager ? realtimeProvider : null;
 
 const port = parseInt(process.env.API_PORT || "3001");
 
@@ -24,6 +28,12 @@ const server = Bun.serve({
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {
+      if (!wsManager) {
+        return new Response(
+          `WebSocket no habilitado (proveedor realtime: ${realtimeProvider.name}). Usa /api/realtime/config.`,
+          { status: 501 },
+        );
+      }
       // Verify JWT on upgrade
       const token = url.searchParams.get("token");
       if (!token) {
@@ -44,6 +54,7 @@ const server = Bun.serve({
   },
   websocket: {
     async open(ws) {
+      if (!wsManager) return;
       const data = ws.data as any;
       wsManager.addClient(data.id, ws, data.payload.sub, undefined, data.payload.exp);
 
@@ -61,9 +72,11 @@ const server = Bun.serve({
       ws.send(JSON.stringify({ type: "auth:success", userId: data.payload.sub, timestamp: Date.now() }));
     },
     message(ws, message) {
+      if (!wsManager) return;
       handleWsMessage(ws, String(message), wsManager);
     },
     close(ws) {
+      if (!wsManager) return;
       wsManager.removeClient((ws.data as any).id);
     },
   },
@@ -78,8 +91,10 @@ const sessionExpiryInterval = setInterval(() => {
   });
 }, 60_000);
 
-// WS heartbeat: evict clients with expired tokens (every 30 seconds)
+// WS heartbeat: evict clients with expired tokens (every 30 seconds).
+// Solo aplica al servidor WebSocket propio (proveedor websocket).
 const wsHeartbeatInterval = setInterval(() => {
+  if (!wsManager) return;
   const evicted = wsManager.evictExpired();
   if (evicted > 0) {
     logger.info("WS heartbeat: evicted expired clients", { count: evicted });

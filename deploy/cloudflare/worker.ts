@@ -20,6 +20,12 @@ interface Env {
   REDIS_URL: string;
   CORS_ORIGINS?: string;
   LOG_LEVEL?: string;
+  REALTIME_PROVIDER?: string;
+  PUSHER_APP_ID?: string;
+  PUSHER_KEY?: string;
+  PUSHER_SECRET?: string;
+  PUSHER_CLUSTER?: string;
+  ABLY_API_KEY?: string;
   R2_ACCOUNT_ID?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
@@ -46,6 +52,12 @@ export class RestaiApiContainer extends Container<Env> {
       REDIS_URL: env.REDIS_URL,
       CORS_ORIGINS: env.CORS_ORIGINS ?? "",
       LOG_LEVEL: env.LOG_LEVEL ?? "info",
+      REALTIME_PROVIDER: env.REALTIME_PROVIDER ?? "websocket",
+      PUSHER_APP_ID: env.PUSHER_APP_ID ?? "",
+      PUSHER_KEY: env.PUSHER_KEY ?? "",
+      PUSHER_SECRET: env.PUSHER_SECRET ?? "",
+      PUSHER_CLUSTER: env.PUSHER_CLUSTER ?? "",
+      ABLY_API_KEY: env.ABLY_API_KEY ?? "",
       R2_ACCOUNT_ID: env.R2_ACCOUNT_ID ?? "",
       R2_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID ?? "",
       R2_SECRET_ACCESS_KEY: env.R2_SECRET_ACCESS_KEY ?? "",

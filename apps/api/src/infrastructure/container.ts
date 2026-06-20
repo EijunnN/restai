@@ -1,4 +1,7 @@
-import type { RealtimePublisher } from "../core/ports/realtime.js";
+import type {
+  RealtimePublisher,
+  RealtimeProvider,
+} from "../core/ports/realtime.js";
 import type { PasswordHasher } from "../core/ports/password-hasher.js";
 import { NoopRealtime } from "./realtime/noop.adapter.js";
 import { WebCryptoHasher } from "./security/webcrypto.adapter.js";
@@ -7,14 +10,14 @@ import { WebCryptoHasher } from "./security/webcrypto.adapter.js";
  * Composition root (registro de dependencias).
  *
  * El dominio/HTTP resuelve sus puertos desde aquí. Los DEFAULTS son adaptadores
- * PUROS (sin Node/Bun nativo ni Redis), por lo que importar este módulo es seguro
- * en cualquier runtime, incluido edge. Cada entrypoint (Bun, Node, edge) inyecta
- * los adaptadores concretos con `useRealtime` / `useHasher` al arrancar.
+ * PUROS (sin Node/Bun nativo, Redis ni proveedores externos), por lo que importar
+ * este módulo es seguro en cualquier runtime, incluido edge. Cada entrypoint
+ * inyecta los adaptadores concretos con `useRealtime` / `useHasher` al arrancar.
  */
-let realtimeImpl: RealtimePublisher = new NoopRealtime();
+let realtimeImpl: RealtimeProvider = new NoopRealtime();
 let hasherImpl: PasswordHasher = new WebCryptoHasher();
 
-export function useRealtime(impl: RealtimePublisher): void {
+export function useRealtime(impl: RealtimeProvider): void {
   realtimeImpl = impl;
 }
 
@@ -22,7 +25,12 @@ export function useHasher(impl: PasswordHasher): void {
   hasherImpl = impl;
 }
 
-/** Fachada estable del puerto realtime para el resto de la app. */
+/** Proveedor realtime completo (publish + clientConfig + authorize). */
+export function getRealtimeProvider(): RealtimeProvider {
+  return realtimeImpl;
+}
+
+/** Fachada estable del puerto de publicación realtime para el resto de la app. */
 export const realtime: RealtimePublisher = {
   publish: (room, data) => realtimeImpl.publish(room, data),
 };
