@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { eq, and, isNull, desc, inArray, notInArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createTableSchema,
@@ -64,6 +64,28 @@ tables.post(
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
+    // Verify space belongs to this tenant/branch when provided
+    if (body.spaceId) {
+      const [space] = await db
+        .select({ id: schema.spaces.id })
+        .from(schema.spaces)
+        .where(
+          and(
+            eq(schema.spaces.id, body.spaceId),
+            eq(schema.spaces.branch_id, tenant.branchId),
+            eq(schema.spaces.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
+
+      if (!space) {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "Espacio no encontrado" } },
+          400,
+        );
+      }
+    }
+
     // Get branch slug for QR code
     const [branch] = await db
       .select({ slug: schema.branches.slug })
@@ -103,6 +125,28 @@ tables.patch(
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
+    // Verify space belongs to this tenant/branch when provided (non-null)
+    if (body.spaceId) {
+      const [space] = await db
+        .select({ id: schema.spaces.id })
+        .from(schema.spaces)
+        .where(
+          and(
+            eq(schema.spaces.id, body.spaceId),
+            eq(schema.spaces.branch_id, tenant.branchId),
+            eq(schema.spaces.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
+
+      if (!space) {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "Espacio no encontrado" } },
+          400,
+        );
+      }
+    }
+
     const updateData: Record<string, any> = {};
     if (body.capacity !== undefined) updateData.capacity = body.capacity;
     if (body.spaceId !== undefined) updateData.space_id = body.spaceId;
@@ -114,6 +158,7 @@ tables.patch(
         and(
           eq(schema.tables.id, id),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -147,6 +192,7 @@ tables.patch(
         and(
           eq(schema.tables.id, id),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -171,12 +217,119 @@ tables.delete(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
+    // Verify the table belongs to this tenant/branch before any destructive action
+    const [table] = await db
+      .select({ id: schema.tables.id })
+      .from(schema.tables)
+      .where(
+        and(
+          eq(schema.tables.id, id),
+          eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!table) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+        404,
+      );
+    }
+
+    // tableSessions.table_id is onDelete:'cascade', so a hard delete would erase
+    // session + order history. Block deletion if there is any non-completed activity.
+    const [activeSession] = await db
+      .select({ id: schema.tableSessions.id })
+      .from(schema.tableSessions)
+      .where(
+        and(
+          eq(schema.tableSessions.table_id, id),
+          eq(schema.tableSessions.branch_id, tenant.branchId),
+          eq(schema.tableSessions.organization_id, tenant.organizationId),
+          inArray(schema.tableSessions.status, ["pending", "active"]),
+        ),
+      )
+      .limit(1);
+
+    if (activeSession) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "No se puede eliminar la mesa: tiene una sesion activa o pendiente",
+          },
+        },
+        409,
+      );
+    }
+
+    const [openOrder] = await db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .innerJoin(
+        schema.tableSessions,
+        eq(schema.orders.table_session_id, schema.tableSessions.id),
+      )
+      .where(
+        and(
+          eq(schema.tableSessions.table_id, id),
+          eq(schema.orders.branch_id, tenant.branchId),
+          eq(schema.orders.organization_id, tenant.organizationId),
+          notInArray(schema.orders.status, ["completed", "cancelled"]),
+        ),
+      )
+      .limit(1);
+
+    if (openOrder) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "No se puede eliminar la mesa: tiene pedidos sin completar",
+          },
+        },
+        409,
+      );
+    }
+
+    // Any existing session/order history (completed/cancelled) blocks hard deletion
+    // to avoid cascade-erasing the audit trail. There is no soft-delete column on
+    // tables, so we refuse to destroy history.
+    const [historySession] = await db
+      .select({ id: schema.tableSessions.id })
+      .from(schema.tableSessions)
+      .where(
+        and(
+          eq(schema.tableSessions.table_id, id),
+          eq(schema.tableSessions.branch_id, tenant.branchId),
+          eq(schema.tableSessions.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (historySession) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "No se puede eliminar la mesa: tiene historial de sesiones",
+          },
+        },
+        409,
+      );
+    }
+
     const [deleted] = await db
       .delete(schema.tables)
       .where(
         and(
           eq(schema.tables.id, id),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -211,6 +364,7 @@ tables.patch(
         and(
           eq(schema.tables.id, id),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
         ),
       )
       .limit(1);
@@ -237,6 +391,7 @@ tables.patch(
       );
     }
 
+    // Atomic transition: only update if the status is still what we validated against
     const [updated] = await db
       .update(schema.tables)
       .set({ status })
@@ -244,9 +399,24 @@ tables.patch(
         and(
           eq(schema.tables.id, id),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
+          eq(schema.tables.status, table.status),
         ),
       )
       .returning();
+
+    if (!updated) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "El estado de la mesa cambio, intenta de nuevo",
+          },
+        },
+        409,
+      );
+    }
 
     // Broadcast table status change
     await wsManager.publish(`branch:${tenant.branchId}`, {
@@ -259,9 +429,10 @@ tables.patch(
   },
 );
 
-// POST /sessions - Start a table session (customer QR flow)
+// POST /sessions - Staff walk-in seating (creates an active session directly)
 tables.post(
   "/sessions",
+  requirePermission("tables:update"),
   zValidator(
     "json",
     startSessionSchema.extend({ tableId: z.string().uuid() }),
@@ -270,7 +441,7 @@ tables.post(
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
-    // Get table
+    // Get table (scoped to tenant + branch)
     const [table] = await db
       .select()
       .from(schema.tables)
@@ -278,6 +449,7 @@ tables.post(
         and(
           eq(schema.tables.id, body.tableId),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
         ),
       )
       .limit(1);
@@ -289,6 +461,17 @@ tables.post(
       );
     }
 
+    // Staff can only seat walk-ins on a free table
+    if (table.status !== "available" && table.status !== "reserved") {
+      return c.json(
+        {
+          success: false,
+          error: { code: "CONFLICT", message: "La mesa no esta disponible" },
+        },
+        409,
+      );
+    }
+
     // Generate customer token
     const customerToken = await signCustomerToken({
       sub: crypto.randomUUID(),
@@ -297,25 +480,70 @@ tables.post(
       table: table.id,
     });
 
-    const session = await sessionService.createSession({
-      tableId: table.id,
-      branchId: tenant.branchId,
-      organizationId: tenant.organizationId,
-      customerName: body.customerName,
-      customerPhone: body.customerPhone,
-      token: customerToken,
-    });
+    // Create the active session and occupy the table atomically. The table flip is
+    // conditional on its current status so a concurrent seating yields a 409.
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + sessionService.ACTIVE_TTL_HOURS * 3_600_000);
 
-    // Set table to occupied
-    await db
-      .update(schema.tables)
-      .set({ status: "occupied" })
-      .where(eq(schema.tables.id, table.id));
+    let session;
+    try {
+      session = await db.transaction(async (tx) => {
+        const [occupied] = await tx
+          .update(schema.tables)
+          .set({ status: "occupied" })
+          .where(
+            and(
+              eq(schema.tables.id, table.id),
+              eq(schema.tables.branch_id, tenant.branchId),
+              eq(schema.tables.organization_id, tenant.organizationId),
+              eq(schema.tables.status, table.status),
+            ),
+          )
+          .returning();
 
-    // Broadcast
+        if (!occupied) {
+          throw new Error("TABLE_STATUS_CONFLICT");
+        }
+
+        const [created] = await tx
+          .insert(schema.tableSessions)
+          .values({
+            table_id: table.id,
+            branch_id: tenant.branchId,
+            organization_id: tenant.organizationId,
+            customer_name: body.customerName,
+            customer_phone: body.customerPhone,
+            token: customerToken,
+            status: "active",
+            expires_at: expiresAt,
+          })
+          .returning();
+
+        return created;
+      });
+    } catch (e: any) {
+      if (e.message === "TABLE_STATUS_CONFLICT") {
+        return c.json(
+          {
+            success: false,
+            error: { code: "CONFLICT", message: "La mesa no esta disponible" },
+          },
+          409,
+        );
+      }
+      throw e;
+    }
+
+    // Broadcast: session is active and the table is now occupied
     await wsManager.publish(`branch:${tenant.branchId}`, {
       type: "session:started",
-      payload: { sessionId: session.id, tableNumber: table.number, customerName: body.customerName },
+      payload: {
+        sessionId: session.id,
+        tableId: table.id,
+        tableNumber: table.number,
+        customerName: body.customerName,
+        status: "active",
+      },
       timestamp: Date.now(),
     });
 
@@ -356,7 +584,12 @@ tables.get("/sessions", requirePermission("tables:read"), async (c) => {
   const tablesData = await db
     .select({ id: schema.tables.id, number: schema.tables.number })
     .from(schema.tables)
-    .where(eq(schema.tables.branch_id, tenant.branchId));
+    .where(
+      and(
+        eq(schema.tables.branch_id, tenant.branchId),
+        eq(schema.tables.organization_id, tenant.organizationId),
+      ),
+    );
 
   const tableMap = new Map(tablesData.map(t => [t.id, t.number]));
 
@@ -386,6 +619,7 @@ tables.get("/sessions/pending", requirePermission("tables:read"), async (c) => {
     .where(
       and(
         eq(schema.tableSessions.branch_id, tenant.branchId),
+        eq(schema.tableSessions.organization_id, tenant.organizationId),
         eq(schema.tableSessions.status, "pending"),
       ),
     );
@@ -408,6 +642,7 @@ tables.get(
         and(
           eq(schema.tableSessions.id, id),
           eq(schema.tableSessions.branch_id, tenant.branchId),
+          eq(schema.tableSessions.organization_id, tenant.organizationId),
         ),
       )
       .limit(1);
@@ -437,16 +672,27 @@ tables.patch(
         sessionId: id,
         branchId: tenant.branchId,
       });
+      const [table] = await db
+        .select({ number: schema.tables.number })
+        .from(schema.tables)
+        .where(
+          and(
+            eq(schema.tables.id, result.tableId),
+            eq(schema.tables.branch_id, tenant.branchId),
+            eq(schema.tables.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
 
       // Broadcast approval
       await wsManager.publish(`branch:${tenant.branchId}`, {
         type: "session:approved",
-        payload: { sessionId: id, tableId: result.tableId },
+        payload: { sessionId: id, tableId: result.tableId, tableNumber: table?.number },
         timestamp: Date.now(),
       });
       await wsManager.publish(`session:${id}`, {
         type: "session:approved",
-        payload: { sessionId: id, tableId: result.tableId },
+        payload: { sessionId: id, tableId: result.tableId, tableNumber: table?.number },
         timestamp: Date.now(),
       });
 
@@ -477,16 +723,27 @@ tables.patch(
         sessionId: id,
         branchId: tenant.branchId,
       });
+      const [table] = await db
+        .select({ number: schema.tables.number })
+        .from(schema.tables)
+        .where(
+          and(
+            eq(schema.tables.id, result.tableId),
+            eq(schema.tables.branch_id, tenant.branchId),
+            eq(schema.tables.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
 
       // Broadcast rejection
       await wsManager.publish(`branch:${tenant.branchId}`, {
         type: "session:rejected",
-        payload: { sessionId: id, tableId: result.tableId },
+        payload: { sessionId: id, tableId: result.tableId, tableNumber: table?.number },
         timestamp: Date.now(),
       });
       await wsManager.publish(`session:${id}`, {
         type: "session:rejected",
-        payload: { sessionId: id, tableId: result.tableId },
+        payload: { sessionId: id, tableId: result.tableId, tableNumber: table?.number },
         timestamp: Date.now(),
       });
 
@@ -517,11 +774,27 @@ tables.patch(
         sessionId: id,
         branchId: tenant.branchId,
       });
+      const [table] = await db
+        .select({ number: schema.tables.number })
+        .from(schema.tables)
+        .where(
+          and(
+            eq(schema.tables.id, result.tableId),
+            eq(schema.tables.branch_id, tenant.branchId),
+            eq(schema.tables.organization_id, tenant.organizationId),
+          ),
+        )
+        .limit(1);
 
       // Broadcast session ended
       await wsManager.publish(`branch:${tenant.branchId}`, {
         type: "session:ended",
-        payload: { sessionId: id, tableId: result.tableId },
+        payload: { sessionId: id, tableId: result.tableId, tableNumber: table?.number },
+        timestamp: Date.now(),
+      });
+      await wsManager.publish(`session:${id}`, {
+        type: "session:ended",
+        payload: { sessionId: id, tableId: result.tableId, tableNumber: table?.number },
         timestamp: Date.now(),
       });
 
@@ -586,6 +859,7 @@ tables.get("/my-assignments", requirePermission("tables:read"), async (c) => {
       and(
         eq(schema.tableAssignments.user_id, user.sub),
         eq(schema.tableAssignments.branch_id, tenant.branchId),
+        eq(schema.tableAssignments.organization_id, tenant.organizationId),
       ),
     );
 
@@ -616,6 +890,7 @@ tables.get(
         and(
           eq(schema.tableAssignments.table_id, id),
           eq(schema.tableAssignments.branch_id, tenant.branchId),
+          eq(schema.tableAssignments.organization_id, tenant.organizationId),
         ),
       );
 
@@ -642,6 +917,7 @@ tables.post(
         and(
           eq(schema.tables.id, id),
           eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
         ),
       )
       .limit(1);
@@ -687,6 +963,8 @@ tables.post(
         and(
           eq(schema.tableAssignments.table_id, id),
           eq(schema.tableAssignments.user_id, userId),
+          eq(schema.tableAssignments.branch_id, tenant.branchId),
+          eq(schema.tableAssignments.organization_id, tenant.organizationId),
         ),
       )
       .limit(1);
@@ -728,6 +1006,7 @@ tables.delete(
           eq(schema.tableAssignments.table_id, id),
           eq(schema.tableAssignments.user_id, userId),
           eq(schema.tableAssignments.branch_id, tenant.branchId),
+          eq(schema.tableAssignments.organization_id, tenant.organizationId),
         ),
       )
       .returning();

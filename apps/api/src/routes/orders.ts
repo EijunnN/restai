@@ -135,16 +135,26 @@ orders.post(
 
     const { order, items: createdItems } = result;
 
-    // Auto-create payment if paymentMethod is provided (delivery flow)
+    // Auto-create payment intent if paymentMethod is provided (delivery flow).
+    // We do NOT trust the client's isPaid flag to mark collection as completed:
+    // there is no real capture/gateway here, so recording 'completed' would book
+    // revenue that was never captured. The payment is always created as 'pending'
+    // and must be settled through the cashier/payments flow. A failure to record
+    // the intent must not break the already-created order.
     if (body.paymentMethod) {
-      await db.insert(schema.payments).values({
-        order_id: order.id,
-        organization_id: tenant.organizationId,
-        branch_id: tenant.branchId,
-        method: body.paymentMethod as any,
-        amount: order.total,
-        status: body.isPaid ? "completed" : "pending",
-      });
+      try {
+        await db.insert(schema.payments).values({
+          order_id: order.id,
+          organization_id: tenant.organizationId,
+          branch_id: tenant.branchId,
+          method: body.paymentMethod as any,
+          amount: order.total,
+          status: "pending",
+          reference: body.isPaid ? "Cliente declaró prepago (pendiente de captura)" : null,
+        });
+      } catch {
+        // Order is already committed; surface it without the payment intent.
+      }
     }
 
     // Broadcast new order to branch and kitchen
@@ -225,6 +235,7 @@ orders.patch(
         and(
           eq(schema.orders.id, id),
           eq(schema.orders.branch_id, tenant.branchId),
+          eq(schema.orders.organization_id, tenant.organizationId),
         ),
       )
       .limit(1);
@@ -247,11 +258,30 @@ orders.patch(
       );
     }
 
+    // Atomic transition: only update if the status is still what we read.
+    // If a concurrent request already moved it, no row comes back -> 409.
     const [updated] = await db
       .update(schema.orders)
       .set({ status, updated_at: new Date() })
-      .where(eq(schema.orders.id, id))
+      .where(
+        and(
+          eq(schema.orders.id, id),
+          eq(schema.orders.branch_id, tenant.branchId),
+          eq(schema.orders.organization_id, tenant.organizationId),
+          eq(schema.orders.status, order.status),
+        ),
+      )
       .returning();
+
+    if (!updated) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "CONFLICT", message: "La orden fue modificada por otra operación. Intenta de nuevo." },
+        },
+        409,
+      );
+    }
 
     const updatePayload = {
       type: "order:updated",
@@ -271,11 +301,11 @@ orders.patch(
       await handleOrderCompletion({
         orderId: order.id,
         orderNumber: order.order_number,
-        orderTotal: order.total,
+        orderSubtotal: order.subtotal,
+        orderDiscount: order.discount,
         customerId: order.customer_id,
         organizationId: tenant.organizationId,
         branchId: tenant.branchId,
-        inventoryDeducted: order.inventory_deducted,
       });
     }
 

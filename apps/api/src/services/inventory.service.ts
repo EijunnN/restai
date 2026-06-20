@@ -1,4 +1,4 @@
-import { eq, sql, inArray } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 
 /**
@@ -29,6 +29,20 @@ export async function recordMovement(params: {
       throw new InventoryItemNotFoundError(`Item no encontrado: ${itemId}`);
     }
 
+    // The validator enforces quantity > 0, so the sign is determined purely by
+    // the movement type. purchase/adjustment add stock; consumption/waste remove it.
+    const isDecreasing = type === "consumption" || type === "waste";
+
+    // For stock-decreasing movements, re-check sufficiency against the locked
+    // row before recording anything so concurrent deductions can't drive stock
+    // negative (the FOR UPDATE lock serializes competing decrements).
+    if (isDecreasing) {
+      const available = parseFloat(item.current_stock);
+      if (available < quantity) {
+        throw new InsufficientStockError(item.name, quantity, available);
+      }
+    }
+
     const [movement] = await tx
       .insert(schema.inventoryMovements)
       .values({
@@ -42,13 +56,13 @@ export async function recordMovement(params: {
       .returning();
 
     // Atomic stock update using SQL
-    if (type === "purchase" || type === "adjustment") {
+    if (isDecreasing) {
       await tx.update(schema.inventoryItems).set({
-        current_stock: sql`${schema.inventoryItems.current_stock}::numeric + ${quantity}`,
+        current_stock: sql`${schema.inventoryItems.current_stock}::numeric - ${quantity}`,
       }).where(eq(schema.inventoryItems.id, itemId));
     } else {
       await tx.update(schema.inventoryItems).set({
-        current_stock: sql`${schema.inventoryItems.current_stock}::numeric - ${quantity}`,
+        current_stock: sql`${schema.inventoryItems.current_stock}::numeric + ${quantity}`,
       }).where(eq(schema.inventoryItems.id, itemId));
     }
 
@@ -89,6 +103,26 @@ export async function deductForOrder(params: {
 
   // Wrap all deductions + flag in a transaction
   await db.transaction(async (tx) => {
+    // Lock the order row and compare-and-set on inventory_deducted to make
+    // this idempotent regardless of any caller-supplied flag. If another
+    // concurrent completion already deducted (or is mid-flight holding the
+    // lock), we early-return after acquiring the lock and seeing the flag set.
+    const [orderRow] = await tx
+      .select({ inventory_deducted: schema.orders.inventory_deducted })
+      .from(schema.orders)
+      .where(eq(schema.orders.id, orderId))
+      .limit(1)
+      .for("update");
+
+    if (!orderRow) {
+      throw new InventoryItemNotFoundError(`Orden no encontrada: ${orderId}`);
+    }
+
+    if (orderRow.inventory_deducted) {
+      // Already deducted by a prior (or concurrent, now-committed) completion.
+      return;
+    }
+
     // Collect all needed inventory item IDs first
     const deductions: Array<{
       inventoryItemId: string;
@@ -121,12 +155,20 @@ export async function deductForOrder(params: {
       return;
     }
 
-    // Lock all needed inventory items with FOR UPDATE to prevent concurrent modifications
+    // Lock all needed inventory items with FOR UPDATE to prevent concurrent modifications.
+    // Defense-in-depth: scope to the order's branch so a recipe pointing at an
+    // inventory item from another branch is excluded here and trips the
+    // "not found" guard below rather than silently deducting cross-tenant stock.
     const inventoryItemIds = [...new Set(deductions.map((d) => d.inventoryItemId))];
     const lockedItems = await tx
       .select()
       .from(schema.inventoryItems)
-      .where(inArray(schema.inventoryItems.id, inventoryItemIds))
+      .where(
+        and(
+          inArray(schema.inventoryItems.id, inventoryItemIds),
+          eq(schema.inventoryItems.branch_id, branchId),
+        ),
+      )
       .for("update");
 
     const stockMap = new Map(lockedItems.map((item) => [item.id, parseFloat(item.current_stock)]));

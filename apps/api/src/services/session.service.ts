@@ -54,48 +54,60 @@ export async function approveSession(params: {
   sessionId: string;
   branchId: string;
 }) {
-  // Find pending session
-  const [session] = await db
-    .select()
-    .from(schema.tableSessions)
+  const now = new Date();
+
+  // Update session + table status in a single transaction using a
+  // compare-and-swap so concurrent approvals can't both succeed.
+  const result = await db.transaction(async (tx) => {
+    // Compare-and-swap: only a still-pending, not-yet-expired session in this
+    // branch flips to active. Folding the expiry check into the WHERE keeps the
+    // transition atomic — no read-then-write race window.
+    const [updated] = await tx
+      .update(schema.tableSessions)
+      .set({ status: "active", expires_at: addHours(now, ACTIVE_TTL_HOURS) })
+      .where(
+        and(
+          eq(schema.tableSessions.id, params.sessionId),
+          eq(schema.tableSessions.branch_id, params.branchId),
+          eq(schema.tableSessions.status, "pending"),
+          gte(schema.tableSessions.expires_at, now),
+        ),
+      )
+      .returning();
+
+    if (!updated) return null;
+
+    await tx
+      .update(schema.tables)
+      .set({ status: "occupied" })
+      .where(eq(schema.tables.id, updated.table_id));
+
+    return { session: updated, tableId: updated.table_id };
+  });
+
+  if (result) return result;
+
+  // Approval failed. Distinguish "expired" from "not found / not pending" and
+  // auto-reject a pending-but-expired session so the table is freed up. This
+  // runs OUTSIDE the approval transaction on purpose: throwing inside the tx
+  // would roll the rejection back, leaving the dead session stuck as pending.
+  const [expired] = await db
+    .update(schema.tableSessions)
+    .set({ status: "rejected", ended_at: now })
     .where(
       and(
         eq(schema.tableSessions.id, params.sessionId),
         eq(schema.tableSessions.branch_id, params.branchId),
         eq(schema.tableSessions.status, "pending"),
+        lt(schema.tableSessions.expires_at, now),
       ),
     )
-    .limit(1);
+    .returning();
 
-  if (!session) {
-    throw new Error("PENDING_SESSION_NOT_FOUND");
-  }
-
-  // Check if session has expired
-  if (session.expires_at && new Date(session.expires_at) < new Date()) {
-    // Auto-reject expired session
-    await db
-      .update(schema.tableSessions)
-      .set({ status: "rejected", ended_at: new Date() })
-      .where(eq(schema.tableSessions.id, params.sessionId));
+  if (expired) {
     throw new Error("SESSION_EXPIRED");
   }
-
-  // Update session + table status in a transaction
-  return await db.transaction(async (tx) => {
-    const [updated] = await tx
-      .update(schema.tableSessions)
-      .set({ status: "active", expires_at: addHours(new Date(), ACTIVE_TTL_HOURS) })
-      .where(eq(schema.tableSessions.id, params.sessionId))
-      .returning();
-
-    await tx
-      .update(schema.tables)
-      .set({ status: "occupied" })
-      .where(eq(schema.tables.id, session.table_id));
-
-    return { session: updated, tableId: session.table_id };
-  });
+  throw new Error("PENDING_SESSION_NOT_FOUND");
 }
 
 // ── Reject Session ──────────────────────────────────────────────────
@@ -104,10 +116,11 @@ export async function rejectSession(params: {
   sessionId: string;
   branchId: string;
 }) {
-  // Find pending session
-  const [session] = await db
-    .select()
-    .from(schema.tableSessions)
+  // Compare-and-swap: only a still-pending session in this branch flips to
+  // rejected, so concurrent reject/approve can't both win.
+  const [updated] = await db
+    .update(schema.tableSessions)
+    .set({ status: "rejected" })
     .where(
       and(
         eq(schema.tableSessions.id, params.sessionId),
@@ -115,19 +128,13 @@ export async function rejectSession(params: {
         eq(schema.tableSessions.status, "pending"),
       ),
     )
-    .limit(1);
+    .returning();
 
-  if (!session) {
+  if (!updated) {
     throw new Error("PENDING_SESSION_NOT_FOUND");
   }
 
-  const [updated] = await db
-    .update(schema.tableSessions)
-    .set({ status: "rejected" })
-    .where(eq(schema.tableSessions.id, params.sessionId))
-    .returning();
-
-  return { session: updated, tableId: session.table_id };
+  return { session: updated, tableId: updated.table_id };
 }
 
 // ── End Session ─────────────────────────────────────────────────────
@@ -136,53 +143,48 @@ export async function endSession(params: {
   sessionId: string;
   branchId: string;
 }) {
-  // Find active session
-  const [session] = await db
-    .select()
-    .from(schema.tableSessions)
-    .where(
-      and(
-        eq(schema.tableSessions.id, params.sessionId),
-        eq(schema.tableSessions.branch_id, params.branchId),
-        eq(schema.tableSessions.status, "active"),
-      ),
-    )
-    .limit(1);
-
-  if (!session) {
-    throw new Error("ACTIVE_SESSION_NOT_FOUND");
-  }
-
-  // Check for open orders (not completed/cancelled)
-  const [openOrder] = await db
-    .select({ id: schema.orders.id, status: schema.orders.status })
-    .from(schema.orders)
-    .where(
-      and(
-        eq(schema.orders.table_session_id, params.sessionId),
-        notInArray(schema.orders.status, ["completed", "cancelled"]),
-      ),
-    )
-    .limit(1);
-
-  if (openOrder) {
-    throw new Error("SESSION_HAS_OPEN_ORDERS");
-  }
-
-  // Update session + table status in a transaction
+  // Do the open-orders guard + state change + table reset in one transaction
+  // with a compare-and-swap so concurrent ends can't both succeed.
   return await db.transaction(async (tx) => {
+    // Check for open orders (not completed/cancelled) before transitioning.
+    const [openOrder] = await tx
+      .select({ id: schema.orders.id, status: schema.orders.status })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.table_session_id, params.sessionId),
+          notInArray(schema.orders.status, ["completed", "cancelled"]),
+        ),
+      )
+      .limit(1);
+
+    if (openOrder) {
+      throw new Error("SESSION_HAS_OPEN_ORDERS");
+    }
+
+    // Compare-and-swap: only a still-active session in this branch completes.
     const [updated] = await tx
       .update(schema.tableSessions)
       .set({ status: "completed", ended_at: new Date() })
-      .where(eq(schema.tableSessions.id, params.sessionId))
+      .where(
+        and(
+          eq(schema.tableSessions.id, params.sessionId),
+          eq(schema.tableSessions.branch_id, params.branchId),
+          eq(schema.tableSessions.status, "active"),
+        ),
+      )
       .returning();
+
+    if (!updated) {
+      throw new Error("ACTIVE_SESSION_NOT_FOUND");
+    }
 
     await tx
       .update(schema.tables)
       .set({ status: "available" })
-      .where(eq(schema.tables.id, session.table_id));
+      .where(eq(schema.tables.id, updated.table_id));
 
-    return { session: updated, tableId: session.table_id };
+    return { session: updated, tableId: updated.table_id };
   });
 }
 
@@ -307,78 +309,57 @@ export async function getTableHistory(params: {
 export async function expireStale(): Promise<number> {
   const now = new Date();
 
-  // Expire pending sessions
-  const expiredPending = await db
-    .update(schema.tableSessions)
-    .set({ status: "rejected", ended_at: now })
-    .where(
-      and(
-        eq(schema.tableSessions.status, "pending"),
-        lt(schema.tableSessions.expires_at, now),
-      ),
-    )
-    .returning({ table_id: schema.tableSessions.table_id });
-
-  // Expire active sessions (safety net) — skip sessions with open orders
-  // First find expired active sessions, then filter out those with open orders
-  const expiredActiveCandidates = await db
-    .select({ id: schema.tableSessions.id, table_id: schema.tableSessions.table_id })
-    .from(schema.tableSessions)
-    .where(
-      and(
-        eq(schema.tableSessions.status, "active"),
-        lt(schema.tableSessions.expires_at, now),
-      ),
-    );
-
-  const safeToExpire: string[] = [];
-  const expiredActiveTableIds: string[] = [];
-
-  for (const candidate of expiredActiveCandidates) {
-    const [openOrder] = await db
-      .select({ id: schema.orders.id })
-      .from(schema.orders)
+  return await db.transaction(async (tx) => {
+    // Expire pending sessions (already set-based).
+    const expiredPending = await tx
+      .update(schema.tableSessions)
+      .set({ status: "rejected", ended_at: now })
       .where(
         and(
-          eq(schema.orders.table_session_id, candidate.id),
-          notInArray(schema.orders.status, ["completed", "cancelled"]),
+          eq(schema.tableSessions.status, "pending"),
+          lt(schema.tableSessions.expires_at, now),
         ),
       )
-      .limit(1);
+      .returning({ table_id: schema.tableSessions.table_id });
 
-    if (!openOrder) {
-      safeToExpire.push(candidate.id);
-      expiredActiveTableIds.push(candidate.table_id);
-    }
-  }
-
-  let expiredActiveCount = 0;
-  if (safeToExpire.length > 0) {
-    await db
+    // Expire active sessions (safety net) — skip sessions with open orders.
+    // Single set-based UPDATE with a correlated NOT EXISTS anti-join against
+    // open orders, replacing the previous per-session N+1 query loop.
+    const expiredActive = await tx
       .update(schema.tableSessions)
       .set({ status: "completed", ended_at: now })
-      .where(inArray(schema.tableSessions.id, safeToExpire));
-    expiredActiveCount = safeToExpire.length;
-  }
+      .where(
+        and(
+          eq(schema.tableSessions.status, "active"),
+          lt(schema.tableSessions.expires_at, now),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${schema.orders}
+            WHERE ${schema.orders.table_session_id} = ${schema.tableSessions.id}
+              AND ${schema.orders.status} NOT IN ('completed', 'cancelled')
+          )`,
+        ),
+      )
+      .returning({ table_id: schema.tableSessions.table_id });
 
-  // Reset tables to available
-  const tableIds = [
-    ...expiredPending.map((r) => r.table_id),
-    ...expiredActiveTableIds,
-  ];
+    // Reset associated tables to available in the same transaction.
+    const tableIds = [
+      ...expiredPending.map((r) => r.table_id),
+      ...expiredActive.map((r) => r.table_id),
+    ];
 
-  if (tableIds.length > 0) {
-    const uniqueTableIds = [...new Set(tableIds)];
-    await db
-      .update(schema.tables)
-      .set({ status: "available" })
-      .where(inArray(schema.tables.id, uniqueTableIds));
+    if (tableIds.length > 0) {
+      const uniqueTableIds = [...new Set(tableIds)];
+      await tx
+        .update(schema.tables)
+        .set({ status: "available" })
+        .where(inArray(schema.tables.id, uniqueTableIds));
 
-    logger.info("Expired stale sessions", {
-      pending: expiredPending.length,
-      active: expiredActiveCount,
-    });
-  }
+      logger.info("Expired stale sessions", {
+        pending: expiredPending.length,
+        active: expiredActive.length,
+      });
+    }
 
-  return expiredPending.length + expiredActiveCount;
+    return expiredPending.length + expiredActive.length;
+  });
 }
