@@ -14,7 +14,15 @@ const server = Bun.serve({
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {
-      // Verify JWT on upgrade
+      // Verify JWT on upgrade.
+      //
+      // TRADEOFF (documented decision): the token travels in the URL query
+      // string rather than a header/subprotocol. Browsers' native WebSocket API
+      // cannot set custom headers on the upgrade, so moving it would mean
+      // reworking the realtime client/transport and risks breaking the feed. We
+      // accept the query-string transport. Mitigation: reverse proxies (Traefik)
+      // MUST strip/redact query strings from their access logs so tokens are not
+      // persisted, and tokens are short-lived (evicted on expiry via heartbeat).
       const token = url.searchParams.get("token");
       if (!token) {
         return new Response("Token required", { status: 401 });
@@ -37,11 +45,14 @@ const server = Bun.serve({
       const data = ws.data as any;
       wsManager.addClient(data.id, ws, data.payload.sub, undefined, data.payload.exp);
 
-      // Auto-join rooms based on pre-verified token payload
+      // Auto-join rooms based on pre-verified token payload.
       if (data.payload.role === "customer") {
-        if (data.payload.branch) await wsManager.joinRoom(data.id, `branch:${data.payload.branch}`);
-        if (data.payload.table) await wsManager.joinRoom(data.id, `table:${data.payload.table}`);
+        // Customers must NOT join the branch-wide room: it carries every table's
+        // order events and would leak other diners' activity. They only receive
+        // their own session room (customer-relevant events are published to
+        // session:{table_session_id}) plus their own table room.
         await wsManager.joinRoom(data.id, `session:${data.payload.sub}`);
+        if (data.payload.table) await wsManager.joinRoom(data.id, `table:${data.payload.table}`);
       } else if (data.payload.branches) {
         for (const branchId of data.payload.branches) {
           await wsManager.joinRoom(data.id, `branch:${branchId}`);

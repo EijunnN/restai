@@ -53,6 +53,10 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://app.hosteleria.me}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Behind Traefik/Coolify the X-Forwarded-For is set by the trusted proxy,
+      # so the rate limiter may honor it. Set to "false" if the API is exposed
+      # directly (clients could then spoof XFF to bypass rate limits).
+      TRUST_PROXY: ${TRUST_PROXY:-true}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}

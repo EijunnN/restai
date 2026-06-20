@@ -40,8 +40,12 @@ app.use(
   "*",
   cors({
     origin: (origin) => {
-      if (CORS_ORIGINS.includes(origin)) return origin;
-      return CORS_ORIGINS[0];
+      // Reflect the origin only when it is explicitly allow-listed. For unknown
+      // or absent origins return a falsy value so no Access-Control-Allow-Origin
+      // header is emitted — never reflect a credentialed ACAO for a non-allowed
+      // origin.
+      if (origin && CORS_ORIGINS.includes(origin)) return origin;
+      return null;
     },
     credentials: true,
     allowHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Branch-Id"],
