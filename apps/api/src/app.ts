@@ -58,6 +58,16 @@ app.use("*", rateLimiter(100, 60_000, "global"));
 app.use("/api/auth/*", rateLimiter(20, 60_000, "auth"));
 app.use("/api/customer/*", rateLimiter(30, 60_000, "customer"));
 
+// Root: índice informativo de la API (evita el 404 "pelado" en /).
+app.get("/", (c) =>
+  c.json({
+    name: "RestAI API",
+    status: "ok",
+    docs: "https://github.com/darwinva97/restai/tree/main/docs",
+    endpoints: ["/health", "/api/auth", "/api/orders", "/api/invoices", "/api/sunat", "/api/realtime"],
+  }),
+);
+
 // Public routes
 app.route("/health", health);
 app.route("/api/auth", auth);
@@ -82,6 +92,14 @@ app.route("/api/reports", reports);
 app.route("/api/settings", settings);
 app.route("/api/uploads", uploads);
 app.route("/api/coupons", coupons);
+
+// 404 en JSON consistente con el resto de la API.
+app.notFound((c) =>
+  c.json(
+    { success: false, error: { code: "NOT_FOUND", message: `Ruta no encontrada: ${c.req.method} ${new URL(c.req.url).pathname}` } },
+    404,
+  ),
+);
 
 export type AppType = typeof app;
 export { app };
