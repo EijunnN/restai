@@ -3,10 +3,37 @@ import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, desc, gte, lte } from "drizzle-orm";
 import { db, schema } from "@restai/db";
-import { createInvoiceSchema, idParamSchema } from "@restai/validators";
+import {
+  createInvoiceSchema,
+  idParamSchema,
+  notaCreditoSchema,
+  bajaSchema,
+} from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import {
+  comunicarBaja,
+  consultarEstado,
+  declararComprobante,
+  emitirNotaCredito,
+} from "../services/sunat.service.js";
+import { handleSunatError } from "./sunat.js";
+
+/** Carga un comprobante validando que pertenezca al branch del tenant. */
+async function getInvoiceForTenant(id: string, tenant: any) {
+  const [invoice] = await db
+    .select()
+    .from(schema.invoices)
+    .where(
+      and(
+        eq(schema.invoices.id, id),
+        eq(schema.invoices.branch_id, tenant.branchId),
+      ),
+    )
+    .limit(1);
+  return invoice ?? null;
+}
 
 const invoices = new Hono<AppEnv>();
 
@@ -189,6 +216,147 @@ invoices.get(
     }
 
     return c.json({ success: true, data: invoice });
+  },
+);
+
+// POST /:id/declarar - Declara (envía) el comprobante a SUNAT
+invoices.post(
+  "/:id/declarar",
+  requirePermission("invoices:create"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const invoice = await getInvoiceForTenant(id, tenant);
+    if (!invoice) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Comprobante no encontrado" } },
+        404,
+      );
+    }
+    if (invoice.sunat_status === "accepted" || invoice.sunat_status === "observed") {
+      return c.json(
+        { success: false, error: { code: "CONFLICT", message: "El comprobante ya fue aceptado por SUNAT" } },
+        409,
+      );
+    }
+
+    try {
+      const result = await declararComprobante(invoice, tenant.organizationId);
+      return c.json({ success: result.exito, data: result }, result.exito ? 200 : 422);
+    } catch (err) {
+      return handleSunatError(c, err);
+    }
+  },
+);
+
+// GET /:id/estado - Consulta el estado del comprobante en SUNAT
+invoices.get(
+  "/:id/estado",
+  requirePermission("invoices:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const invoice = await getInvoiceForTenant(id, tenant);
+    if (!invoice) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Comprobante no encontrado" } },
+        404,
+      );
+    }
+
+    try {
+      const result = await consultarEstado(invoice, tenant.organizationId);
+      return c.json({ success: true, data: result });
+    } catch (err) {
+      return handleSunatError(c, err);
+    }
+  },
+);
+
+// POST /:id/nota-credito - Emite una nota de crédito sobre el comprobante
+invoices.post(
+  "/:id/nota-credito",
+  requirePermission("invoices:create"),
+  zValidator("param", idParamSchema),
+  zValidator("json", notaCreditoSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const invoice = await getInvoiceForTenant(id, tenant);
+    if (!invoice) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Comprobante no encontrado" } },
+        404,
+      );
+    }
+    if (invoice.type !== "boleta" && invoice.type !== "factura") {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "Solo se pueden emitir notas sobre boletas o facturas" } },
+        400,
+      );
+    }
+
+    try {
+      const { result, nota } = await emitirNotaCredito(invoice, {
+        organizationId: tenant.organizationId,
+        branchId: tenant.branchId,
+        motivoCodigo: body.motivoCodigo,
+        motivoDescripcion: body.motivoDescripcion,
+      });
+      return c.json({ success: result.exito, data: { nota, result } }, result.exito ? 201 : 422);
+    } catch (err) {
+      return handleSunatError(c, err);
+    }
+  },
+);
+
+// POST /:id/anular - Comunicación de baja del comprobante (facturas)
+invoices.post(
+  "/:id/anular",
+  requirePermission("invoices:create"),
+  zValidator("param", idParamSchema),
+  zValidator("json", bajaSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const invoice = await getInvoiceForTenant(id, tenant);
+    if (!invoice) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Comprobante no encontrado" } },
+        404,
+      );
+    }
+    if (invoice.type === "boleta") {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: "Las boletas se anulan vía resumen diario (estado 3), no por comunicación de baja",
+          },
+        },
+        400,
+      );
+    }
+
+    try {
+      const result = await comunicarBaja(invoice, {
+        organizationId: tenant.organizationId,
+        motivo: body.motivo,
+        correlativo: body.correlativo,
+      });
+      return c.json({ success: result.exito, data: result }, result.exito ? 200 : 422);
+    } catch (err) {
+      return handleSunatError(c, err);
+    }
   },
 );
 

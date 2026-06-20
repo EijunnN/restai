@@ -17,6 +17,7 @@
       "@restai/validators": ["./packages/validators/src"],
       "@restai/types": ["./packages/types/src"],
       "@restai/config": ["./packages/config/src"],
+      "@restai/sunat": ["./packages/sunat/src"],
       "@restai/ui": ["./packages/ui/src"]
     }
   },

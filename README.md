@@ -19,6 +19,7 @@ restai/
 │   └── web/          # Dashboard + flujo cliente (Next.js, puerto 3000)
 ├── packages/
 │   ├── db/           # Schema Drizzle, migraciones, seed
+│   ├── sunat/        # Facturacion electronica SUNAT (UBL 2.1, firma, SOAP, CDR)
 │   ├── ui/           # Componentes UI compartidos (shadcn/ui)
 │   ├── validators/   # Schemas Zod compartidos
 │   ├── types/        # Tipos TypeScript compartidos
@@ -26,6 +27,15 @@ restai/
 ├── docker-compose.yml
 └── turbo.json
 ```
+
+## Facturacion electronica (SUNAT)
+
+RestAI declara comprobantes (facturas, boletas, notas de credito, resumenes
+diarios y comunicaciones de baja) directamente ante SUNAT: genera el XML UBL 2.1,
+lo firma digitalmente, lo comprime y lo envia por SOAP, procesando el CDR.
+
+Configurar el emisor con `PUT /api/sunat/config` y declarar con
+`POST /api/invoices/:id/declarar`. Guia completa en [docs/SUNAT.md](docs/SUNAT.md).
 
 ## Requisitos
 

@@ -8,7 +8,7 @@ import { ORDER_ITEM_STATUS_TRANSITIONS } from "@restai/config";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
-import { wsManager } from "../ws/manager.js";
+import { realtime } from "../infrastructure/container.js";
 
 const kitchen = new Hono<AppEnv>();
 
@@ -117,10 +117,10 @@ kitchen.patch(
       },
       timestamp: Date.now(),
     };
-    await wsManager.publish(`branch:${tenant.branchId}`, itemPayload);
-    await wsManager.publish(`branch:${tenant.branchId}:kitchen`, itemPayload);
+    await realtime.publish(`branch:${tenant.branchId}`, itemPayload);
+    await realtime.publish(`branch:${tenant.branchId}:kitchen`, itemPayload);
     if (order.table_session_id) {
-      await wsManager.publish(`session:${order.table_session_id}`, itemPayload);
+      await realtime.publish(`session:${order.table_session_id}`, itemPayload);
     }
 
     return c.json({ success: true, data: updated });

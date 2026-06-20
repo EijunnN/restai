@@ -1,0 +1,58 @@
+name: Deploy Web (Vercel)
+
+# Despliega el dashboard Next.js (apps/web) en Vercel por CI/CD en cada push a main.
+#
+# Secretos requeridos en el repo (Settings → Secrets and variables → Actions):
+#   VERCEL_TOKEN        token de cuenta de Vercel
+#   VERCEL_ORG_ID       id de la organización (de `vercel link` o del dashboard)
+#   VERCEL_PROJECT_ID   id del proyecto de Vercel
+#
+# En el proyecto de Vercel: Root Directory = apps/web, y variables
+#   NEXT_PUBLIC_API_URL = https://<tu-api>      (Worker de Cloudflare o host de la API)
+#   NEXT_PUBLIC_WS_URL  = wss://<tu-api>
+#
+# Alternativa más simple: conectar el repo en el dashboard de Vercel (integración Git),
+# que auto-despliega en cada push sin necesidad de este workflow.
+
+on:
+  # Manual por ahora: actívalo (descomenta el bloque push) cuando configures el
+  # proyecto de Vercel y sus secrets (VERCEL_TOKEN/ORG_ID/PROJECT_ID).
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "apps/web/**"
+  #     - "packages/**"
+  #     - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  deploy:
+    name: Build + deploy a Vercel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - name: Instalar Vercel CLI
+        run: bun add -g vercel@latest
+      - name: Vercel pull (trae settings + env de producción)
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      - name: Vercel build
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      - name: Vercel deploy (prebuilt)
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

@@ -17,6 +17,7 @@
     "@node-rs/argon2": "^2.0.2",
     "@restai/config": "workspace:*",
     "@restai/db": "workspace:*",
+    "@restai/sunat": "workspace:*",
     "@restai/types": "workspace:*",
     "@restai/validators": "workspace:*",
     "drizzle-orm": "^0.44.0",

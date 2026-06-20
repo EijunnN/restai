@@ -2,9 +2,19 @@ import { app } from "./app.js";
 import { logger } from "./lib/logger.js";
 import { redis } from "./lib/redis.js";
 import { verifyAccessToken } from "./lib/jwt.js";
-import { wsManager } from "./ws/manager.js";
+import { WebSocketManager } from "./infrastructure/realtime/bun-redis.adapter.js";
+import { Argon2Hasher } from "./infrastructure/security/argon2.adapter.js";
+import { useRealtime, useHasher } from "./infrastructure/container.js";
 import { handleWsMessage } from "./ws/handlers.js";
 import { expireStale } from "./services/session.service.js";
+
+// ── Composition root del runtime Bun (contenedor) ─────────────────────
+// Inyecta los adaptadores nativos: WebSockets+Redis (realtime) y argon2 (hashing).
+// En serverless/edge se usan otros entrypoints; por defecto el container resuelve
+// los adaptadores puros (NoopRealtime / WebCryptoHasher).
+const wsManager = new WebSocketManager();
+useRealtime(wsManager);
+useHasher(new Argon2Hasher());
 
 const port = parseInt(process.env.API_PORT || "3001");
 

@@ -29,6 +29,13 @@
       "when": 1774482632443,
       "tag": "0003_regular_leo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781981512131,
+      "tag": "0004_sunat_integration",
+      "breakpoints": true
     }
   ]
 }

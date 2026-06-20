@@ -1,4 +1,4 @@
-import type { WebSocketManager } from "./manager.js";
+import type { WebSocketManager } from "../infrastructure/realtime/bun-redis.adapter.js";
 
 export async function handleWsMessage(
   ws: any,

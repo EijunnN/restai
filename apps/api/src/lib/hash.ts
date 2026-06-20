@@ -1,12 +1,17 @@
-import { hash, verify } from "@node-rs/argon2";
+import { passwordHasher } from "../infrastructure/container.js";
 
-export async function hashPassword(password: string): Promise<string> {
-  return hash(password);
+/**
+ * Fachada de hashing: delega en el adaptador resuelto por el composition root
+ * (argon2 en contenedor/Node; WebCrypto/PBKDF2 en edge). Las rutas siguen
+ * importando estas funciones sin conocer la implementación concreta.
+ */
+export function hashPassword(password: string): Promise<string> {
+  return passwordHasher.hash(password);
 }
 
-export async function verifyPassword(
+export function verifyPassword(
   hashed: string,
   password: string,
 ): Promise<boolean> {
-  return verify(hashed, password);
+  return passwordHasher.verify(hashed, password);
 }

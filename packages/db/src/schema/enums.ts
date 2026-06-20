@@ -72,6 +72,8 @@ export const paymentStatusEnum = pgEnum("payment_status", [
 export const invoiceTypeEnum = pgEnum("invoice_type", [
   "boleta",
   "factura",
+  "nota_credito",
+  "nota_debito",
 ]);
 
 export const docTypeEnum = pgEnum("doc_type", [
@@ -81,10 +83,18 @@ export const docTypeEnum = pgEnum("doc_type", [
 ]);
 
 export const sunatStatusEnum = pgEnum("sunat_status", [
-  "pending",
-  "sent",
-  "accepted",
-  "rejected",
+  "pending", // creado, aún no enviado a SUNAT
+  "sent", // enviado, esperando respuesta/ticket (asíncrono)
+  "accepted", // aceptado por SUNAT (CDR código 0)
+  "observed", // aceptado con observaciones (CDR >= 4000)
+  "rejected", // rechazado por SUNAT (CDR 2000-3999)
+  "voided", // dado de baja (comunicación de baja aceptada)
+  "error", // error de comunicación/firma al enviar
+]);
+
+export const sunatAmbienteEnum = pgEnum("sunat_ambiente", [
+  "beta",
+  "production",
 ]);
 
 export const inventoryMovementTypeEnum = pgEnum("inventory_movement_type", [

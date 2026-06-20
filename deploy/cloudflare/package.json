@@ -1,0 +1,16 @@
+{
+  "name": "restai-cloudflare-deploy",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Shim de Worker para correr la API de RestAI en Cloudflare Containers (sin cambios de código).",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.2.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

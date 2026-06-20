@@ -160,6 +160,50 @@ export const createInvoiceSchema = z.object({
   customerDocNumber: z.string().min(8).max(20),
 });
 
+// SUNAT validators
+export const sunatConfigSchema = z.object({
+  ruc: z.string().regex(/^(10|15|16|17|20)\d{9}$/, "RUC inválido (11 dígitos)"),
+  razonSocial: z.string().min(1).max(255),
+  nombreComercial: z.string().max(255).optional(),
+  ubigeo: z.string().length(6).optional(),
+  departamento: z.string().max(100).optional(),
+  provincia: z.string().max(100).optional(),
+  distrito: z.string().max(100).optional(),
+  direccion: z.string().max(500).optional(),
+  ambiente: z.enum(["beta", "production"]).default("beta"),
+  endpointOverride: z.string().url().nullable().optional(),
+  // Credenciales y certificado (en claro al recibirlos; se cifran al guardar)
+  solUser: z.string().min(1).max(100).optional(),
+  solPass: z.string().min(1).max(100).optional(),
+  /** Certificado: PFX/P12 en base64 o PEM (clave + certificado). */
+  certificate: z.string().min(1).optional(),
+  certificatePassword: z.string().max(200).optional(),
+  certificateFormat: z.enum(["pfx", "pem"]).default("pfx"),
+  enabled: z.boolean().optional(),
+});
+
+export const notaCreditoSchema = z.object({
+  // Catálogo 09: 01 anulación, 02 anulación por error en RUC, 03 corrección, etc.
+  motivoCodigo: z
+    .enum(["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "13"])
+    .default("01"),
+  motivoDescripcion: z.string().min(1).max(250),
+});
+
+export const bajaSchema = z.object({
+  motivo: z.string().min(3).max(250),
+  correlativo: z.number().int().min(1).max(99999).default(1),
+});
+
+export const resumenDiarioSchema = z.object({
+  fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha debe ser YYYY-MM-DD"),
+  correlativo: z.number().int().min(1).max(99999).default(1),
+});
+
+export const consultarTicketSchema = z.object({
+  ticket: z.string().min(1).max(50),
+});
+
 // Inventory validators
 export const createInventoryItemSchema = z.object({
   categoryId: z.string().uuid().optional(),
@@ -277,6 +321,10 @@ export type StartSessionInput = z.infer<typeof startSessionSchema>;
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
 export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>;
+export type SunatConfigInput = z.infer<typeof sunatConfigSchema>;
+export type NotaCreditoInput = z.infer<typeof notaCreditoSchema>;
+export type BajaInput = z.infer<typeof bajaSchema>;
+export type ResumenDiarioInput = z.infer<typeof resumenDiarioSchema>;
 export type CreateInventoryItemInput = z.infer<typeof createInventoryItemSchema>;
 export type CreateInventoryMovementInput = z.infer<typeof createInventoryMovementSchema>;
 export type CreateLoyaltyProgramInput = z.infer<typeof createLoyaltyProgramSchema>;

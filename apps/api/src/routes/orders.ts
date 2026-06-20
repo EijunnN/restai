@@ -14,7 +14,7 @@ import { ORDER_STATUS_TRANSITIONS, ORDER_ITEM_STATUS_TRANSITIONS } from "@restai
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
-import { wsManager } from "../ws/manager.js";
+import { realtime } from "../infrastructure/container.js";
 import { z } from "zod";
 import { createOrder, handleOrderCompletion, OrderValidationError } from "../services/order.service.js";
 
@@ -164,8 +164,8 @@ orders.post(
       },
       timestamp: Date.now(),
     };
-    await wsManager.publish(`branch:${tenant.branchId}`, orderPayload);
-    await wsManager.publish(`branch:${tenant.branchId}:kitchen`, orderPayload);
+    await realtime.publish(`branch:${tenant.branchId}`, orderPayload);
+    await realtime.publish(`branch:${tenant.branchId}:kitchen`, orderPayload);
 
     return c.json({ success: true, data: { ...order, items: createdItems } }, 201);
   },
@@ -258,12 +258,12 @@ orders.patch(
       payload: { orderId: updated.id, orderNumber: updated.order_number, status: updated.status },
       timestamp: Date.now(),
     };
-    await wsManager.publish(`branch:${tenant.branchId}`, updatePayload);
-    await wsManager.publish(`branch:${tenant.branchId}:kitchen`, updatePayload);
+    await realtime.publish(`branch:${tenant.branchId}`, updatePayload);
+    await realtime.publish(`branch:${tenant.branchId}:kitchen`, updatePayload);
 
     // If order has a session, notify the customer too
     if (order.table_session_id) {
-      await wsManager.publish(`session:${order.table_session_id}`, updatePayload);
+      await realtime.publish(`session:${order.table_session_id}`, updatePayload);
     }
 
     // Handle side effects when order is completed (loyalty points + inventory deduction)
@@ -361,10 +361,10 @@ orders.patch(
       },
       timestamp: Date.now(),
     };
-    await wsManager.publish(`branch:${tenant.branchId}`, itemPayload);
-    await wsManager.publish(`branch:${tenant.branchId}:kitchen`, itemPayload);
+    await realtime.publish(`branch:${tenant.branchId}`, itemPayload);
+    await realtime.publish(`branch:${tenant.branchId}:kitchen`, itemPayload);
     if (order.table_session_id) {
-      await wsManager.publish(`session:${order.table_session_id}`, itemPayload);
+      await realtime.publish(`session:${order.table_session_id}`, itemPayload);
     }
 
     return c.json({ success: true, data: updated });

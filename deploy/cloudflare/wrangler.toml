@@ -1,0 +1,38 @@
+# Despliegue de la API de RestAI en Cloudflare Containers.
+# Corre la imagen Dockerfile.api SIN cambios de código.
+#
+#   cd deploy/cloudflare
+#   bun add @cloudflare/containers && bun add -d wrangler
+#   wrangler secret put DATABASE_URL        # postgres de Neon
+#   wrangler secret put JWT_SECRET
+#   wrangler secret put JWT_REFRESH_SECRET
+#   wrangler secret put SUNAT_ENCRYPTION_KEY
+#   wrangler secret put REDIS_URL           # Upstash: rediss://...
+#   wrangler deploy
+name = "restai-api"
+main = "worker.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# La imagen se construye desde la raíz del repo (el Dockerfile copia todo el workspace).
+[[containers]]
+class_name = "RestaiApiContainer"
+image = "../../Dockerfile.api"
+image_build_context = "../.."
+instance_type = "basic"
+max_instances = 3
+
+[[durable_objects.bindings]]
+class_name = "RestaiApiContainer"
+name = "REST_API"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RestaiApiContainer"]
+
+# Variables no secretas. Los secretos se cargan con `wrangler secret put`.
+[vars]
+API_PORT = "3001"
+DATABASE_DRIVER = "postgres-js"   # Neon acepta TCP; o "neon" para el driver serverless
+LOG_LEVEL = "info"
+CORS_ORIGINS = "https://app.tu-dominio.com"

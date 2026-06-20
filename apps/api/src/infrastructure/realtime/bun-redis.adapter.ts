@@ -1,5 +1,6 @@
-import { redis, createSubscriber } from "../lib/redis.js";
-import { logger } from "../lib/logger.js";
+import { redis, createSubscriber } from "../../lib/redis.js";
+import { logger } from "../../lib/logger.js";
+import type { RealtimePublisher } from "../../core/ports/realtime.js";
 
 export interface WsClient {
   ws: any;
@@ -9,7 +10,13 @@ export interface WsClient {
   tokenExp?: number; // token expiry as unix timestamp (seconds)
 }
 
-export class WebSocketManager {
+/**
+ * Adaptador realtime para el runtime de Bun (contenedor):
+ * gestiona conexiones WebSocket en memoria y propaga eventos entre instancias
+ * vía pub/sub de Redis. Implementa el puerto RealtimePublisher (método publish);
+ * el resto de métodos los usa solo el entrypoint de Bun para manejar el socket.
+ */
+export class WebSocketManager implements RealtimePublisher {
   private clients = new Map<string, WsClient>();
   private rooms = new Map<string, Set<string>>();
   private subscriber;
@@ -125,5 +132,3 @@ export class WebSocketManager {
     }
   }
 }
-
-export const wsManager = new WebSocketManager();
