@@ -173,7 +173,7 @@ export const createInventoryItemSchema = z.object({
 export const createInventoryMovementSchema = z.object({
   itemId: z.string().uuid(),
   type: z.enum(["purchase", "consumption", "waste", "adjustment"]),
-  quantity: z.number(),
+  quantity: z.number().positive("La cantidad debe ser mayor a cero"),
   reference: z.string().max(255).optional(),
   notes: z.string().max(500).optional(),
 });
@@ -193,11 +193,92 @@ export const createCustomerSchema = z.object({
   birthDate: z.string().optional(),
 });
 
+// Coupon validators
+export const createCouponSchema = z
+  .object({
+    code: z.string().min(1).max(50),
+    name: z.string().min(1).max(255),
+    description: z.string().max(500).optional(),
+    type: z.enum([
+      "percentage",
+      "fixed",
+      "item_free",
+      "item_discount",
+      "category_discount",
+      "buy_x_get_y",
+    ]),
+    discountValue: z.number().int().min(0).optional(),
+    menuItemId: z.string().uuid().optional(),
+    categoryId: z.string().uuid().optional(),
+    buyQuantity: z.number().int().min(1).optional(),
+    getQuantity: z.number().int().min(1).optional(),
+    minOrderAmount: z.number().int().min(0).optional(),
+    maxDiscountAmount: z.number().int().min(0).optional(),
+    maxUsesTotal: z.number().int().min(1).optional(),
+    maxUsesPerCustomer: z.number().int().min(1).optional(),
+    startsAt: z.string().optional(),
+    expiresAt: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.type === "percentage" &&
+      data.discountValue != null &&
+      data.discountValue > 100
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["discountValue"],
+        message: "El porcentaje no puede ser mayor a 100",
+      });
+    }
+  });
+
+export const updateCouponSchema = z
+  .object({
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(500).optional(),
+    status: z.enum(["active", "inactive", "expired"]).optional(),
+    discountValue: z.number().int().min(0).optional(),
+    menuItemId: z.string().uuid().nullable().optional(),
+    categoryId: z.string().uuid().nullable().optional(),
+    buyQuantity: z.number().int().min(1).nullable().optional(),
+    getQuantity: z.number().int().min(1).nullable().optional(),
+    minOrderAmount: z.number().int().min(0).nullable().optional(),
+    maxDiscountAmount: z.number().int().min(0).nullable().optional(),
+    maxUsesTotal: z.number().int().min(1).nullable().optional(),
+    maxUsesPerCustomer: z.number().int().min(1).nullable().optional(),
+    startsAt: z.string().nullable().optional(),
+    expiresAt: z.string().nullable().optional(),
+    // Allow updating type so percentage cap can be validated on edits too.
+    type: z
+      .enum([
+        "percentage",
+        "fixed",
+        "item_free",
+        "item_discount",
+        "category_discount",
+        "buy_x_get_y",
+      ])
+      .optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.type === "percentage" &&
+      data.discountValue != null &&
+      data.discountValue > 100
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["discountValue"],
+        message: "El porcentaje no puede ser mayor a 100",
+      });
+    }
+  });
+
 // Report validators
 export const reportQuerySchema = z.object({
-  startDate: z.string(),
-  endDate: z.string(),
-  branchId: z.string().uuid().optional(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato de fecha inválido (YYYY-MM-DD)"),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato de fecha inválido (YYYY-MM-DD)"),
 });
 
 // Pagination
@@ -281,6 +362,8 @@ export type CreateInventoryItemInput = z.infer<typeof createInventoryItemSchema>
 export type CreateInventoryMovementInput = z.infer<typeof createInventoryMovementSchema>;
 export type CreateLoyaltyProgramInput = z.infer<typeof createLoyaltyProgramSchema>;
 export type CreateCustomerInput = z.infer<typeof createCustomerSchema>;
+export type CreateCouponInput = z.infer<typeof createCouponSchema>;
+export type UpdateCouponInput = z.infer<typeof updateCouponSchema>;
 export type ReportQueryInput = z.infer<typeof reportQuerySchema>;
 export type PaginationInput = z.infer<typeof paginationSchema>;
 export type UpdateModifierGroupInput = z.infer<typeof updateModifierGroupSchema>;

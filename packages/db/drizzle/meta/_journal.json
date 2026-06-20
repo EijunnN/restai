@@ -29,6 +29,20 @@
       "when": 1774482632443,
       "tag": "0003_regular_leo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1774482632444,
+      "tag": "0004_inventory_non_negative_stock",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1774482632445,
+      "tag": "0005_deferred_order_fks",
+      "breakpoints": true
     }
   ]
 }
