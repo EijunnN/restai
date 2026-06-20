@@ -54,7 +54,7 @@ settings.get("/branch", async (c) => {
 });
 
 // PATCH /branch
-settings.patch("/branch", requirePermission("settings:*"), zValidator("json", updateBranchSettingsSchema), async (c) => {
+settings.patch("/branch", requirePermission("branch:update"), zValidator("json", updateBranchSettingsSchema), async (c) => {
   const tenant = c.get("tenant") as any;
   if (!tenant.branchId) {
     return c.json({ success: false, error: { code: "BAD_REQUEST", message: "Branch ID requerido" } }, 400);

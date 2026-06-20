@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createCategorySchema,
@@ -95,6 +95,7 @@ menu.patch(
         and(
           eq(schema.menuCategories.id, id),
           eq(schema.menuCategories.branch_id, tenant.branchId),
+          eq(schema.menuCategories.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -119,12 +120,54 @@ menu.delete(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
+    // Verify the category belongs to this tenant
+    const [category] = await db
+      .select({ id: schema.menuCategories.id })
+      .from(schema.menuCategories)
+      .where(
+        and(
+          eq(schema.menuCategories.id, id),
+          eq(schema.menuCategories.branch_id, tenant.branchId),
+          eq(schema.menuCategories.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!category) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Categoría no encontrada" } },
+        404,
+      );
+    }
+
+    // Deleting a category cascades onto its menu items (onDelete: "cascade"),
+    // which would destroy live items and throw on order-history FKs (restrict).
+    // Block the delete while any menu item still references the category.
+    const [{ count: itemCount }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.menuItems)
+      .where(eq(schema.menuItems.category_id, id));
+
+    if (itemCount > 0) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "No se puede eliminar: está en uso",
+          },
+        },
+        409,
+      );
+    }
+
     const [deleted] = await db
       .delete(schema.menuCategories)
       .where(
         and(
           eq(schema.menuCategories.id, id),
           eq(schema.menuCategories.branch_id, tenant.branchId),
+          eq(schema.menuCategories.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -246,6 +289,7 @@ menu.patch(
         and(
           eq(schema.menuItems.id, id),
           eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -277,6 +321,7 @@ menu.delete(
         and(
           eq(schema.menuItems.id, id),
           eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
           isNull(schema.menuItems.deleted_at),
         ),
       )
@@ -309,6 +354,7 @@ menu.patch(
         and(
           eq(schema.menuItems.id, id),
           eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -506,6 +552,7 @@ menu.patch(
         and(
           eq(schema.modifierGroups.id, id),
           eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -530,12 +577,59 @@ menu.delete(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
+    // Verify the group belongs to this tenant
+    const [group] = await db
+      .select({ id: schema.modifierGroups.id })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, id),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!group) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Grupo no encontrado" } },
+        404,
+      );
+    }
+
+    // Deleting the group cascades onto its modifiers (onDelete: "cascade"),
+    // but order_item_modifiers references modifiers with onDelete: "restrict".
+    // If any modifier in this group is referenced by order history, the cascade
+    // would throw a raw 500 — pre-check and return a clean 409 instead.
+    const [{ count: refCount }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.orderItemModifiers)
+      .innerJoin(
+        schema.modifiers,
+        eq(schema.orderItemModifiers.modifier_id, schema.modifiers.id),
+      )
+      .where(eq(schema.modifiers.group_id, id));
+
+    if (refCount > 0) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "No se puede eliminar: está en uso",
+          },
+        },
+        409,
+      );
+    }
+
     const [deleted] = await db
       .delete(schema.modifierGroups)
       .where(
         and(
           eq(schema.modifierGroups.id, id),
           eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
         ),
       )
       .returning();
@@ -640,6 +734,27 @@ menu.delete(
       return c.json(
         { success: false, error: { code: "NOT_FOUND", message: "Modificador no encontrado" } },
         404,
+      );
+    }
+
+    // order_item_modifiers references modifiers with onDelete: "restrict".
+    // If this modifier is referenced by order history, the delete would throw a
+    // raw 500 — pre-check and return a clean 409 instead.
+    const [{ count: refCount }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.orderItemModifiers)
+      .where(eq(schema.orderItemModifiers.modifier_id, id));
+
+    if (refCount > 0) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "No se puede eliminar: está en uso",
+          },
+        },
+        409,
       );
     }
 

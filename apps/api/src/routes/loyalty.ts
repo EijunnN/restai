@@ -290,9 +290,29 @@ loyalty.get(
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
     const page = parseInt(c.req.query("page") || "1", 10);
     const limit = parseInt(c.req.query("limit") || "20", 10);
     const offset = (page - 1) * limit;
+
+    // Verify the customer belongs to this tenant before exposing transactions
+    const [customer] = await db
+      .select({ id: schema.customers.id })
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.id, id),
+          eq(schema.customers.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!customer) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+        404,
+      );
+    }
 
     // Get customer loyalty records
     const loyaltyRecords = await db
@@ -307,18 +327,24 @@ loyalty.get(
     const { inArray } = await import("drizzle-orm");
     const loyaltyIds = loyaltyRecords.map((r) => r.id);
 
-    const transactions = await db
-      .select()
-      .from(schema.loyaltyTransactions)
-      .where(inArray(schema.loyaltyTransactions.customer_loyalty_id, loyaltyIds))
-      .orderBy(desc(schema.loyaltyTransactions.created_at))
-      .limit(limit)
-      .offset(offset);
+    const [transactions, [{ count: total }]] = await Promise.all([
+      db
+        .select()
+        .from(schema.loyaltyTransactions)
+        .where(inArray(schema.loyaltyTransactions.customer_loyalty_id, loyaltyIds))
+        .orderBy(desc(schema.loyaltyTransactions.created_at))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.loyaltyTransactions)
+        .where(inArray(schema.loyaltyTransactions.customer_loyalty_id, loyaltyIds)),
+    ]);
 
     return c.json({
       success: true,
       data: transactions,
-      pagination: { page, limit, total: transactions.length },
+      pagination: { page, limit, total },
     });
   },
 );

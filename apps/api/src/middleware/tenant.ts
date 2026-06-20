@@ -1,4 +1,6 @@
 import { createMiddleware } from "hono/factory";
+import { eq, and } from "drizzle-orm";
+import { db, schema } from "@restai/db";
 import type { AppEnv } from "../types.js";
 
 export const tenantMiddleware = createMiddleware<AppEnv>(async (c, next) => {
@@ -23,20 +25,44 @@ export const tenantMiddleware = createMiddleware<AppEnv>(async (c, next) => {
   const branchId =
     c.req.header("x-branch-id") || c.req.query("branchId") || null;
 
-  // Validate staff has access to the requested branch
-  const hasGlobalBranchAccess =
-    user.role === "super_admin" || user.role === "org_admin";
+  if (branchId) {
+    // super_admin is the ONLY true global bypass: it may address any branch
+    // across organizations without an ownership check.
+    if (user.role === "super_admin") {
+      c.set("tenant", { organizationId, branchId });
+      return next();
+    }
 
-  if (
-    branchId &&
-    !hasGlobalBranchAccess &&
-    user.branches &&
-    !user.branches.includes(branchId)
-  ) {
-    return c.json(
-      { success: false, error: { code: "FORBIDDEN", message: "No tienes acceso a esta sucursal" } },
-      403,
-    );
+    if (user.role === "org_admin") {
+      // org_admin has global access *within its own org* only: the supplied
+      // branch must belong to the caller's organization. Verify ownership
+      // against the DB before trusting the client-supplied branch id.
+      const [branch] = await db
+        .select({ id: schema.branches.id })
+        .from(schema.branches)
+        .where(
+          and(
+            eq(schema.branches.id, branchId),
+            eq(schema.branches.organization_id, organizationId),
+          ),
+        )
+        .limit(1);
+
+      if (!branch) {
+        return c.json(
+          { success: false, error: { code: "FORBIDDEN", message: "No tienes acceso a esta sucursal" } },
+          403,
+        );
+      }
+    } else {
+      // Non-global staff roles: must be an explicit member of the branch.
+      if (!user.branches || !user.branches.includes(branchId)) {
+        return c.json(
+          { success: false, error: { code: "FORBIDDEN", message: "No tienes acceso a esta sucursal" } },
+          403,
+        );
+      }
+    }
   }
 
   c.set("tenant", { organizationId, branchId: branchId! });

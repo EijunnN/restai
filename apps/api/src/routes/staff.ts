@@ -1,14 +1,27 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, gte, lte, inArray, isNull } from "drizzle-orm";
+import { eq, and, desc, gte, lte, inArray, isNull, ne, count } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { createUserSchema, idParamSchema } from "@restai/validators";
+import { ROLES, PERMISSIONS } from "@restai/config";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
 import { hashPassword } from "../lib/hash.js";
+
+/**
+ * Role ceiling check: a caller may only create/assign a target role whose
+ * level is STRICTLY GREATER than the caller's own (lower level = more power).
+ * Returns true if the assignment is allowed.
+ */
+function canAssignRole(callerRole: string, targetRole: string): boolean {
+  const caller = ROLES[callerRole as keyof typeof ROLES];
+  const target = ROLES[targetRole as keyof typeof ROLES];
+  if (!caller || !target) return false;
+  return target.level > caller.level;
+}
 
 const staff = new Hono<AppEnv>();
 
@@ -85,8 +98,34 @@ staff.post(
   async (c) => {
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
+    const caller = c.get("user") as any;
 
-    // Check email uniqueness
+    // Role ceiling: caller may only assign a role strictly weaker than their own
+    if (!canAssignRole(caller.role, body.role)) {
+      return c.json(
+        { success: false, error: { code: "FORBIDDEN", message: "No puedes asignar este rol" } },
+        403,
+      );
+    }
+
+    // Verify all requested branches belong to this organization
+    const ownedBranches = await db
+      .select({ id: schema.branches.id })
+      .from(schema.branches)
+      .where(
+        and(
+          inArray(schema.branches.id, body.branchIds),
+          eq(schema.branches.organization_id, tenant.organizationId),
+        ),
+      );
+    if (ownedBranches.length !== body.branchIds.length) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "Una o más sedes no son válidas" } },
+        400,
+      );
+    }
+
+    // Check email uniqueness (generic message: do not disclose cross-tenant existence)
     const [existing] = await db
       .select({ id: schema.users.id })
       .from(schema.users)
@@ -94,7 +133,7 @@ staff.post(
 
     if (existing) {
       return c.json(
-        { success: false, error: { code: "CONFLICT", message: "El email ya esta registrado" } },
+        { success: false, error: { code: "CONFLICT", message: "No se pudo crear el usuario" } },
         409,
       );
     }
@@ -153,10 +192,11 @@ staff.patch(
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
+    const caller = c.get("user") as any;
 
     // Verify user belongs to this org
     const [user] = await db
-      .select({ id: schema.users.id })
+      .select({ id: schema.users.id, role: schema.users.role })
       .from(schema.users)
       .where(
         and(
@@ -172,6 +212,102 @@ staff.patch(
       );
     }
 
+    // Role ceiling: caller may only modify OTHER users whose current role is
+    // strictly weaker than their own (cannot touch peers or those above them).
+    // Self-edits are allowed here; role/active changes have dedicated guards below.
+    if (id !== caller.sub && !canAssignRole(caller.role, user.role)) {
+      return c.json(
+        { success: false, error: { code: "FORBIDDEN", message: "No puedes modificar este usuario" } },
+        403,
+      );
+    }
+
+    // Role change guards
+    if (body.role !== undefined && body.role !== user.role) {
+      // Caller may only assign a role strictly weaker than their own
+      if (!canAssignRole(caller.role, body.role)) {
+        return c.json(
+          { success: false, error: { code: "FORBIDDEN", message: "No puedes asignar este rol" } },
+          403,
+        );
+      }
+
+      // Block self-demotion (changing your own role)
+      if (id === caller.sub) {
+        return c.json(
+          { success: false, error: { code: "FORBIDDEN", message: "No puedes cambiar tu propio rol" } },
+          403,
+        );
+      }
+
+      // Block demoting the last active org_admin
+      if (user.role === "org_admin" && body.role !== "org_admin") {
+        const [adminCount] = await db
+          .select({ count: count() })
+          .from(schema.users)
+          .where(
+            and(
+              eq(schema.users.organization_id, tenant.organizationId),
+              eq(schema.users.role, "org_admin"),
+              eq(schema.users.is_active, true),
+              ne(schema.users.id, id),
+            ),
+          );
+        if ((adminCount?.count ?? 0) === 0) {
+          return c.json(
+            { success: false, error: { code: "CONFLICT", message: "No puedes quitar al último administrador" } },
+            409,
+          );
+        }
+      }
+    }
+
+    // Block deactivating the last active org_admin
+    if (body.isActive === false && user.role === "org_admin") {
+      if (id === caller.sub) {
+        return c.json(
+          { success: false, error: { code: "FORBIDDEN", message: "No puedes desactivarte a ti mismo" } },
+          403,
+        );
+      }
+      const [adminCount] = await db
+        .select({ count: count() })
+        .from(schema.users)
+        .where(
+          and(
+            eq(schema.users.organization_id, tenant.organizationId),
+            eq(schema.users.role, "org_admin"),
+            eq(schema.users.is_active, true),
+            ne(schema.users.id, id),
+          ),
+        );
+      if ((adminCount?.count ?? 0) === 0) {
+        return c.json(
+          { success: false, error: { code: "CONFLICT", message: "No puedes desactivar al último administrador" } },
+          409,
+        );
+      }
+    }
+
+    // Verify all requested branches belong to this organization
+    if (body.branchIds !== undefined && body.branchIds.length > 0) {
+      const ownedBranches = await db
+        .select({ id: schema.branches.id })
+        .from(schema.branches)
+        .where(
+          and(
+            inArray(schema.branches.id, body.branchIds),
+            eq(schema.branches.organization_id, tenant.organizationId),
+          ),
+        );
+      if (ownedBranches.length !== body.branchIds.length) {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "Una o más sedes no son válidas" } },
+          400,
+        );
+      }
+    }
+
     // Build update object
     const updateData: any = {};
     if (body.name !== undefined) updateData.name = body.name;
@@ -182,7 +318,12 @@ staff.patch(
       await db
         .update(schema.users)
         .set(updateData)
-        .where(eq(schema.users.id, id));
+        .where(
+          and(
+            eq(schema.users.id, id),
+            eq(schema.users.organization_id, tenant.organizationId),
+          ),
+        );
     }
 
     // Update branch assignments if provided
@@ -250,9 +391,10 @@ staff.patch(
 );
 
 // POST /shifts - Create shift (clock in)
+// No requirePermission: any authenticated staff member can clock themselves in
+// (ownership enforced via user.sub). Line staff (waiter/kitchen) lack staff:create.
 staff.post(
   "/shifts",
-  requirePermission("staff:create"),
   zValidator(
     "json",
     z.object({
@@ -338,13 +480,15 @@ staff.get("/shifts", requirePermission("staff:read"), async (c) => {
 });
 
 // PATCH /shifts/:id - End shift (clock out)
+// No requirePermission: a user may close their OWN shift; managers/admins
+// (those with staff:update) may close any shift in the branch.
 staff.patch(
   "/shifts/:id",
-  requirePermission("staff:update"),
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
+    const caller = c.get("user") as any;
 
     const [shift] = await db
       .select()
@@ -353,6 +497,7 @@ staff.patch(
         and(
           eq(schema.shifts.id, id),
           eq(schema.shifts.branch_id, tenant.branchId),
+          eq(schema.shifts.organization_id, tenant.organizationId),
         ),
       );
 
@@ -363,6 +508,20 @@ staff.patch(
       );
     }
 
+    // Ownership: only the shift owner, or a manager with staff:update, may close it
+    const callerPerms =
+      (PERMISSIONS[caller.role as keyof typeof PERMISSIONS] as readonly string[] | undefined) ?? [];
+    const canManageShifts =
+      callerPerms.includes("*") ||
+      callerPerms.includes("staff:*") ||
+      callerPerms.includes("staff:update");
+    if (shift.user_id !== caller.sub && !canManageShifts) {
+      return c.json(
+        { success: false, error: { code: "FORBIDDEN", message: "No puedes cerrar este turno" } },
+        403,
+      );
+    }
+
     if (shift.end_time) {
       return c.json(
         { success: false, error: { code: "BAD_REQUEST", message: "El turno ya fue cerrado" } },
@@ -370,11 +529,25 @@ staff.patch(
       );
     }
 
+    // Atomic clock-out: only update if still open (guards concurrent close)
     const [updated] = await db
       .update(schema.shifts)
       .set({ end_time: new Date() })
-      .where(eq(schema.shifts.id, id))
+      .where(
+        and(
+          eq(schema.shifts.id, id),
+          eq(schema.shifts.organization_id, tenant.organizationId),
+          isNull(schema.shifts.end_time),
+        ),
+      )
       .returning();
+
+    if (!updated) {
+      return c.json(
+        { success: false, error: { code: "CONFLICT", message: "El turno ya fue cerrado" } },
+        409,
+      );
+    }
 
     return c.json({ success: true, data: updated });
   },
