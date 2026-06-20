@@ -27,6 +27,26 @@ function generateCouponCode(): string {
   return code;
 }
 
+function parseSolesToCents(value: string): number {
+  const normalizedValue = value.replace(",", ".").trim();
+
+  if (!normalizedValue) {
+    return 0;
+  }
+
+  const numericValue = Number(normalizedValue);
+
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    return 0;
+  }
+
+  return Math.round(numericValue * 100);
+}
+
+function formatCentsToSoles(value: number): string {
+  return (value / 100).toFixed(2);
+}
+
 export function CreateCouponDialog({
   open,
   onOpenChange,
@@ -56,6 +76,7 @@ export function CreateCouponDialog({
     startsAt: "",
     expiresAt: "",
   });
+  const [fixedDiscountInput, setFixedDiscountInput] = useState(formatCentsToSoles(50));
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -67,7 +88,7 @@ export function CreateCouponDialog({
     };
 
     if (["percentage", "fixed", "item_discount", "category_discount"].includes(form.type)) {
-      payload.discountValue = form.discountValue;
+      payload.discountValue = form.type === "fixed" ? parseSolesToCents(fixedDiscountInput) : form.discountValue;
     }
     if (["item_free", "item_discount"].includes(form.type) && form.menuItemId) {
       payload.menuItemId = form.menuItemId;
@@ -105,6 +126,7 @@ export function CreateCouponDialog({
           startsAt: "",
           expiresAt: "",
         });
+        setFixedDiscountInput(formatCentsToSoles(50));
         onOpenChange(false);
         toast.success("Cupon creado exitosamente");
       },
@@ -145,15 +167,24 @@ export function CreateCouponDialog({
           {/* Type */}
           <div className="space-y-2">
             <Label htmlFor="cpn-type">Tipo de cupon</Label>
-            <Select value={form.type} onValueChange={(v) => setForm((p) => ({
-              ...p,
-              type: v,
-              discountValue: (v === "percentage" || v === "item_discount" || v === "category_discount") ? 10 : 0,
-              menuItemId: "",
-              categoryId: "",
-              buyQuantity: 2,
-              getQuantity: 1,
-            }))}>
+            <Select
+              value={form.type}
+              onValueChange={(v) => {
+                if (v === "fixed") {
+                  setFixedDiscountInput(formatCentsToSoles(50));
+                }
+
+                setForm((p) => ({
+                  ...p,
+                  type: v,
+                  discountValue: v === "fixed" ? 50 : (v === "percentage" || v === "item_discount" || v === "category_discount") ? 10 : 0,
+                  menuItemId: "",
+                  categoryId: "",
+                  buyQuantity: 2,
+                  getQuantity: 1,
+                }));
+              }}
+            >
               <SelectTrigger>
                 <SelectValue placeholder="Tipo de cupon" />
               </SelectTrigger>
@@ -179,9 +210,23 @@ export function CreateCouponDialog({
 
           {form.type === "fixed" && (
             <div className="space-y-2">
-              <Label htmlFor="cpn-fixed">Monto de descuento (centimos)</Label>
-              <Input id="cpn-fixed" type="number" min={1} value={form.discountValue} onChange={(e) => setForm((p) => ({ ...p, discountValue: parseInt(e.target.value) || 0 }))} />
-              <p className="text-xs text-muted-foreground">En centimos: 500 = S/ 5.00</p>
+              <Label htmlFor="cpn-fixed">Monto de descuento (S/)</Label>
+              <Input
+                id="cpn-fixed"
+                type="number"
+                min={0.01}
+                step={0.01}
+                value={fixedDiscountInput}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+
+                  setFixedDiscountInput(nextValue);
+                  setForm((p) => ({ ...p, discountValue: parseSolesToCents(nextValue) }));
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                En soles: 0.50 = 50 centimos. Se guarda internamente como centimos.
+              </p>
             </div>
           )}
 

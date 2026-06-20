@@ -39,7 +39,7 @@ function MobileColumn({ status }: { status: TabKey }) {
   const columnOrders = columns[status];
 
   return (
-    <div className="flex flex-col gap-2 min-h-0 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 10rem)" }}>
+    <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 13.5rem)" }}>
       <ColumnHeader
         icon={config.icon}
         label={config.label}
@@ -53,11 +53,12 @@ function MobileColumn({ status }: { status: TabKey }) {
           <p className="text-sm">{config.emptyLabel}</p>
         </div>
       ) : (
-        columnOrders.map((order: any) => (
+        columnOrders.map((order: any, index: number) => (
           <KitchenOrderCard
             key={order.id}
             order={order}
             columnStatus={status}
+            priorityRank={index + 1}
             onAdvance={advanceOrder}
             onPrint={handlePrint}
             onItemReady={
@@ -82,19 +83,19 @@ export function MobileTabs() {
   return (
     <>
       {/* Tab bar */}
-      <div className="flex md:hidden gap-1 shrink-0">
+      <div className="flex gap-1.5 shrink-0 md:hidden">
         {TAB_CONFIG.map(({ key, label, icon: TabIcon }) => (
           <button
             key={key}
             className={cn(
-              "flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-lg text-sm font-semibold transition-colors",
+              "flex-1 flex items-center justify-center gap-1.5 rounded-2xl border px-3 py-3 text-sm font-semibold transition-colors",
               activeTab === key
                 ? key === "pending"
-                  ? "bg-amber-500 text-white"
+                  ? "border-amber-500 bg-amber-500 text-white"
                   : key === "preparing"
-                    ? "bg-blue-500 text-white"
-                    : "bg-green-500 text-white"
-                : "bg-muted text-muted-foreground"
+                    ? "border-blue-500 bg-blue-500 text-white"
+                    : "border-green-500 bg-green-500 text-white"
+                : "border-border bg-card text-muted-foreground"
             )}
             onClick={() => setActiveTab(key)}
           >

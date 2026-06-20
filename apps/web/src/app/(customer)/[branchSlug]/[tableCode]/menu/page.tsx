@@ -271,13 +271,14 @@ export default function CustomerMenuPage({
     <div className="relative pb-40">
       {/* Category tabs — sticky underline style */}
       <div className="sticky top-[49px] z-30 bg-background/95 backdrop-blur border-b border-border">
-        <div className="flex overflow-x-auto no-scrollbar">
+        <div className="flex gap-1 overflow-x-auto px-2 no-scrollbar">
           {categories.map((cat) => (
             <button
               key={cat.id}
               onClick={() => setActiveCategory(cat.id)}
+              title={cat.name}
               className={cn(
-                "flex-1 min-w-0 px-3 py-3 text-xs font-medium uppercase tracking-wider whitespace-nowrap text-center transition-colors border-b-2",
+                "shrink-0 max-w-[12rem] truncate px-4 py-3 text-xs font-medium uppercase tracking-wider whitespace-nowrap text-center transition-colors border-b-2",
                 activeCategory === cat.id
                   ? "text-foreground border-foreground"
                   : "text-muted-foreground border-transparent hover:text-foreground/70",

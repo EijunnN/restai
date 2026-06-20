@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@restai/ui/components/tabs";
-import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw, Loader2 } from "lucide-react";
+import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw, Loader2, Bell, Receipt } from "lucide-react";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { cn } from "@/lib/utils";
 import { useSessions, useApproveSession, useRejectSession, useEndSession, useMyAssignedTables } from "@/hooks/use-tables";
 import { useBranchSettings } from "@/hooks/use-settings";
 import { useAuthStore } from "@/stores/auth-store";
+import type { WsMessage } from "@restai/types";
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -22,9 +25,43 @@ const statusConfig: Record<string, { label: string; color: string; icon: any }> 
   rejected: { label: "Rechazada", color: "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/20", icon: UserX },
 };
 
+interface TableSession {
+  id: string;
+  customer_name: string;
+  customer_phone: string | null;
+  started_at: string | null;
+  table_id: string;
+  table_number: number;
+  status: string;
+}
+
+interface TableServiceRequest {
+  id: string;
+  type: "request_bill" | "call_waiter";
+  tableId: string;
+  tableNumber: number;
+  tableSessionId: string;
+  customerName: string;
+  timestamp: number;
+}
+
+interface SessionEventPayload {
+  sessionId: string;
+  tableId: string;
+}
+
+interface ServiceRequestPayload {
+  tableId: string;
+  tableNumber: number;
+  tableSessionId: string;
+  customerName?: string;
+}
+
 export default function ConnectionsPage() {
   const [tab, setTab] = useState("pending");
   const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
+  const queryClient = useQueryClient();
   const { data: sessions, isLoading, refetch } = useSessions(tab === "all" ? undefined : tab);
   const approveSession = useApproveSession();
   const rejectSession = useRejectSession();
@@ -32,20 +69,117 @@ export default function ConnectionsPage() {
 
   // Waiter assignment filtering
   const user = useAuthStore((s) => s.user);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const selectedBranchId = useAuthStore((s) => s.selectedBranchId);
   const { data: branchSettingsData } = useBranchSettings();
   const { data: myAssignedTables } = useMyAssignedTables();
   const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
   const isAdminOrManager = user?.role === "super_admin" || user?.role === "org_admin" || user?.role === "branch_manager";
+  const shouldFilter = waiterAssignmentEnabled && !isAdminOrManager;
+  const assignedTableIds = useMemo(
+    () => new Set((myAssignedTables ?? []).map((assignment: { table_id: string }) => assignment.table_id)),
+    [myAssignedTables]
+  );
 
-  const sessionList: any[] = useMemo(() => {
-    const all: any[] = sessions ?? [];
+  const sessionList = useMemo(() => {
+    const all = (sessions ?? []) as TableSession[];
     // If assignment filtering is disabled or user is admin/manager, show all
     if (!waiterAssignmentEnabled || isAdminOrManager) return all;
     // Filter to only sessions whose table is assigned to this waiter
-    const assignedTableIds = new Set((myAssignedTables ?? []).map((a: any) => a.table_id));
     if (assignedTableIds.size === 0) return all; // No assignments = show all (fallback)
-    return all.filter((s: any) => assignedTableIds.has(s.table_id));
-  }, [sessions, waiterAssignmentEnabled, isAdminOrManager, myAssignedTables]);
+    return all.filter((session) => assignedTableIds.has(session.table_id));
+  }, [sessions, waiterAssignmentEnabled, isAdminOrManager, assignedTableIds]);
+
+  const visibleServiceRequests = useMemo(() => {
+    if (!shouldFilter) {
+      return serviceRequests;
+    }
+
+    if (assignedTableIds.size === 0) {
+      return serviceRequests;
+    }
+
+    return serviceRequests.filter((request) => assignedTableIds.has(request.tableId));
+  }, [serviceRequests, shouldFilter, assignedTableIds]);
+
+  const requestSummary = useMemo(() => {
+    return visibleServiceRequests.reduce(
+      (summary, request) => {
+        if (request.type === "request_bill") {
+          summary.requestBillCount += 1;
+        } else {
+          summary.callWaiterCount += 1;
+        }
+
+        summary.total += 1;
+        return summary;
+      },
+      { total: 0, requestBillCount: 0, callWaiterCount: 0 }
+    );
+  }, [visibleServiceRequests]);
+
+  const handleWsMessage = useCallback((msg: WsMessage) => {
+    if (msg.type === "auth:success") {
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      return;
+    }
+
+    if (
+      msg.type === "session:pending" ||
+      msg.type === "session:approved" ||
+      msg.type === "session:rejected" ||
+      msg.type === "session:ended"
+    ) {
+      const payload = msg.payload as SessionEventPayload;
+
+      if (shouldFilter && assignedTableIds.size > 0 && !assignedTableIds.has(payload.tableId)) {
+        return;
+      }
+
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({ queryKey: ["tables", "sessions", "pending"] });
+
+      if (msg.type === "session:ended") {
+        setServiceRequests((prev) => prev.filter((request) => request.tableSessionId !== payload.sessionId));
+      }
+      return;
+    }
+
+    if (msg.type !== "table:request_bill" && msg.type !== "table:call_waiter") {
+      return;
+    }
+
+    const payload = msg.payload as ServiceRequestPayload;
+
+    if (shouldFilter && assignedTableIds.size > 0 && !assignedTableIds.has(payload.tableId)) {
+      return;
+    }
+
+    const requestType: TableServiceRequest["type"] =
+      msg.type === "table:request_bill" ? "request_bill" : "call_waiter";
+    const requestId = `${payload.tableSessionId}:${requestType}`;
+
+    setServiceRequests((prev) => {
+      const nextRequest: TableServiceRequest = {
+        id: requestId,
+        type: requestType,
+        tableId: payload.tableId,
+        tableNumber: payload.tableNumber,
+        tableSessionId: payload.tableSessionId,
+        customerName: payload.customerName || "Cliente",
+        timestamp: msg.timestamp,
+      };
+      const filtered = prev.filter((request) => request.id !== requestId);
+
+      return [nextRequest, ...filtered].slice(0, 25);
+    });
+  }, [assignedTableIds, queryClient, shouldFilter]);
+
+  useWebSocket(
+    selectedBranchId ? [`branch:${selectedBranchId}`] : [],
+    handleWsMessage,
+    accessToken || undefined,
+  );
 
   return (
     <div className="space-y-6">
@@ -59,6 +193,58 @@ export default function ConnectionsPage() {
           Actualizar
         </Button>
       </div>
+
+      {visibleServiceRequests.length > 0 && (
+        <Card>
+          <CardContent className="p-4 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-medium">Solicitudes en tiempo real</p>
+                <p className="text-sm text-muted-foreground">
+                  {requestSummary.requestBillCount} cuenta, {requestSummary.callWaiterCount} mozo
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setServiceRequests([])}>
+                Limpiar
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              {visibleServiceRequests.map((request) => (
+                <div
+                  key={request.id}
+                  className="flex items-start justify-between gap-3 rounded-lg border border-border bg-muted/30 px-3 py-3"
+                >
+                  <div className="flex items-start gap-3 min-w-0">
+                    {request.type === "request_bill" ? (
+                      <Receipt className="h-4 w-4 mt-0.5 shrink-0 text-blue-500" />
+                    ) : (
+                      <Bell className="h-4 w-4 mt-0.5 shrink-0 text-orange-500" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">
+                        Mesa {request.tableNumber}: {request.customerName}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        {request.type === "request_bill" ? "Solicita la cuenta" : "Solicita mozo"}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setServiceRequests((prev) => prev.filter((item) => item.id !== request.id));
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>

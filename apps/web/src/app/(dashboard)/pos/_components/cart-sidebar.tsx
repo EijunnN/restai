@@ -23,7 +23,7 @@ import {
   MapPin,
   Truck,
 } from "lucide-react";
-import { formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
 import { useStaffList } from "@/hooks/use-staff";
 import type { PosCartItem } from "../page";
 
@@ -32,6 +32,7 @@ import type { PosCartItem } from "../page";
 // ---------------------------------------------------------------------------
 
 export function CartSidebar({
+  className,
   cart,
   orderType,
   customerName,
@@ -57,6 +58,7 @@ export function CartSidebar({
   isPaid,
   onIsPaidChange,
 }: {
+  className?: string;
   cart: PosCartItem[];
   orderType: "dine_in" | "takeout" | "delivery";
   customerName: string;
@@ -95,7 +97,7 @@ export function CartSidebar({
   const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
-    <div className="w-80 lg:w-96 flex flex-col border-l pl-4">
+    <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-bold flex items-center gap-2">
           <ShoppingCart className="h-5 w-5" />
@@ -119,11 +121,11 @@ export function CartSidebar({
       </div>
 
       {/* Order type */}
-      <div className="flex gap-1.5 mb-3">
+      <div className="mb-3 grid grid-cols-3 gap-1.5">
         <Button
           variant={orderType === "dine_in" ? "default" : "outline"}
           size="sm"
-          className="flex-1"
+          className="h-11"
           onClick={() => onOrderTypeChange("dine_in")}
         >
           Aqui
@@ -131,7 +133,7 @@ export function CartSidebar({
         <Button
           variant={orderType === "takeout" ? "default" : "outline"}
           size="sm"
-          className="flex-1"
+          className="h-11"
           onClick={() => onOrderTypeChange("takeout")}
         >
           Llevar
@@ -139,7 +141,7 @@ export function CartSidebar({
         <Button
           variant={orderType === "delivery" ? "default" : "outline"}
           size="sm"
-          className="flex-1"
+          className="h-11"
           onClick={() => onOrderTypeChange("delivery")}
         >
           <Truck className="h-3.5 w-3.5 mr-1" />
@@ -230,7 +232,7 @@ export function CartSidebar({
       )}
 
       {/* Cart items */}
-      <div className="flex-1 overflow-y-auto space-y-1.5 mb-3">
+      <div className="mb-3 flex-1 space-y-1.5 overflow-y-auto pr-1">
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <ShoppingCart className="h-10 w-10 mb-2 opacity-20" />
@@ -337,7 +339,7 @@ export function CartSidebar({
 
       {/* Totals */}
       {cart.length > 0 && (
-        <div className="border-t pt-3 space-y-1 mb-3">
+        <div className="mb-3 space-y-1 border-t pt-3">
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Subtotal</span>
             <span>{formatCurrency(subtotal)}</span>
@@ -361,7 +363,7 @@ export function CartSidebar({
 
       {/* Create order */}
       <Button
-        className="w-full h-12 text-base font-semibold"
+        className="h-12 w-full rounded-2xl text-base font-semibold"
         disabled={cart.length === 0 || isPending}
         onClick={onCreateOrder}
       >

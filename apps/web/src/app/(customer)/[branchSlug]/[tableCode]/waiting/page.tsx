@@ -35,7 +35,7 @@ export default function WaitingPage({
       if (result.success) {
         setStatus(result.data.status);
         if (result.data.status === "active") {
-          router.push(`/${branchSlug}/${tableCode}/menu`);
+          router.replace(`/${branchSlug}/${tableCode}/menu`);
         }
       }
     } catch {
@@ -46,9 +46,11 @@ export default function WaitingPage({
   useWebSocket(
     sessionId ? [`session:${sessionId}`] : [],
     (msg: WsMessage) => {
-      if (msg.type === "session:approved") {
+      if (msg.type === "auth:success") {
+        void pollSessionStatus();
+      } else if (msg.type === "session:approved") {
         setStatus("active");
-        router.push(`/${branchSlug}/${tableCode}/menu`);
+        router.replace(`/${branchSlug}/${tableCode}/menu`);
       } else if (msg.type === "session:rejected") {
         setStatus("rejected");
       }
@@ -58,7 +60,9 @@ export default function WaitingPage({
 
   useEffect(() => {
     if (!sessionId) return;
-    const interval = setInterval(pollSessionStatus, 15000);
+
+    void pollSessionStatus();
+    const interval = setInterval(pollSessionStatus, 5000);
     return () => clearInterval(interval);
   }, [sessionId, pollSessionStatus]);
 

@@ -10,6 +10,8 @@ import {
   ChevronDown,
   ChevronUp,
   Printer,
+  Hash,
+  ReceiptText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getTimeDiff, getTimeUrgency } from "./kitchen-context";
@@ -89,6 +91,7 @@ function ElapsedTimerBadge({ createdAt }: { createdAt: string }) {
 export function KitchenOrderCard({
   order,
   columnStatus,
+  priorityRank,
   onAdvance,
   onItemReady,
   onPrint,
@@ -98,6 +101,7 @@ export function KitchenOrderCard({
 }: {
   order: any;
   columnStatus: "pending" | "preparing" | "ready";
+  priorityRank: number;
   onAdvance: (orderId: string, status: string) => void;
   onItemReady: (itemId: string) => void;
   onPrint: (order: any) => void;
@@ -110,6 +114,8 @@ export function KitchenOrderCard({
   const tableName = order.tableName || order.table_name || "";
   const createdAt = order.createdAt || order.created_at || "";
   const items: any[] = order.items || [];
+  const isDelivery = order.type === "delivery";
+  const isTakeout = order.type === "takeout";
   const urgency = createdAt ? getTimeUrgency(createdAt) : "normal";
 
   const hasOverflow = items.length > VISIBLE_ITEMS_LIMIT;
@@ -130,47 +136,71 @@ export function KitchenOrderCard({
   const headerBg =
     columnStatus === "pending"
       ? urgency === "urgent"
-        ? "bg-red-500"
+        ? "bg-red-600"
         : "bg-amber-500"
       : columnStatus === "preparing"
-        ? "bg-blue-500"
-        : "bg-green-500";
+        ? "bg-blue-600"
+        : "bg-green-600";
+
+  const queueLabel = priorityRank === 1 ? "Primero en cola" : `Prioridad ${priorityRank}`;
+  const detailLabel = isDelivery
+    ? "Delivery"
+    : isTakeout
+      ? "Para llevar"
+      : tableName
+        ? `Mesa ${tableName}`
+        : order.customer_name || order.customerName || "Salon";
 
   return (
     <div
       className={cn(
-        "rounded-xl border-2 overflow-hidden bg-card shadow-sm transition-all",
+        "overflow-hidden rounded-[24px] border-2 bg-card shadow-sm transition-all",
         borderColor,
-        urgency === "urgent" && columnStatus === "pending" && "ring-2 ring-red-500/30",
+        urgency === "urgent" && columnStatus === "pending" && "ring-4 ring-red-500/20",
         isNew && "animate-kitchen-flash"
       )}
     >
-      {/* Card Header */}
-      <div className={cn("px-4 py-3 flex items-center justify-between", headerBg)}>
-        <div className="flex items-center gap-3">
-          <span className="text-white font-black text-2xl md:text-3xl tracking-tight">
-            #{orderNum}
-          </span>
-          {tableName && (
-            <span className="text-white/90 text-base font-semibold bg-white/20 px-2 py-0.5 rounded">
-              {tableName}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            className="text-white/70 hover:text-white p-2 rounded-lg transition-colors"
-            onClick={() => onPrint(order)}
-            title="Imprimir Ticket"
-          >
-            <Printer className="h-5 w-5" />
-          </button>
-          {createdAt && <ElapsedTimerBadge createdAt={createdAt} />}
+      <div className={cn("px-4 py-4 text-white", headerBg)}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-3 min-w-0">
+            <div className="inline-flex items-center gap-2 rounded-full bg-black/20 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.18em]">
+              <Hash className="h-3.5 w-3.5" />
+              {queueLabel}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-black text-3xl tracking-tight md:text-4xl">
+                #{orderNum}
+              </span>
+              <span className="rounded-full bg-white/15 px-3 py-1 text-sm font-semibold">
+                {detailLabel}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-white/85">
+              <span className="inline-flex items-center gap-1 rounded-full bg-black/15 px-2.5 py-1 font-medium">
+                <ReceiptText className="h-3.5 w-3.5" />
+                {items.length} items
+              </span>
+              {order.notes && (
+                <span className="inline-flex items-center rounded-full bg-black/15 px-2.5 py-1 font-medium">
+                  Nota en pedido
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-2 shrink-0">
+            {createdAt && <ElapsedTimerBadge createdAt={createdAt} />}
+            <button
+              className="rounded-xl bg-black/15 p-2 text-white/80 transition-colors hover:bg-black/25 hover:text-white"
+              onClick={() => onPrint(order)}
+              title="Imprimir Ticket"
+            >
+              <Printer className="h-5 w-5" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Items List */}
-      <div className="p-2 space-y-1">
+      <div className="space-y-3 p-3">
         {visibleItems.map((item: any) => (
           <ItemRow
             key={item.id}
@@ -182,7 +212,7 @@ export function KitchenOrderCard({
         ))}
         {hasOverflow && (
           <button
-            className="flex items-center gap-1 w-full px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded transition-colors"
+            className="flex w-full items-center gap-1 rounded-xl px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
             onClick={() => setExpanded(!expanded)}
           >
             {expanded ? (
@@ -193,25 +223,22 @@ export function KitchenOrderCard({
             ) : (
               <>
                 <ChevronDown className="h-3.5 w-3.5" />
-                y {hiddenCount} mas...
+                Ver {hiddenCount} items mas
               </>
             )}
           </button>
         )}
+        {order.notes && (
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm font-medium text-amber-700 dark:text-amber-300">
+            {order.notes}
+          </div>
+        )}
       </div>
 
-      {/* Order-level notes */}
-      {order.notes && (
-        <div className="mx-2 mb-2 px-3 py-2 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-sm font-medium">
-          {order.notes}
-        </div>
-      )}
-
-      {/* Action Button - touch friendly */}
-      <div className="p-2 pt-0">
+      <div className="border-t border-border px-3 py-3">
         {columnStatus === "pending" && (
           <Button
-            className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold h-12 text-base"
+            className="h-12 w-full rounded-2xl bg-blue-600 text-base font-black uppercase tracking-wide text-white hover:bg-blue-700"
             disabled={isAdvancing}
             onClick={() => onAdvance(order.id, "pending")}
           >
@@ -221,7 +248,7 @@ export function KitchenOrderCard({
         )}
         {columnStatus === "preparing" && (
           <Button
-            className="w-full bg-green-500 hover:bg-green-600 text-white font-bold h-12 text-base"
+            className="h-12 w-full rounded-2xl bg-green-600 text-base font-black uppercase tracking-wide text-white hover:bg-green-700"
             disabled={isAdvancing}
             onClick={() => onAdvance(order.id, "preparing")}
           >
@@ -232,7 +259,7 @@ export function KitchenOrderCard({
         {columnStatus === "ready" && (
           <Button
             variant="outline"
-            className="w-full border-gray-400 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 font-bold h-12 text-base"
+            className="h-12 w-full rounded-2xl border-2 border-green-600/40 text-base font-black uppercase tracking-wide text-green-700 hover:bg-green-500/10 dark:text-green-300"
             disabled={isAdvancing}
             onClick={() => onAdvance(order.id, "ready")}
           >

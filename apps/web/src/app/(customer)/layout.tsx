@@ -1,7 +1,18 @@
 "use client";
+import { useCallback, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { useCustomerStore } from "@/stores/customer-store";
+import type { WsMessage } from "@restai/types";
 import { User } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
+
+const ACTION_COOLDOWN_STORAGE_KEY = "customer_table_action_cooldown";
+
+interface SessionEndedPayload {
+  sessionId: string;
+}
 
 export default function CustomerLayout({
   children,
@@ -12,6 +23,47 @@ export default function CustomerLayout({
   const branchSlug = useCustomerStore((s) => s.branchSlug);
   const tableCode = useCustomerStore((s) => s.tableCode);
   const token = useCustomerStore((s) => s.token);
+  const sessionId = useCustomerStore((s) => s.sessionId);
+  const clearSession = useCustomerStore((s) => s.clear);
+  const router = useRouter();
+  const hasHandledSessionEndRef = useRef(false);
+
+  useEffect(() => {
+    hasHandledSessionEndRef.current = false;
+  }, [sessionId]);
+
+  const handleSessionEnded = useCallback(() => {
+    if (!branchSlug || !tableCode || hasHandledSessionEndRef.current) {
+      return;
+    }
+
+    hasHandledSessionEndRef.current = true;
+    const redirectUrl = `/${branchSlug}/${tableCode}`;
+
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(`${ACTION_COOLDOWN_STORAGE_KEY}:${branchSlug}:${tableCode}`);
+    }
+
+    clearSession();
+    toast.info("La sesion de esta mesa termino.");
+    router.replace(redirectUrl);
+  }, [branchSlug, tableCode, clearSession, router]);
+
+  useWebSocket(
+    token && sessionId ? [`session:${sessionId}`] : [],
+    (msg: WsMessage) => {
+      if (msg.type !== "session:ended") {
+        return;
+      }
+
+      const payload = msg.payload as SessionEndedPayload;
+
+      if (payload.sessionId === sessionId) {
+        handleSessionEnded();
+      }
+    },
+    token || undefined,
+  );
 
   return (
     <div className="min-h-screen bg-background text-foreground">

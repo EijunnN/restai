@@ -4,6 +4,7 @@ import { use, useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { useCustomerStore } from "@/stores/customer-store";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
   Dialog,
@@ -27,6 +28,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import Link from "next/link";
+import type { WsMessage, WsOrderPayload } from "@restai/types";
 import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -51,6 +53,10 @@ interface OrderData {
   tax?: number;
   discount?: number;
   total?: number;
+}
+
+interface WsOrderItemStatusPayload {
+  orderId: string;
 }
 
 const steps = [
@@ -270,6 +276,40 @@ export default function OrderStatusPage({
   useEffect(() => {
     fetchOrder();
   }, [fetchOrder]);
+
+  useWebSocket(
+    getSessionId() ? [`session:${getSessionId()}`] : [],
+    (msg: WsMessage) => {
+      if (msg.type === "auth:success") {
+        void fetchOrder();
+        return;
+      }
+
+      if (
+        msg.type !== "order:new" &&
+        msg.type !== "order:updated" &&
+        msg.type !== "order:item_status" &&
+        msg.type !== "order:cancelled"
+      ) {
+        return;
+      }
+
+      const currentOrderId = getOrderId();
+
+      if (!currentOrderId) {
+        return;
+      }
+
+      const payload = msg.type === "order:item_status"
+        ? msg.payload as WsOrderItemStatusPayload
+        : msg.payload as WsOrderPayload;
+
+      if (payload.orderId === currentOrderId) {
+        void fetchOrder();
+      }
+    },
+    getToken() || undefined,
+  );
 
   // Show confirmation banner on first load if order is new
   useEffect(() => {

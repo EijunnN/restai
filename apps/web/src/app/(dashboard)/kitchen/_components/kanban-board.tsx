@@ -31,7 +31,7 @@ function KanbanColumn({ status }: { status: TabKey }) {
   const columnOrders = columns[status];
 
   return (
-    <div className="flex flex-col gap-2 min-h-0 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 10rem)" }}>
+    <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 13.5rem)" }}>
       <ColumnHeader
         icon={config.icon}
         label={config.label}
@@ -45,11 +45,12 @@ function KanbanColumn({ status }: { status: TabKey }) {
           <p className="text-sm">{config.emptyLabel}</p>
         </div>
       ) : (
-        columnOrders.map((order: any) => (
+        columnOrders.map((order: any, index: number) => (
           <KitchenOrderCard
             key={order.id}
             order={order}
             columnStatus={status}
+            priorityRank={index + 1}
             onAdvance={advanceOrder}
             onPrint={handlePrint}
             onItemReady={
@@ -69,7 +70,7 @@ function KanbanColumn({ status }: { status: TabKey }) {
 
 export function KanbanBoard() {
   return (
-    <div className="hidden md:grid md:grid-cols-3 gap-3 flex-1 min-h-0">
+    <div className="hidden min-h-0 flex-1 gap-4 md:grid md:grid-cols-3">
       <KanbanColumn status="pending" />
       <KanbanColumn status="preparing" />
       <KanbanColumn status="ready" />

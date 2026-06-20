@@ -16,9 +16,9 @@ export function ColumnHeader({
   pulse?: boolean;
 }) {
   const styles = {
-    pending: "bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-400",
-    preparing: "bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-400",
-    ready: "bg-green-500/15 border-green-500/30 text-green-700 dark:text-green-400",
+    pending: "bg-amber-500/15 border-amber-500/30 text-amber-800 dark:text-amber-300",
+    preparing: "bg-blue-500/15 border-blue-500/30 text-blue-800 dark:text-blue-300",
+    ready: "bg-green-500/15 border-green-500/30 text-green-800 dark:text-green-300",
   };
 
   const countBg = {
@@ -30,18 +30,25 @@ export function ColumnHeader({
   return (
     <div
       className={cn(
-        "flex items-center justify-between p-3 rounded-lg border sticky top-0 z-10 backdrop-blur-sm",
+        "sticky top-0 z-10 flex items-center justify-between rounded-2xl border px-4 py-3 backdrop-blur-sm shadow-sm",
         styles[variant],
         pulse && "animate-pulse"
       )}
     >
       <div className="flex items-center gap-2">
-        <Icon className="h-5 w-5" />
-        <h2 className="font-bold text-sm uppercase tracking-wide">{label}</h2>
+        <div className="rounded-xl bg-background/70 p-2">
+          <Icon className="h-5 w-5" />
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] opacity-70">
+            Estado
+          </p>
+          <h2 className="font-black text-sm uppercase tracking-wide">{label}</h2>
+        </div>
       </div>
       <span
         className={cn(
-          "flex items-center justify-center h-7 min-w-7 px-1.5 rounded-full text-sm font-bold",
+          "flex items-center justify-center h-9 min-w-9 rounded-xl px-2 text-sm font-black",
           countBg[variant]
         )}
       >

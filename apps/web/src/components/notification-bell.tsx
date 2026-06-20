@@ -7,13 +7,13 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useBranchSettings } from "@/hooks/use-settings";
 import { useMyAssignedTables } from "@/hooks/use-tables";
 import { cn } from "@/lib/utils";
-import type { WsMessage } from "@restai/types";
+import type { WsMessage, WsOrderPayload } from "@restai/types";
 
 interface Notification {
   id: string;
-  type: "call_waiter" | "request_bill" | "session_pending";
+  type: "call_waiter" | "request_bill" | "session_pending" | "session_approved" | "session_rejected" | "session_ended" | "order_new";
   message: string;
-  tableNumber: number;
+  tableNumber: number | null;
   tableId?: string;
   timestamp: number;
   read: boolean;
@@ -38,13 +38,28 @@ const notificationIcon: Record<Notification["type"], typeof Bell> = {
   call_waiter: HandHelping,
   request_bill: Receipt,
   session_pending: UserPlus,
+  session_approved: UserPlus,
+  session_rejected: UserPlus,
+  session_ended: UserPlus,
+  order_new: Receipt,
 };
 
 const notificationColor: Record<Notification["type"], string> = {
   call_waiter: "text-orange-500",
   request_bill: "text-blue-500",
   session_pending: "text-green-500",
+  session_approved: "text-emerald-500",
+  session_rejected: "text-red-500",
+  session_ended: "text-muted-foreground",
+  order_new: "text-violet-500",
 };
+
+interface BranchScopedPayload {
+  tableId?: string;
+  tableNumber?: number;
+  customerName?: string;
+  sessionId?: string;
+}
 
 export function NotificationBell() {
   const { accessToken, selectedBranchId, user } = useAuthStore();
@@ -85,7 +100,7 @@ export function NotificationBell() {
 
   const handleWsMessage = useCallback(
     (msg: WsMessage) => {
-      const payload = msg.payload as any;
+      const payload = msg.payload as BranchScopedPayload;
 
       // If waiter assignment filtering is active, check if this table is assigned to us
       if (shouldFilter && payload.tableId && !assignedTableIds.current.has(payload.tableId)) {
@@ -96,7 +111,7 @@ export function NotificationBell() {
         addNotification({
           type: "call_waiter",
           message: `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita al mozo`,
-          tableNumber: payload.tableNumber,
+          tableNumber: payload.tableNumber ?? null,
           tableId: payload.tableId,
           timestamp: msg.timestamp,
         });
@@ -104,7 +119,7 @@ export function NotificationBell() {
         addNotification({
           type: "request_bill",
           message: `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita la cuenta`,
-          tableNumber: payload.tableNumber,
+          tableNumber: payload.tableNumber ?? null,
           tableId: payload.tableId,
           timestamp: msg.timestamp,
         });
@@ -112,7 +127,47 @@ export function NotificationBell() {
         addNotification({
           type: "session_pending",
           message: `Mesa ${payload.tableNumber}: Nueva conexion de ${payload.customerName || "cliente"}`,
-          tableNumber: payload.tableNumber,
+          tableNumber: payload.tableNumber ?? null,
+          tableId: payload.tableId,
+          timestamp: msg.timestamp,
+        });
+      } else if (msg.type === "session:approved") {
+        addNotification({
+          type: "session_approved",
+          message: payload.tableNumber
+            ? `Mesa ${payload.tableNumber}: conexion aprobada`
+            : "Una conexion fue aprobada",
+          tableNumber: payload.tableNumber ?? null,
+          tableId: payload.tableId,
+          timestamp: msg.timestamp,
+        });
+      } else if (msg.type === "session:rejected") {
+        addNotification({
+          type: "session_rejected",
+          message: payload.tableNumber
+            ? `Mesa ${payload.tableNumber}: conexion rechazada`
+            : "Una conexion fue rechazada",
+          tableNumber: payload.tableNumber ?? null,
+          tableId: payload.tableId,
+          timestamp: msg.timestamp,
+        });
+      } else if (msg.type === "session:ended") {
+        addNotification({
+          type: "session_ended",
+          message: payload.tableNumber
+            ? `Mesa ${payload.tableNumber}: sesion finalizada`
+            : "Una sesion fue finalizada",
+          tableNumber: payload.tableNumber ?? null,
+          tableId: payload.tableId,
+          timestamp: msg.timestamp,
+        });
+      } else if (msg.type === "order:new") {
+        const orderPayload = msg.payload as WsOrderPayload;
+
+        addNotification({
+          type: "order_new",
+          message: `Nuevo pedido #${orderPayload.orderNumber}`,
+          tableNumber: null,
           tableId: payload.tableId,
           timestamp: msg.timestamp,
         });

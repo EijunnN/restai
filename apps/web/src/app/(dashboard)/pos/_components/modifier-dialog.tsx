@@ -14,6 +14,7 @@ import { Badge } from "@restai/ui/components/badge";
 import { Check, ChevronDown, Plus, Minus, Loader2, UtensilsCrossed } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { useItemModifierGroups } from "@/hooks/use-menu";
+import type { PosMenuItem } from "../page";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,10 +36,10 @@ export function ModifierDialog({
   onClose,
   onAdd,
 }: {
-  item: any;
+  item: PosMenuItem | null;
   open: boolean;
   onClose: () => void;
-  onAdd: (item: any, qty: number, mods: CartModifier[], notes: string) => void;
+  onAdd: (item: PosMenuItem, qty: number, mods: CartModifier[], notes: string) => void;
 }) {
   const { data: groups, isLoading } = useItemModifierGroups(item?.id ?? "");
   const modifierGroups: any[] = groups ?? [];
