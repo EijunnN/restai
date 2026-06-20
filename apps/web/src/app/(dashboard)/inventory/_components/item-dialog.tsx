@@ -13,7 +13,16 @@ import {
   DialogFooter,
 } from "@restai/ui/components/dialog";
 import { useCreateInventoryItem } from "@/hooks/use-inventory";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/fetcher";
 import { toast } from "sonner";
+
+interface InventoryCategory {
+  id: string;
+  name: string;
+}
+
+const NO_CATEGORY = "none";
 
 export function CreateItemDialog({
   open,
@@ -23,13 +32,18 @@ export function CreateItemDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const createItem = useCreateInventoryItem();
+  const { data: categories } = useQuery<InventoryCategory[]>({
+    queryKey: ["inventory", "categories"],
+    queryFn: () => apiFetch<InventoryCategory[]>("/api/inventory/categories"),
+    enabled: open,
+  });
   const [form, setForm] = useState({
     name: "",
     unit: "kg",
     currentStock: "",
     minStock: "",
     costPerUnit: "",
-    category: "",
+    categoryId: NO_CATEGORY,
   });
 
   async function handleSubmit(e: React.FormEvent) {
@@ -42,7 +56,8 @@ export function CreateItemDialog({
         currentStock: parseFloat(form.currentStock) || 0,
         minStock: parseFloat(form.minStock) || 0,
         costPerUnit: Math.round(parseFloat(form.costPerUnit || "0") * 100),
-        category: form.category || undefined,
+        // API expects categoryId (UUID); omit when no category is chosen.
+        categoryId: form.categoryId !== NO_CATEGORY ? form.categoryId : undefined,
       });
       setForm({
         name: "",
@@ -50,7 +65,7 @@ export function CreateItemDialog({
         currentStock: "",
         minStock: "",
         costPerUnit: "",
-        category: "",
+        categoryId: NO_CATEGORY,
       });
       onOpenChange(false);
       toast.success("Item creado exitosamente");
@@ -78,14 +93,22 @@ export function CreateItemDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor="itemCategory">Categoria</Label>
-            <Input
-              id="itemCategory"
-              placeholder="Ej: Carnes, Verduras, Lacteos..."
-              value={form.category}
-              onChange={(e) =>
-                setForm({ ...form, category: e.target.value })
-              }
-            />
+            <Select
+              value={form.categoryId}
+              onValueChange={(v) => setForm({ ...form, categoryId: v })}
+            >
+              <SelectTrigger id="itemCategory">
+                <SelectValue placeholder="Seleccionar categoria..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_CATEGORY}>Sin categoria</SelectItem>
+                {(categories ?? []).map((cat) => (
+                  <SelectItem key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">

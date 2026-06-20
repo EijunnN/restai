@@ -98,9 +98,12 @@ export function useUpdateTablePosition() {
         body: JSON.stringify({ x, y }),
       }),
     onMutate: async ({ id, x, y }) => {
+      // useTables stores under ["tables", spaceId] (e.g. ["tables", undefined]),
+      // so use partial-match operations to hit the real cache key(s).
       await qc.cancelQueries({ queryKey: ["tables"] });
-      const previous = qc.getQueryData(["tables"]);
-      qc.setQueryData(["tables"], (old: any) => {
+      // Snapshot every matching cache entry so we can roll back exactly.
+      const previous = qc.getQueriesData({ queryKey: ["tables"] });
+      qc.setQueriesData({ queryKey: ["tables"] }, (old: any) => {
         if (!old?.tables) return old;
         return {
           ...old,
@@ -112,9 +115,10 @@ export function useUpdateTablePosition() {
       return { previous };
     },
     onError: (_err, _vars, context) => {
-      if (context?.previous) {
-        qc.setQueryData(["tables"], context.previous);
-      }
+      // Restore each snapshotted entry by its original key.
+      context?.previous?.forEach(([key, data]: [readonly unknown[], unknown]) => {
+        qc.setQueryData(key, data);
+      });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["tables"] }),
   });
@@ -141,7 +145,6 @@ export function useSessions(status?: string) {
   return useQuery({
     queryKey: ["sessions", status],
     queryFn: () => apiFetch(`/api/tables/sessions${qs ? `?${qs}` : ""}`),
-    refetchInterval: 5000,
   });
 }
 

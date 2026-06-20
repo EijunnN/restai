@@ -51,26 +51,26 @@ export default function DashboardPage() {
           title: "Ordenes Hoy",
           value: dashboardStats.ordersToday ?? 0,
           icon: ClipboardList,
-          description: dashboardStats.ordersChange ?? "",
+          description: "",
         },
         {
           title: "Ingresos Hoy",
           value: dashboardStats.revenueToday ?? 0,
           icon: DollarSign,
-          description: dashboardStats.revenueChange ?? "",
+          description: "",
           isCurrency: true,
         },
         {
           title: "Ordenes Activas",
           value: dashboardStats.activeOrders ?? 0,
           icon: TrendingUp,
-          description: dashboardStats.activeOrdersDetail ?? "",
+          description: "",
         },
         {
           title: "Mesas Ocupadas",
           value: dashboardStats.tablesOccupied ?? "0/0",
           icon: Grid3X3,
-          description: dashboardStats.tablesDetail ?? "",
+          description: "",
         },
       ]
     : [];
