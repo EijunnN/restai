@@ -28,13 +28,39 @@ interface ExecutionContext {
 
 let configured = false;
 
+// Claves que la app lee vía process.env. Se copian explícitamente desde los
+// bindings del Worker porque éstos NO se enumeran con Object.entries(env).
+// (Además del flag nodejs_compat_populate_process_env, como doble seguridad.)
+const ENV_KEYS = [
+  "DATABASE_URL",
+  "DATABASE_DRIVER",
+  "JWT_SECRET",
+  "JWT_REFRESH_SECRET",
+  "SUNAT_ENCRYPTION_KEY",
+  "REALTIME_PROVIDER",
+  "ABLY_API_KEY",
+  "PUSHER_APP_ID",
+  "PUSHER_KEY",
+  "PUSHER_SECRET",
+  "PUSHER_CLUSTER",
+  "LOG_LEVEL",
+  "CORS_ORIGINS",
+  "R2_ACCOUNT_ID",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_BUCKET_NAME",
+  "R2_PUBLIC_URL",
+] as const;
+
 function configure(env: Env): void {
-  // Hidrata process.env desde los bindings del Worker para el código que lo lee
-  // (jwt, sunat, logger, etc.). Se hace en cada invocación por si el runtime no
-  // lo pobló en el scope de módulo.
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string" && process.env[key] === undefined) {
-      process.env[key] = value;
+  for (const key of ENV_KEYS) {
+    const value = env[key];
+    if (typeof value === "string" && value !== "") {
+      try {
+        process.env[key] = value;
+      } catch {
+        // process.env podría ser de solo lectura según el runtime; lo ignoramos.
+      }
     }
   }
   if (configured) return;
