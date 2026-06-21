@@ -43,7 +43,7 @@ deleted_classes = ["RestaiApiContainer"]
 # Variables públicas (no secretas). Los secretos van con `wrangler secret put`.
 [vars]
 DATABASE_DRIVER = "neon"           # driver serverless de Neon (WebSocket)
-REALTIME_PROVIDER = "noop"         # cambia a "ably" o "pusher" cuando configures su secreto
+REALTIME_PROVIDER = "ably"         # realtime vía Ably (Pub/Sub); secreto ABLY_API_KEY
 LOG_LEVEL = "info"
 CORS_ORIGINS = "https://app.tu-dominio.com"
 PUSHER_CLUSTER = ""                # solo si usas pusher

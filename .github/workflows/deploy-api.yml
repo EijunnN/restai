@@ -69,13 +69,15 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
           SUNAT_ENCRYPTION_KEY: ${{ secrets.SUNAT_ENCRYPTION_KEY }}
+          ABLY_API_KEY: ${{ secrets.ABLY_API_KEY }}
         run: |
           jq -n \
             --arg DATABASE_URL "$DATABASE_URL" \
             --arg JWT_SECRET "$JWT_SECRET" \
             --arg JWT_REFRESH_SECRET "$JWT_REFRESH_SECRET" \
             --arg SUNAT_ENCRYPTION_KEY "$SUNAT_ENCRYPTION_KEY" \
-            '{DATABASE_URL:$DATABASE_URL, JWT_SECRET:$JWT_SECRET, JWT_REFRESH_SECRET:$JWT_REFRESH_SECRET, SUNAT_ENCRYPTION_KEY:$SUNAT_ENCRYPTION_KEY}' \
+            --arg ABLY_API_KEY "$ABLY_API_KEY" \
+            '{DATABASE_URL:$DATABASE_URL, JWT_SECRET:$JWT_SECRET, JWT_REFRESH_SECRET:$JWT_REFRESH_SECRET, SUNAT_ENCRYPTION_KEY:$SUNAT_ENCRYPTION_KEY, ABLY_API_KEY:$ABLY_API_KEY}' \
             > /tmp/restai-secrets.json
           bunx wrangler secret bulk /tmp/restai-secrets.json
           rm -f /tmp/restai-secrets.json
