@@ -17,6 +17,12 @@ main = "../../apps/api/src/worker.ts"
 compatibility_date = "2025-09-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Dominio propio (la zona bezenti.com vive en esta cuenta de Cloudflare).
+# wrangler crea el registro DNS y el certificado automáticamente.
+routes = [
+  { pattern = "restai.bezenti.com", custom_domain = true },
+]
+
 [observability]
 enabled = true
 
