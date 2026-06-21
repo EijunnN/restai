@@ -21,6 +21,9 @@ health.get("/", async (c) => {
   // DEBUG temporal:
   checks._envProvider = process.env.REALTIME_PROVIDER ?? "unset";
   checks._ablyKey = process.env.ABLY_API_KEY ? "present" : "absent";
+  const cEnv = (c as { env?: Record<string, unknown> }).env;
+  checks._bindingHasAbly = cEnv?.ABLY_API_KEY ? "yes" : "no";
+  checks._bindingHasDb = cEnv?.DATABASE_URL ? "yes" : "no";
 
   const allHealthy = checks.database === "ok";
 

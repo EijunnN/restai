@@ -78,8 +78,8 @@ export default {
     configure(env);
     const { db, close } = await createRequestDb(env.DATABASE_URL);
     try {
-      // La app lee su config desde process.env (ya hidratado), no del binding env.
-      return await runWithDb(db, () => app.fetch(request));
+      // Pasamos env a Hono (c.env) además de hidratar process.env.
+      return await runWithDb(db, () => app.fetch(request, env as never));
     } finally {
       // Cierra la conexión tras responder sin bloquear la respuesta.
       ctx.waitUntil(close());
