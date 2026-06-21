@@ -15,7 +15,10 @@
 name = "restai-api"
 main = "../../apps/api/src/worker.ts"
 compatibility_date = "2025-09-01"
-compatibility_flags = ["nodejs_compat", "nodejs_compat_populate_process_env"]
+# Sin nodejs_compat_populate_process_env: ese flag hace process.env de solo-lectura
+# y no puebla secretos; preferimos copiar nosotros las claves desde el binding `env`
+# (writable) en worker.ts → configure().
+compatibility_flags = ["nodejs_compat"]
 
 # Dominio propio (la zona bezenti.com vive en esta cuenta de Cloudflare).
 # wrangler crea el registro DNS y el certificado automáticamente.
