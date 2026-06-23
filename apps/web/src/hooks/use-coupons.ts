@@ -25,6 +25,23 @@ export function useCreateCoupon() {
   });
 }
 
+// Bulk-generate a batch of coupons (POST /api/coupons/bulk). The server
+// generates `count` coupons sharing the supplied prefix/type/discount config,
+// groups them under a single batch_id, and returns the created batch. The
+// resolved value is whatever the endpoint returns in `data` (e.g.
+// { batch_id, count, coupons: [...] }) — the UI reads it defensively.
+export function useBulkCreateCoupons() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) =>
+      apiFetch("/api/coupons/bulk", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["coupons"] }),
+  });
+}
+
 export function useUpdateCoupon() {
   const qc = useQueryClient();
   return useMutation({

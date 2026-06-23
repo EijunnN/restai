@@ -26,6 +26,10 @@ import {
   Ticket,
   User,
   History,
+  Users,
+  Copy,
+  Check,
+  Share2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -131,6 +135,8 @@ export default function ProfilePage({
   const [coupons, setCoupons] = useState<CouponData[]>([]);
   const [orders, setOrders] = useState<OrderData[]>([]);
   const [transactions, setTransactions] = useState<TransactionData[]>([]);
+  const [referralCode, setReferralCode] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Redeem dialog
   const [redeemDialogOpen, setRedeemDialogOpen] = useState(false);
@@ -157,20 +163,22 @@ export default function ProfilePage({
     const headers = { Authorization: `Bearer ${token}` };
 
     try {
-      const [loyaltyRes, couponsRes, ordersRes, redemptionsRes, transactionsRes] = await Promise.all([
+      const [loyaltyRes, couponsRes, ordersRes, redemptionsRes, transactionsRes, referralRes] = await Promise.all([
         fetch(`${API_URL}/api/customer/my-loyalty`, { headers }),
         fetch(`${API_URL}/api/customer/my-coupons`, { headers }),
         fetch(`${API_URL}/api/customer/my-orders`, { headers }),
         fetch(`${API_URL}/api/customer/my-redemptions`, { headers }),
         fetch(`${API_URL}/api/customer/my-transactions`, { headers }),
+        fetch(`${API_URL}/api/customer/my-referral-code`, { headers }),
       ]);
 
-      const [loyaltyData, couponsData, ordersData, redemptionsData, transactionsData] = await Promise.all([
+      const [loyaltyData, couponsData, ordersData, redemptionsData, transactionsData, referralData] = await Promise.all([
         loyaltyRes.json(),
         couponsRes.json(),
         ordersRes.json(),
         redemptionsRes.json(),
         transactionsRes.json().catch(() => ({ success: false })),
+        referralRes.json().catch(() => ({ success: false })),
       ]);
 
       if (loyaltyData.success && loyaltyData.data) setLoyalty(loyaltyData.data);
@@ -178,6 +186,14 @@ export default function ProfilePage({
       if (ordersData.success) setOrders(ordersData.data || []);
       if (redemptionsData.success) setRedemptions(redemptionsData.data || []);
       if (transactionsData.success) setTransactions(transactionsData.data || []);
+      if (referralData.success && referralData.data) {
+        // Tolerant of `{ code: "..." }` or a bare string payload.
+        const code =
+          typeof referralData.data === "string"
+            ? referralData.data
+            : referralData.data.code;
+        if (code) setReferralCode(code);
+      }
     } catch {
       // Silently fail — partial data is fine
     } finally {
@@ -239,6 +255,31 @@ export default function ProfilePage({
     } finally {
       setRedeeming(false);
     }
+  };
+
+  const handleCopyReferral = async () => {
+    if (!referralCode) return;
+    try {
+      await navigator.clipboard.writeText(referralCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard may be unavailable (insecure context) — ignore.
+    }
+  };
+
+  const handleShareReferral = async () => {
+    if (!referralCode) return;
+    const text = `Usa mi codigo ${referralCode} y ganemos puntos juntos.`;
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ title: "Invita y gana", text });
+        return;
+      } catch {
+        // User cancelled or share unsupported — fall back to copy.
+      }
+    }
+    handleCopyReferral();
   };
 
   if (loading) {
@@ -322,6 +363,46 @@ export default function ProfilePage({
               <TrendingUp className="h-3 w-3" />
               <span>Ganas puntos con cada pedido</span>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Invita y gana (referral) */}
+      {referralCode && (
+        <Card className="border-primary/20">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Users className="h-4 w-4 text-primary" />
+              Invita y gana
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Comparte tu codigo. Cuando un amigo lo use y haga su primer pedido, ambos ganan puntos.
+            </p>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2.5 text-center">
+                <span className="font-mono text-lg font-bold tracking-widest text-primary">
+                  {referralCode}
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={handleCopyReferral}
+                title="Copiar codigo"
+              >
+                {copied ? (
+                  <Check className="h-4 w-4 text-green-600" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            <Button className="w-full gap-2" onClick={handleShareReferral}>
+              <Share2 className="h-4 w-4" />
+              {copied ? "Codigo copiado" : "Compartir codigo"}
+            </Button>
           </CardContent>
         </Card>
       )}

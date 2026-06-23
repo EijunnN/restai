@@ -27,12 +27,16 @@ import {
   ChevronRight,
   ArrowUp,
   ArrowDown,
+  Download,
+  ShieldOff,
 } from "lucide-react";
 import {
   useLoyaltyCustomers,
   useDeleteCustomer,
   useAdjustPoints,
   useMergeCustomers,
+  useExportCustomer,
+  useAnonymizeCustomer,
 } from "@/hooks/use-loyalty";
 import { SearchInput } from "@/components/search-input";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -299,6 +303,88 @@ function MergeDialog({
 }
 
 // ---------------------------------------------------------------------------
+// Anonymize dialog (Ley 29733 — irreversible)
+// ---------------------------------------------------------------------------
+function AnonymizeDialog({
+  customer,
+  onOpenChange,
+}: {
+  customer: { id: string; name: string } | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const anonymize = useAnonymizeCustomer();
+  const [confirmText, setConfirmText] = useState("");
+
+  function reset() {
+    setConfirmText("");
+  }
+
+  function handleAnonymize() {
+    if (!customer) return;
+    anonymize.mutate(customer.id, {
+      onSuccess: () => {
+        reset();
+        onOpenChange(false);
+        toast.success("Cliente anonimizado");
+      },
+      onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+    });
+  }
+
+  return (
+    <Dialog open={!!customer} onOpenChange={(v) => { if (!v) { reset(); onOpenChange(false); } }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <ShieldOff className="h-5 w-5" />
+            Anonimizar cliente
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 space-y-2">
+            <p className="text-sm text-destructive font-medium">
+              Esta accion es irreversible.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Se eliminaran de forma permanente los datos personales de{" "}
+              <span className="font-medium text-foreground">{customer?.name}</span>{" "}
+              (nombre, telefono, email, fecha de nacimiento) en cumplimiento de la Ley
+              29733 de Proteccion de Datos Personales. El historial de pedidos y las
+              metricas agregadas se conservan de forma anonima. No se puede deshacer.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="anonymize-confirm">
+              Escribe <span className="font-semibold text-foreground">ANONIMIZAR</span> para confirmar
+            </Label>
+            <Input
+              id="anonymize-confirm"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="ANONIMIZAR"
+              autoComplete="off"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => { reset(); onOpenChange(false); }}>
+            Cancelar
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={confirmText.trim().toUpperCase() !== "ANONIMIZAR" || anonymize.isPending}
+            onClick={handleAnonymize}
+          >
+            {anonymize.isPending ? "Anonimizando..." : "Anonimizar"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Customers tab
 // ---------------------------------------------------------------------------
 export function CustomersTab() {
@@ -309,6 +395,7 @@ export function CustomersTab() {
   const [editCustomer, setEditCustomer] = useState<any | null>(null);
   const [adjustCustomer, setAdjustCustomer] = useState<any | null>(null);
   const [mergeTarget, setMergeTarget] = useState<any | null>(null);
+  const [anonymizeTarget, setAnonymizeTarget] = useState<{ id: string; name: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [timer, setTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
 
@@ -324,6 +411,17 @@ export function CustomersTab() {
   const customers: any[] = data?.customers ?? [];
   const pagination = data?.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 };
   const deleteCustomer = useDeleteCustomer();
+  const exportCustomer = useExportCustomer();
+
+  function handleExport(customer: { id: string; name: string }) {
+    exportCustomer.mutate(
+      { id: customer.id, name: customer.name },
+      {
+        onSuccess: () => toast.success("Datos del cliente exportados"),
+        onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+      },
+    );
+  }
 
   if (error) {
     return (
@@ -388,7 +486,15 @@ export function CustomersTab() {
                       <tr key={customer.id} className="border-b border-border last:border-0 hover:bg-muted/50 transition-colors">
                         <td className="p-3">
                           <Link href={`/loyalty/${customer.id}`} className="block">
-                            <p className="font-medium text-sm text-foreground">{customer.name}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium text-sm text-foreground">{customer.name}</p>
+                              {customer.anonymized_at && (
+                                <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-muted text-muted-foreground">
+                                  <ShieldOff className="h-3 w-3" />
+                                  Anonimizado
+                                </span>
+                              )}
+                            </div>
                             {customer.email && <p className="text-xs text-muted-foreground">{customer.email}</p>}
                           </Link>
                         </td>
@@ -421,11 +527,32 @@ export function CustomersTab() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                              title="Exportar datos"
+                              disabled={exportCustomer.isPending}
+                              onClick={() => handleExport({ id: customer.id, name: customer.name })}
+                            >
+                              <Download className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
                               title="Editar"
                               onClick={() => setEditCustomer(customer)}
                             >
                               <Pencil className="h-4 w-4" />
                             </Button>
+                            {!customer.anonymized_at && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                title="Anonimizar (Ley 29733)"
+                                onClick={() => setAnonymizeTarget({ id: customer.id, name: customer.name })}
+                              >
+                                <ShieldOff className="h-4 w-4" />
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -500,6 +627,12 @@ export function CustomersTab() {
         target={mergeTarget}
         candidates={customers}
         onOpenChange={(v) => !v && setMergeTarget(null)}
+      />
+
+      {/* Anonymize (Ley 29733) */}
+      <AnonymizeDialog
+        customer={anonymizeTarget}
+        onOpenChange={(v) => !v && setAnonymizeTarget(null)}
       />
 
       <ConfirmDialog

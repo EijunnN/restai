@@ -26,6 +26,8 @@ import {
   ChevronDown,
   Store,
   Smartphone,
+  Megaphone,
+  Share2,
 } from "lucide-react";
 import { Button } from "@restai/ui/components/button";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
@@ -75,6 +77,8 @@ const navGroups: NavGroup[] = [
     label: "Negocio",
     items: [
       { href: "/loyalty", label: "Fidelizacion", icon: Heart },
+      { href: "/campaigns", label: "Campañas", icon: Megaphone },
+      { href: "/referrals", label: "Referidos", icon: Share2 },
       { href: "/reports", label: "Reportes", icon: BarChart3 },
       { href: "/settings", label: "Configuracion", icon: Settings },
     ],

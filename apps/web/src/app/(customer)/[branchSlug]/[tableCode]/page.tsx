@@ -2,7 +2,7 @@
 /* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
 
 import { use, useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { startSessionSchema, type StartSessionInput } from "@restai/validators";
@@ -72,6 +72,8 @@ function CustomerEntryPageContent({
   "use no memo";
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
+  // Referral link support: /{branch}/{table}?ref=CODE → forwarded on register.
+  const referralCode = useSearchParams().get("ref") || undefined;
   const {
     loading,
     setLoading,
@@ -163,6 +165,7 @@ function CustomerEntryPageContent({
           customerPhone: data.customerPhone || undefined,
           email: data.email || undefined,
           birthDate: data.birthDate || undefined,
+          referralCode,
         }
       : {
           customerName: data.customerName,

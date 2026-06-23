@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Card,
   CardContent,
 } from "@restai/ui/components/card";
 import { Input } from "@restai/ui/components/input";
+import { Label } from "@restai/ui/components/label";
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
@@ -16,6 +17,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@restai/ui/components/dialog";
+import { DatePicker } from "@restai/ui/components/date-picker";
 import {
   Plus,
   RefreshCw,
@@ -27,6 +29,7 @@ import {
   Send,
   Search,
   Pencil,
+  Layers,
 } from "lucide-react";
 import {
   useCoupons,
@@ -34,6 +37,7 @@ import {
   useUpdateCoupon,
   useCouponAssignments,
   useAssignCoupon,
+  useBulkCreateCoupons,
 } from "@/hooks/use-coupons";
 import { useLoyaltyCustomers } from "@/hooks/use-loyalty";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -225,6 +229,324 @@ function AssignCouponDialog({
   );
 }
 
+// Convert a "S/" soles string into integer centimos (money is stored as ints).
+function parseSolesToCents(value: string): number {
+  const normalized = value.replace(",", ".").trim();
+  if (!normalized) return 0;
+  const n = Number(normalized);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n * 100);
+}
+
+type BulkFormState = {
+  count: number;
+  prefix: string;
+  type: string;
+  discountValue: number; // percentage points OR centimos (for "fixed")
+  fixedInput: string; // soles string mirror for the "fixed" type
+  minOrderAmount: number; // centimos
+  maxDiscountAmount: number; // centimos
+  startsAt: string;
+  expiresAt: string;
+};
+
+function emptyBulkForm(): BulkFormState {
+  return {
+    count: 10,
+    prefix: "PROMO",
+    type: "percentage",
+    discountValue: 10,
+    fixedInput: "5.00",
+    minOrderAmount: 0,
+    maxDiscountAmount: 0,
+    startsAt: "",
+    expiresAt: "",
+  };
+}
+
+// Normalize the various shapes the bulk endpoint might return into a single
+// { count, codes } view-model. `data` is whatever apiFetch unwraps from the
+// response's `data` field.
+function extractBatch(data: any): { count: number; codes: string[]; batchId?: string } {
+  const coupons: any[] = Array.isArray(data?.coupons)
+    ? data.coupons
+    : Array.isArray(data)
+      ? data
+      : [];
+  const codes: string[] = coupons
+    .map((c) => (typeof c === "string" ? c : c?.code))
+    .filter(Boolean);
+  const count =
+    typeof data?.count === "number"
+      ? data.count
+      : typeof data?.created === "number"
+        ? data.created
+        : codes.length;
+  const batchId = data?.batch_id ?? data?.batchId;
+  return { count, codes, batchId };
+}
+
+function BulkCouponDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const bulkCreate = useBulkCreateCoupons();
+  const [form, setForm] = useState<BulkFormState>(() => emptyBulkForm());
+  const [result, setResult] = useState<{ count: number; codes: string[]; batchId?: string } | null>(null);
+
+  // Reset the form (and any previous result) whenever the dialog opens.
+  useEffect(() => {
+    if (open) {
+      setForm(emptyBulkForm());
+      setResult(null);
+    }
+  }, [open]);
+
+  function handleGenerate(e: React.FormEvent) {
+    e.preventDefault();
+
+    const payload: any = {
+      count: form.count,
+      prefix: form.prefix.toUpperCase().trim() || undefined,
+      type: form.type,
+    };
+
+    if (["percentage", "fixed", "item_discount", "category_discount"].includes(form.type)) {
+      payload.discountValue =
+        form.type === "fixed" ? parseSolesToCents(form.fixedInput) : form.discountValue;
+    }
+    if (form.minOrderAmount > 0) payload.minOrderAmount = form.minOrderAmount;
+    if (form.maxDiscountAmount > 0) payload.maxDiscountAmount = form.maxDiscountAmount;
+    if (form.startsAt) payload.startsAt = form.startsAt;
+    if (form.expiresAt) payload.expiresAt = form.expiresAt;
+
+    bulkCreate.mutate(payload, {
+      onSuccess: (data: any) => {
+        const batch = extractBatch(data);
+        setResult(batch);
+        toast.success(`${batch.count} cupon(es) generado(s)`);
+      },
+      onError: (err) => toast.error(`Error: ${(err as Error).message}`),
+    });
+  }
+
+  function handleCopyAll() {
+    if (!result || result.codes.length === 0) return;
+    navigator.clipboard.writeText(result.codes.join("\n"));
+    toast.success(`${result.codes.length} codigo(s) copiado(s)`);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Generar lote de cupones</DialogTitle>
+        </DialogHeader>
+
+        {result ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-900/40 dark:bg-green-900/20 p-4">
+              <p className="text-sm font-medium text-green-800 dark:text-green-300">
+                {result.count} cupon(es) generado(s) exitosamente
+              </p>
+              {result.batchId && (
+                <p className="text-xs text-green-700/80 dark:text-green-400/80 mt-1 font-mono">
+                  Lote: {result.batchId}
+                </p>
+              )}
+            </div>
+
+            {result.codes.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Codigos generados</Label>
+                  <Button type="button" variant="outline" size="sm" onClick={handleCopyAll}>
+                    <Copy className="h-3.5 w-3.5 mr-1.5" />
+                    Copiar todos
+                  </Button>
+                </div>
+                <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-muted/30 p-3">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {result.codes.map((code) => (
+                      <button
+                        key={code}
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(code);
+                          toast.success(`Codigo "${code}" copiado`);
+                        }}
+                        className="flex items-center gap-1 font-mono text-xs font-medium text-foreground hover:text-primary transition-colors text-left"
+                        title="Copiar codigo"
+                      >
+                        <Copy className="h-3 w-3 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{code}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {result.codes.length < result.count && (
+                  <p className="text-xs text-muted-foreground">
+                    Mostrando {result.codes.length} de {result.count} codigos.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setResult(null)}>
+                Generar otro lote
+              </Button>
+              <Button onClick={() => onOpenChange(false)}>Listo</Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <form onSubmit={handleGenerate} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="blk-count">Cantidad *</Label>
+                <Input
+                  id="blk-count"
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={form.count}
+                  onChange={(e) => setForm((p) => ({ ...p, count: parseInt(e.target.value) || 0 }))}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">Maximo 1000 por lote</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="blk-prefix">Prefijo</Label>
+                <Input
+                  id="blk-prefix"
+                  value={form.prefix}
+                  onChange={(e) => setForm((p) => ({ ...p, prefix: e.target.value.toUpperCase() }))}
+                  placeholder="Ej: PROMO"
+                />
+                <p className="text-xs text-muted-foreground">Ej: PROMO-A1B2</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="blk-type">Tipo de cupon</Label>
+              <Select
+                value={form.type}
+                onValueChange={(v) =>
+                  setForm((p) => ({
+                    ...p,
+                    type: v,
+                    discountValue:
+                      v === "percentage" || v === "item_discount" || v === "category_discount"
+                        ? 10
+                        : p.discountValue,
+                  }))
+                }
+              >
+                <SelectTrigger id="blk-type">
+                  <SelectValue placeholder="Tipo de cupon" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="percentage">Porcentaje de descuento (%)</SelectItem>
+                  <SelectItem value="fixed">Monto fijo de descuento</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {form.type === "percentage" && (
+              <div className="space-y-2">
+                <Label htmlFor="blk-pct">Porcentaje de descuento</Label>
+                <Input
+                  id="blk-pct"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.discountValue}
+                  onChange={(e) => setForm((p) => ({ ...p, discountValue: parseInt(e.target.value) || 0 }))}
+                />
+                <p className="text-xs text-muted-foreground">Ej: 10 = 10% de descuento</p>
+              </div>
+            )}
+
+            {form.type === "fixed" && (
+              <div className="space-y-2">
+                <Label htmlFor="blk-fixed">Monto de descuento (S/)</Label>
+                <Input
+                  id="blk-fixed"
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={form.fixedInput}
+                  onChange={(e) => setForm((p) => ({ ...p, fixedInput: e.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  En soles: 5.00 = S/ 5. Se guarda internamente como centimos.
+                </p>
+              </div>
+            )}
+
+            <div className="border-t border-border pt-4 space-y-4">
+              <p className="text-sm font-medium text-foreground">Restricciones (opcional)</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="blk-min">Pedido minimo (centimos)</Label>
+                  <Input
+                    id="blk-min"
+                    type="number"
+                    min={0}
+                    value={form.minOrderAmount}
+                    onChange={(e) => setForm((p) => ({ ...p, minOrderAmount: parseInt(e.target.value) || 0 }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="blk-maxd">Descuento maximo (centimos)</Label>
+                  <Input
+                    id="blk-maxd"
+                    type="number"
+                    min={0}
+                    value={form.maxDiscountAmount}
+                    onChange={(e) => setForm((p) => ({ ...p, maxDiscountAmount: parseInt(e.target.value) || 0 }))}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Fecha inicio</Label>
+                  <DatePicker
+                    value={form.startsAt}
+                    onChange={(v) => setForm((p) => ({ ...p, startsAt: v ?? "" }))}
+                    placeholder="Seleccionar..."
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Fecha fin</Label>
+                  <DatePicker
+                    value={form.expiresAt}
+                    onChange={(v) => setForm((p) => ({ ...p, expiresAt: v ?? "" }))}
+                    placeholder="Seleccionar..."
+                  />
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={bulkCreate.isPending || form.count < 1}>
+                {bulkCreate.isPending ? "Generando..." : `Generar ${form.count > 0 ? form.count : ""} cupones`}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function CouponsTab() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -236,6 +558,7 @@ export function CouponsTab() {
   const deleteCoupon = useDeleteCoupon();
   const updateCoupon = useUpdateCoupon();
   const [showCreate, setShowCreate] = useState(false);
+  const [showBulk, setShowBulk] = useState(false);
   const [editCoupon, setEditCoupon] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [assignCouponData, setAssignCouponData] = useState<any>(null);
@@ -322,7 +645,10 @@ export function CouponsTab() {
             <SelectItem value="buy_x_get_y">Compra X lleva Y</SelectItem>
           </SelectContent>
         </Select>
-        <div className="ml-auto">
+        <div className="ml-auto flex gap-2">
+          <Button variant="outline" onClick={() => setShowBulk(true)}>
+            <Layers className="h-4 w-4 mr-2" />Generar lote
+          </Button>
           <Button onClick={() => setShowCreate(true)}>
             <Plus className="h-4 w-4 mr-2" />Crear Cupon
           </Button>
@@ -438,6 +764,8 @@ export function CouponsTab() {
       )}
 
       <CreateCouponDialog open={showCreate} onOpenChange={setShowCreate} />
+
+      <BulkCouponDialog open={showBulk} onOpenChange={setShowBulk} />
 
       {editCoupon && (
         <CreateCouponDialog

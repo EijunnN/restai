@@ -113,6 +113,55 @@ export function useMergeCustomers() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Ley 29733 (Peru data-protection) — export & anonymize
+// ---------------------------------------------------------------------------
+
+/**
+ * Exports a single customer's personal data (GET /export) and triggers a
+ * client-side JSON download. Used to satisfy the data-portability /
+ * right-to-access obligations under Ley 29733.
+ */
+export function useExportCustomer() {
+  return useMutation({
+    mutationFn: async ({ id, name }: { id: string; name?: string }) => {
+      const data = await apiFetch(`/api/loyalty/customers/${id}/export`);
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const slug =
+        (name || id)
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)/g, "") || id;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cliente-${slug}-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return data;
+    },
+  });
+}
+
+/**
+ * Irreversibly anonymizes a customer (POST /anonymize): personal identifiers
+ * are scrubbed and `anonymized_at` is stamped. Invalidates the customer cache.
+ */
+export function useAnonymizeCustomer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/loyalty/customers/${id}/anonymize`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["loyalty"] }),
+  });
+}
+
 export function useCreateProgram() {
   const qc = useQueryClient();
   return useMutation({
