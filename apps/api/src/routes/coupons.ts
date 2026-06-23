@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, or, lt, gte, isNull, desc, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { idParamSchema, couponQuerySchema, createCouponSchema, updateCouponSchema } from "@restai/validators";
 import { z } from "zod";
@@ -11,6 +11,49 @@ import { requirePermission } from "../middleware/rbac.js";
 
 const coupons = new Hono<AppEnv>();
 
+// Peru is always UTC-5 (no DST). Offset string for date-only parsing.
+const PERU_TZ_OFFSET = "-05:00";
+
+/**
+ * Parse an incoming date string for storage.
+ * - Date-only strings ("YYYY-MM-DD") are interpreted in America/Lima (UTC-5).
+ *   `boundary="start"` -> 00:00:00 Lima; `boundary="end"` -> 23:59:59.999 Lima
+ *   (inclusive end-of-day, so a coupon expiring "2026-06-22" is valid through
+ *   the whole Lima day, not UTC midnight which would expire it a day early).
+ * - Full ISO strings (with time/offset) are parsed as-is.
+ * Returns null for empty/invalid input.
+ */
+function parseCouponDate(
+  value: string | null | undefined,
+  boundary: "start" | "end",
+): Date | null {
+  if (!value) return null;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (dateOnly) {
+    const iso =
+      boundary === "start"
+        ? `${value}T00:00:00.000${PERU_TZ_OFFSET}`
+        : `${value}T23:59:59.999${PERU_TZ_OFFSET}`;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Derive whether a coupon is effectively expired at `now`, regardless of its
+ * stored status (a coupon whose expires_at has passed is expired even if the
+ * stored status still says "active").
+ */
+function isEffectivelyExpired(
+  coupon: { status: string; expires_at: Date | null },
+  now: Date,
+): boolean {
+  if (coupon.status === "expired") return true;
+  return coupon.expires_at != null && coupon.expires_at < now;
+}
+
 coupons.use("*", authMiddleware);
 coupons.use("*", tenantMiddleware);
 
@@ -18,17 +61,38 @@ coupons.use("*", tenantMiddleware);
 coupons.get("/", requirePermission("loyalty:read"), zValidator("query", couponQuerySchema), async (c) => {
   const tenant = c.get("tenant") as any;
   const { status: statusFilter, type: typeFilter } = c.req.valid("query");
+  const now = new Date();
 
   const conditions: any[] = [
     eq(schema.coupons.organization_id, tenant.organizationId),
   ];
 
-  if (statusFilter) {
-    conditions.push(eq(schema.coupons.status, statusFilter as any));
-  }
-
   if (typeFilter) {
     conditions.push(eq(schema.coupons.type, typeFilter as any));
+  }
+
+  // Status filtering is derived from expires_at at read time, not just the
+  // stored status column. A coupon is "Expirado" when its expires_at has
+  // passed (or status is explicitly "expired"), regardless of stored status.
+  if (statusFilter === "expired") {
+    conditions.push(
+      or(
+        eq(schema.coupons.status, "expired"),
+        lt(schema.coupons.expires_at, now),
+      ),
+    );
+  } else if (statusFilter === "active") {
+    // Stored active AND not effectively expired (no expiry or expiry in future).
+    conditions.push(
+      eq(schema.coupons.status, "active"),
+      or(isNull(schema.coupons.expires_at), gte(schema.coupons.expires_at, now)),
+    );
+  } else if (statusFilter === "inactive") {
+    // Stored inactive AND not effectively expired (expired takes precedence).
+    conditions.push(
+      eq(schema.coupons.status, "inactive"),
+      or(isNull(schema.coupons.expires_at), gte(schema.coupons.expires_at, now)),
+    );
   }
 
   const result = await db
@@ -37,7 +101,18 @@ coupons.get("/", requirePermission("loyalty:read"), zValidator("query", couponQu
     .where(and(...conditions))
     .orderBy(desc(schema.coupons.created_at));
 
-  return c.json({ success: true, data: result });
+  // Annotate each row with the read-time effective status so the UI can render
+  // "Expirado" without relying on the (possibly stale) stored status.
+  const data = result.map((coupon) => {
+    const expired = isEffectivelyExpired(coupon, now);
+    return {
+      ...coupon,
+      is_expired: expired,
+      effective_status: expired ? "expired" : coupon.status,
+    };
+  });
+
+  return c.json({ success: true, data });
 });
 
 // POST / - Create coupon
@@ -85,8 +160,8 @@ coupons.post(
         max_discount_amount: body.maxDiscountAmount,
         max_uses_total: body.maxUsesTotal,
         max_uses_per_customer: body.maxUsesPerCustomer,
-        starts_at: body.startsAt ? new Date(body.startsAt) : undefined,
-        expires_at: body.expiresAt ? new Date(body.expiresAt) : undefined,
+        starts_at: parseCouponDate(body.startsAt, "start") ?? undefined,
+        expires_at: parseCouponDate(body.expiresAt, "end") ?? undefined,
       })
       .returning();
 
@@ -176,8 +251,8 @@ coupons.patch(
     if (body.maxDiscountAmount !== undefined) updates.max_discount_amount = body.maxDiscountAmount;
     if (body.maxUsesTotal !== undefined) updates.max_uses_total = body.maxUsesTotal;
     if (body.maxUsesPerCustomer !== undefined) updates.max_uses_per_customer = body.maxUsesPerCustomer;
-    if (body.startsAt !== undefined) updates.starts_at = body.startsAt ? new Date(body.startsAt) : null;
-    if (body.expiresAt !== undefined) updates.expires_at = body.expiresAt ? new Date(body.expiresAt) : null;
+    if (body.startsAt !== undefined) updates.starts_at = parseCouponDate(body.startsAt, "start");
+    if (body.expiresAt !== undefined) updates.expires_at = parseCouponDate(body.expiresAt, "end");
 
     const [updated] = await db
       .update(schema.coupons)

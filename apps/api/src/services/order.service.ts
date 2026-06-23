@@ -270,6 +270,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         redemptionId,
         organizationId,
         customerId: customerId || null,
+        orderItems: orderItemsData,
         subtotal,
         couponDiscount: discount,
       }, tx);
@@ -563,6 +564,14 @@ async function applyCoupon(params: ApplyCouponParams, tx: TxOrDb): Promise<{ dis
   // Ensure discount doesn't exceed subtotal
   discount = Math.min(discount, subtotal);
 
+  // Reject zero-benefit coupons BEFORE claiming a use. If the computed discount
+  // is <= 0 (no qualifying item in the cart, threshold unmet, buy-x-get-y not
+  // reached, etc.) the coupon would be consumed for nothing — so abort instead
+  // of incrementing current_uses / recording a redemption.
+  if (discount <= 0) {
+    throw new OrderValidationError("Este cupón no aplica a tu pedido");
+  }
+
   // Atomically claim a use of this coupon, enforcing the total cap in the same
   // statement. If max_uses_total is set, only increment when current_uses is
   // still below it; 0 rows returned => the cap was reached (race-safe).
@@ -594,6 +603,7 @@ interface ApplyRedemptionParams {
   redemptionId: string;
   organizationId: string;
   customerId: string | null;
+  orderItems: Array<{ menu_item_id: string; unit_price: number; quantity: number; total: number }>;
   subtotal: number;
   couponDiscount: number;
 }
@@ -603,9 +613,15 @@ interface ApplyRedemptionParams {
  * computes its discount. Locks the redemption row FOR UPDATE so the eventual
  * atomic claim (order_id guard, performed by the caller after order insert) is
  * race-free. Does NOT mutate the redemption.
+ *
+ * The discount is computed from the SNAPSHOT columns stored on the redemption
+ * row at redeem time (reward_type / discount_type / discount_value /
+ * menu_item_id), NOT from the live rewards table — so an admin editing or
+ * deactivating the reward after redemption can never retroactively change the
+ * value of an already-claimed redemption.
  */
 async function applyRedemption(params: ApplyRedemptionParams, tx: TxOrDb): Promise<{ discount: number }> {
-  const { redemptionId, organizationId, customerId, subtotal, couponDiscount } = params;
+  const { redemptionId, organizationId, customerId, orderItems, subtotal, couponDiscount } = params;
 
   // A redemption can only be applied when we can verify its owner.
   if (!customerId) {
@@ -615,18 +631,21 @@ async function applyRedemption(params: ApplyRedemptionParams, tx: TxOrDb): Promi
   // Verify the redemption belongs to this customer AND this organization,
   // resolving the owning org via customer_loyalty -> program -> organization_id.
   // FOR UPDATE OF reward_redemptions locks the redemption row to serialize
-  // concurrent attempts to use it.
+  // concurrent attempts to use it. We read the SNAPSHOT value columns off the
+  // redemption itself (not the rewards table) so post-redeem reward edits cannot
+  // change an already-claimed redemption's value.
   const [redemption] = await tx
     .select({
       id: schema.rewardRedemptions.id,
       order_id: schema.rewardRedemptions.order_id,
       customer_id: schema.customerLoyalty.customer_id,
       organization_id: schema.loyaltyPrograms.organization_id,
-      discount_type: schema.rewards.discount_type,
-      discount_value: schema.rewards.discount_value,
+      reward_type: schema.rewardRedemptions.reward_type,
+      discount_type: schema.rewardRedemptions.discount_type,
+      discount_value: schema.rewardRedemptions.discount_value,
+      menu_item_id: schema.rewardRedemptions.menu_item_id,
     })
     .from(schema.rewardRedemptions)
-    .innerJoin(schema.rewards, eq(schema.rewardRedemptions.reward_id, schema.rewards.id))
     .innerJoin(
       schema.customerLoyalty,
       eq(schema.rewardRedemptions.customer_loyalty_id, schema.customerLoyalty.id),
@@ -659,15 +678,26 @@ async function applyRedemption(params: ApplyRedemptionParams, tx: TxOrDb): Promi
     throw new OrderValidationError("Canje ya utilizado");
   }
 
-  // Calculate discount on the remaining amount after coupon
+  // Calculate discount on the remaining amount after coupon, using the
+  // snapshot value columns captured at redeem time.
   const remainingSubtotal = subtotal - couponDiscount;
   let discount = 0;
 
-  if (redemption.discount_type === "percentage") {
-    discount = Math.round(remainingSubtotal * (redemption.discount_value / 100));
+  if (redemption.reward_type === "free_item") {
+    // One unit of the snapshotted menu item is free, valued at its EFFECTIVE
+    // per-unit price (incl. modifiers) IF that item is present in this order;
+    // otherwise the reward yields no discount here.
+    if (redemption.menu_item_id) {
+      const match = orderItems.find((i) => i.menu_item_id === redemption.menu_item_id);
+      discount = match ? effectiveUnitPrice(match) : 0;
+    } else {
+      discount = 0;
+    }
+  } else if (redemption.discount_type === "percentage") {
+    discount = Math.round(remainingSubtotal * ((redemption.discount_value || 0) / 100));
   } else {
-    // fixed amount
-    discount = Math.min(redemption.discount_value, remainingSubtotal);
+    // fixed amount (discount_type === "fixed" or null fallback)
+    discount = Math.min(redemption.discount_value || 0, remainingSubtotal);
   }
 
   discount = Math.max(0, Math.min(discount, remainingSubtotal));

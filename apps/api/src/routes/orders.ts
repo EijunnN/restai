@@ -17,6 +17,8 @@ import { requirePermission } from "../middleware/rbac.js";
 import { wsManager } from "../ws/manager.js";
 import { z } from "zod";
 import { createOrder, handleOrderCompletion, OrderValidationError } from "../services/order.service.js";
+import * as loyaltyService from "../services/loyalty.service.js";
+import { logger } from "../lib/logger.js";
 
 const orders = new Hono<AppEnv>();
 
@@ -108,6 +110,49 @@ orders.post(
       tableSessionId = session?.id || null;
     }
 
+    // Resolve a customer for this STAFF/POS order so coupon/redemption ownership
+    // can be enforced. The validated body strips unknown keys, so the optional
+    // customerId is read from the raw JSON, validated as a UUID, and verified to
+    // belong to this organization before we trust it.
+    let customerId: string | null = null;
+    if ((body.couponCode || body.redemptionId)) {
+      let rawCustomerId: unknown;
+      try {
+        const raw = await c.req.json();
+        rawCustomerId = raw?.customerId;
+      } catch {
+        rawCustomerId = undefined;
+      }
+
+      if (typeof rawCustomerId === "string" && rawCustomerId.length > 0) {
+        const parsed = z.string().uuid().safeParse(rawCustomerId);
+        if (!parsed.success) {
+          return c.json(
+            { success: false, error: { code: "BAD_REQUEST", message: "customerId inválido" } },
+            400,
+          );
+        }
+        // Verify the customer belongs to this tenant (org scope).
+        const [owned] = await db
+          .select({ id: schema.customers.id })
+          .from(schema.customers)
+          .where(
+            and(
+              eq(schema.customers.id, parsed.data),
+              eq(schema.customers.organization_id, tenant.organizationId),
+            ),
+          )
+          .limit(1);
+        if (!owned) {
+          return c.json(
+            { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+            404,
+          );
+        }
+        customerId = owned.id;
+      }
+    }
+
     let result;
     try {
       result = await createOrder({
@@ -118,6 +163,9 @@ orders.post(
         customerName: body.customerName,
         notes: body.notes,
         tableSessionId,
+        customerId,
+        couponCode: body.couponCode || null,
+        redemptionId: body.redemptionId || null,
         deliveryAddress: body.deliveryAddress,
         deliveryPhone: body.deliveryPhone,
         deliveryFee: body.deliveryFee,
@@ -398,6 +446,70 @@ orders.patch(
     }
 
     return c.json({ success: true, data: updated });
+  },
+);
+
+// POST /:id/void - Reverse loyalty points awarded for a COMPLETED order.
+// This is the post-completion clawback: when an order is voided/refunded after
+// completion, the points it earned must be removed. Idempotent (voidOrderPoints
+// no-ops if already reversed). Requires an elevated permission.
+orders.post(
+  "/:id/void",
+  requirePermission("orders:update"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    // Ensure the order exists, belongs to this tenant, and is completed.
+    const [order] = await db
+      .select({
+        id: schema.orders.id,
+        status: schema.orders.status,
+        order_number: schema.orders.order_number,
+      })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.id, id),
+          eq(schema.orders.branch_id, tenant.branchId),
+          eq(schema.orders.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!order) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Orden no encontrada" } },
+        404,
+      );
+    }
+
+    if (order.status !== "completed") {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "BAD_REQUEST",
+            message: "Solo se pueden anular los puntos de una orden completada",
+          },
+        },
+        400,
+      );
+    }
+
+    // Reverse the awarded points (idempotent on order_id inside the service).
+    const result = await loyaltyService.voidOrderPoints({
+      organizationId: tenant.organizationId,
+      orderId: order.id,
+    });
+
+    logger.info("Order loyalty points voided", {
+      orderId: order.id,
+      orderNumber: order.order_number,
+    });
+
+    return c.json({ success: true, data: result });
   },
 );
 

@@ -14,11 +14,16 @@ async function insertAndEnroll(
     email?: string;
     phone?: string;
     birthDate?: string;
+    marketingOptIn?: boolean;
   },
 ) {
-  const { organizationId, name, email, phone, birthDate } = params;
+  const { organizationId, name, email, phone, birthDate, marketingOptIn } = params;
 
-  const [customer] = await tx
+  // Conflict-safe insert: the partial unique indexes uq_customers_org_phone /
+  // uq_customers_org_email close the SELECT-then-INSERT race. onConflictDoNothing
+  // makes a concurrent duplicate a no-op; we then re-select the winner instead of
+  // creating a split identity.
+  const [inserted] = await tx
     .insert(schema.customers)
     .values({
       organization_id: organizationId,
@@ -26,15 +31,88 @@ async function insertAndEnroll(
       email,
       phone,
       birth_date: birthDate,
+      marketing_opt_in: marketingOptIn ?? false,
+      consent_at: marketingOptIn ? new Date() : null,
     })
+    .onConflictDoNothing()
     .returning();
 
-  const loyalty = await enrollCustomer(
-    { customerId: customer.id, organizationId },
-    tx,
-  );
+  if (inserted) {
+    const loyalty = await enrollCustomer(
+      { customerId: inserted.id, organizationId },
+      tx,
+    );
+    return { customer: inserted, loyalty };
+  }
 
-  return { customer, loyalty };
+  // A concurrent insert won the race — resolve the existing row by email or phone.
+  let existing:
+    | typeof schema.customers.$inferSelect
+    | undefined;
+  if (email) {
+    [existing] = await tx
+      .select()
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.organization_id, organizationId),
+          eq(schema.customers.email, email),
+        ),
+      )
+      .limit(1);
+  }
+  if (!existing && phone) {
+    [existing] = await tx
+      .select()
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.organization_id, organizationId),
+          eq(schema.customers.phone, phone),
+        ),
+      )
+      .limit(1);
+  }
+  if (!existing) {
+    // Should not happen (a conflict implies a matching row exists), but fail
+    // loudly rather than silently creating nothing.
+    throw new Error("CUSTOMER_CONFLICT_UNRESOLVED");
+  }
+
+  if (marketingOptIn && !existing.marketing_opt_in) {
+    await tx
+      .update(schema.customers)
+      .set({ marketing_opt_in: true, consent_at: new Date() })
+      .where(eq(schema.customers.id, existing.id));
+  }
+
+  let [loyalty] = await tx
+    .select()
+    .from(schema.customerLoyalty)
+    .where(eq(schema.customerLoyalty.customer_id, existing.id))
+    .limit(1);
+  if (!loyalty) {
+    loyalty = (await enrollCustomer(
+      { customerId: existing.id, organizationId },
+      tx,
+    )) as typeof schema.customerLoyalty.$inferSelect;
+  }
+
+  return { customer: existing, loyalty: loyalty ?? null };
+}
+
+// Upgrade marketing consent on an already-existing customer (tx-scoped).
+async function applyConsent(
+  tx: DbOrTx,
+  customer: { id: string; marketing_opt_in: boolean },
+  marketingOptIn?: boolean,
+) {
+  if (marketingOptIn && !customer.marketing_opt_in) {
+    await tx
+      .update(schema.customers)
+      .set({ marketing_opt_in: true, consent_at: new Date() })
+      .where(eq(schema.customers.id, customer.id));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +125,7 @@ export async function createCustomer(params: {
   email?: string;
   phone?: string;
   birthDate?: string;
+  marketingOptIn?: boolean;
 }) {
   return db.transaction((tx) => insertAndEnroll(tx, params));
 }
@@ -62,8 +141,9 @@ export async function findOrCreate(params: {
   email?: string;
   phone?: string;
   birthDate?: string;
+  marketingOptIn?: boolean;
 }) {
-  const { organizationId, name, email, phone, birthDate } = params;
+  const { organizationId, name, email, phone, birthDate, marketingOptIn } = params;
 
   return db.transaction(async (tx) => {
     // 1. Search by email (most reliable identifier)
@@ -80,6 +160,7 @@ export async function findOrCreate(params: {
         .limit(1);
 
       if (byEmail) {
+        await applyConsent(tx, byEmail, marketingOptIn);
         // Backfill missing fields
         if ((phone && !byEmail.phone) || (birthDate && !byEmail.birth_date)) {
           await tx
@@ -115,6 +196,7 @@ export async function findOrCreate(params: {
         .limit(1);
 
       if (byPhone) {
+        await applyConsent(tx, byPhone, marketingOptIn);
         // Backfill missing fields
         if ((email && !byPhone.email) || (birthDate && !byPhone.birth_date)) {
           await tx
@@ -158,8 +240,9 @@ export async function findOrCreateByPhone(params: {
   name: string;
   email?: string;
   birthDate?: string;
+  marketingOptIn?: boolean;
 }) {
-  const { organizationId, phone, name, email, birthDate } = params;
+  const { organizationId, phone, name, email, birthDate, marketingOptIn } = params;
 
   return db.transaction(async (tx) => {
     const [existing] = await tx
@@ -174,6 +257,7 @@ export async function findOrCreateByPhone(params: {
       .limit(1);
 
     if (existing) {
+      await applyConsent(tx, existing, marketingOptIn);
       // Backfill missing fields
       if ((email && !existing.email) || (birthDate && !existing.birth_date)) {
         await tx

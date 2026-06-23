@@ -5,6 +5,7 @@ import { verifyAccessToken } from "./lib/jwt.js";
 import { wsManager } from "./ws/manager.js";
 import { handleWsMessage } from "./ws/handlers.js";
 import { expireStale } from "./services/session.service.js";
+import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.js";
 
 const port = parseInt(process.env.API_PORT || "3001");
 
@@ -87,11 +88,61 @@ const wsHeartbeatInterval = setInterval(() => {
   }
 }, 30_000);
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+// Loyalty points expiry job: expires earned points past their expires_at.
+// Runs once shortly after boot, then every 24h. Non-blocking, set-based.
+async function runExpirePoints() {
+  try {
+    const { expired } = await expirePoints();
+    if (expired > 0) {
+      logger.info("Loyalty points expiry job ran", { expired });
+    }
+  } catch (err) {
+    logger.error("Loyalty points expiry job failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// Birthday bonus job: awards a birthday bonus to customers whose birthday is
+// today (idempotent per customer per year). Runs once after boot, then every 24h.
+async function runBirthdayBonuses() {
+  try {
+    const { awarded } = await awardBirthdayBonuses();
+    if (awarded > 0) {
+      logger.info("Birthday bonus job ran", { awarded });
+    }
+  } catch (err) {
+    logger.error("Birthday bonus job failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// Run each once shortly after boot (delayed so startup isn't blocked).
+const loyaltyBootTimeout = setTimeout(() => {
+  void runExpirePoints();
+  void runBirthdayBonuses();
+}, 10_000);
+
+// Daily loyalty jobs (~every 24h)
+const pointsExpiryInterval = setInterval(() => {
+  void runExpirePoints();
+}, ONE_DAY_MS);
+
+const birthdayBonusInterval = setInterval(() => {
+  void runBirthdayBonuses();
+}, ONE_DAY_MS);
+
 // Graceful shutdown
 async function shutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`);
   clearInterval(sessionExpiryInterval);
   clearInterval(wsHeartbeatInterval);
+  clearTimeout(loyaltyBootTimeout);
+  clearInterval(pointsExpiryInterval);
+  clearInterval(birthdayBonusInterval);
   server.stop();
   try {
     await redis.quit();

@@ -14,7 +14,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
 import { findOrCreateByPhone } from "../services/customer.service.js";
-import { redeemReward } from "../services/loyalty.service.js";
+import { redeemReward, adjustPoints } from "../services/loyalty.service.js";
 
 const loyalty = new Hono<AppEnv>();
 
@@ -68,6 +68,90 @@ loyalty.get("/stats", requirePermission("loyalty:read"), async (c) => {
       totalPointsEarned: pointsData?.total_earned ?? 0,
       totalRedemptions: redemptionCount?.count ?? 0,
       activeProgram: program || null,
+    },
+  });
+});
+
+// GET /analytics - Loyalty program analytics for the org's active program
+loyalty.get("/analytics", requirePermission("loyalty:read"), async (c) => {
+  const tenant = c.get("tenant") as any;
+
+  // Active program drives liability valuation (currency_per_point).
+  const [activeProgram] = await db
+    .select({
+      id: schema.loyaltyPrograms.id,
+      currency_per_point: schema.loyaltyPrograms.currency_per_point,
+    })
+    .from(schema.loyaltyPrograms)
+    .where(
+      and(
+        eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+        eq(schema.loyaltyPrograms.is_active, true),
+      ),
+    )
+    .limit(1);
+
+  // Aggregate balances + member counts across this org's enrollments.
+  const [memberData] = await db
+    .select({
+      total_balance: sql<number>`coalesce(sum(${schema.customerLoyalty.points_balance}), 0)::int`,
+      active_members: sql<number>`coalesce(sum(case when ${schema.customerLoyalty.points_balance} > 0 then 1 else 0 end), 0)::int`,
+      earning_members: sql<number>`coalesce(sum(case when ${schema.customerLoyalty.total_points_earned} > 0 then 1 else 0 end), 0)::int`,
+    })
+    .from(schema.customerLoyalty)
+    .innerJoin(
+      schema.loyaltyPrograms,
+      eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+    )
+    .where(eq(schema.loyaltyPrograms.organization_id, tenant.organizationId));
+
+  // Distinct members who have redeemed at least one reward.
+  const [redeemingData] = await db
+    .select({
+      redeeming_members: sql<number>`count(distinct ${schema.rewardRedemptions.customer_loyalty_id})::int`,
+    })
+    .from(schema.rewardRedemptions)
+    .innerJoin(
+      schema.customerLoyalty,
+      eq(schema.rewardRedemptions.customer_loyalty_id, schema.customerLoyalty.id),
+    )
+    .innerJoin(
+      schema.loyaltyPrograms,
+      eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+    )
+    .where(eq(schema.loyaltyPrograms.organization_id, tenant.organizationId));
+
+  // Top redeemed rewards.
+  const topRewards = await db
+    .select({
+      rewardId: schema.rewards.id,
+      name: schema.rewards.name,
+      redemptions: sql<number>`count(${schema.rewardRedemptions.id})::int`,
+    })
+    .from(schema.rewardRedemptions)
+    .innerJoin(schema.rewards, eq(schema.rewardRedemptions.reward_id, schema.rewards.id))
+    .innerJoin(
+      schema.loyaltyPrograms,
+      eq(schema.rewards.program_id, schema.loyaltyPrograms.id),
+    )
+    .where(eq(schema.loyaltyPrograms.organization_id, tenant.organizationId))
+    .groupBy(schema.rewards.id, schema.rewards.name)
+    .orderBy(desc(sql`count(${schema.rewardRedemptions.id})`))
+    .limit(5);
+
+  const totalBalance = memberData?.total_balance ?? 0;
+  const currencyPerPoint = activeProgram?.currency_per_point ?? 0;
+  const earningMembers = memberData?.earning_members ?? 0;
+  const redeemingMembers = redeemingData?.redeeming_members ?? 0;
+
+  return c.json({
+    success: true,
+    data: {
+      // currency_per_point is in cents -> liability in cents.
+      pointsLiabilityCents: totalBalance * currencyPerPoint,
+      activeMembers: memberData?.active_members ?? 0,
+      redemptionRate: earningMembers > 0 ? redeemingMembers / earningMembers : 0,
+      topRewards,
     },
   });
 });
@@ -349,6 +433,299 @@ loyalty.get(
   },
 );
 
+// POST /customers/:id/adjust-points - Manual signed points adjustment by staff
+loyalty.post(
+  "/customers/:id/adjust-points",
+  requirePermission("loyalty:update"),
+  zValidator("param", idParamSchema),
+  zValidator(
+    "json",
+    z.object({
+      // Signed integer: positive credits, negative debits. Non-zero.
+      amount: z.number().int().refine((n) => n !== 0, { message: "amount no puede ser 0" }),
+      reason: z.string().min(1).max(500),
+    }),
+  ),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { amount, reason } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+    const user = c.get("user") as any;
+
+    // Verify customer belongs to org
+    const [customer] = await db
+      .select({ id: schema.customers.id })
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.id, id),
+          eq(schema.customers.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!customer) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+        404,
+      );
+    }
+
+    try {
+      const newBalance = await adjustPoints({
+        organizationId: tenant.organizationId,
+        customerId: id,
+        amount,
+        reason,
+        performedBy: user?.sub,
+      });
+      return c.json({ success: true, data: { newBalance } });
+    } catch (err: any) {
+      if (err.message === "LOYALTY_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Registro de lealtad no encontrado" } },
+          404,
+        );
+      }
+      throw err;
+    }
+  },
+);
+
+// PATCH /customers/:id - Update customer profile (org-scoped)
+loyalty.patch(
+  "/customers/:id",
+  requirePermission("customers:update"),
+  zValidator("param", idParamSchema),
+  zValidator(
+    "json",
+    z.object({
+      name: z.string().min(1).max(255).optional(),
+      email: z.string().email().max(255).nullable().optional(),
+      phone: z.string().min(1).max(20).nullable().optional(),
+      birthDate: z.string().date().nullable().optional(),
+      marketingOptIn: z.boolean().optional(),
+    }),
+  ),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // Verify customer belongs to org (load current consent flag to detect flips)
+    const [existing] = await db
+      .select({
+        id: schema.customers.id,
+        marketing_opt_in: schema.customers.marketing_opt_in,
+      })
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.id, id),
+          eq(schema.customers.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!existing) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+        404,
+      );
+    }
+
+    const updates: any = {};
+    if (body.name !== undefined) updates.name = body.name;
+    if (body.email !== undefined) updates.email = body.email;
+    if (body.phone !== undefined) updates.phone = body.phone;
+    if (body.birthDate !== undefined) updates.birth_date = body.birthDate;
+    if (body.marketingOptIn !== undefined) {
+      updates.marketing_opt_in = body.marketingOptIn;
+      // Record consent timestamp only when opt-in flips from false -> true.
+      if (body.marketingOptIn === true && !existing.marketing_opt_in) {
+        updates.consent_at = new Date();
+      }
+    }
+
+    const [updated] = await db
+      .update(schema.customers)
+      .set(updates)
+      .where(eq(schema.customers.id, id))
+      .returning();
+
+    return c.json({ success: true, data: updated });
+  },
+);
+
+// POST /customers/:id/merge - Merge a source customer into this (target) customer
+loyalty.post(
+  "/customers/:id/merge",
+  requirePermission("customers:update"),
+  zValidator("param", idParamSchema),
+  zValidator(
+    "json",
+    z.object({
+      sourceCustomerId: z.string().uuid(),
+    }),
+  ),
+  async (c) => {
+    const { id: targetId } = c.req.valid("param");
+    const { sourceCustomerId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    if (targetId === sourceCustomerId) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "No se puede fusionar un cliente consigo mismo" } },
+        400,
+      );
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        // Both customers must belong to this org (reject cross-org).
+        const [target] = await tx
+          .select({ id: schema.customers.id })
+          .from(schema.customers)
+          .where(
+            and(
+              eq(schema.customers.id, targetId),
+              eq(schema.customers.organization_id, tenant.organizationId),
+            ),
+          )
+          .limit(1);
+
+        const [source] = await tx
+          .select({ id: schema.customers.id })
+          .from(schema.customers)
+          .where(
+            and(
+              eq(schema.customers.id, sourceCustomerId),
+              eq(schema.customers.organization_id, tenant.organizationId),
+            ),
+          )
+          .limit(1);
+
+        if (!target) throw new Error("TARGET_NOT_FOUND");
+        if (!source) throw new Error("SOURCE_NOT_FOUND");
+
+        // Re-parent simple customer references (orders, coupon redemptions).
+        await tx
+          .update(schema.orders)
+          .set({ customer_id: targetId })
+          .where(eq(schema.orders.customer_id, sourceCustomerId));
+
+        await tx
+          .update(schema.couponRedemptions)
+          .set({ customer_id: targetId })
+          .where(eq(schema.couponRedemptions.customer_id, sourceCustomerId));
+
+        // Loyalty is keyed by (customer_id, program_id) with a unique constraint.
+        // For each source enrollment: if the target already has an enrollment in the
+        // same program, SUM balances/earned into the target row, re-parent the
+        // source's transactions/redemptions to the target row, then drop the source
+        // row. Otherwise simply re-parent the enrollment row to the target customer.
+        const sourceLoyalty = await tx
+          .select()
+          .from(schema.customerLoyalty)
+          .where(eq(schema.customerLoyalty.customer_id, sourceCustomerId));
+
+        for (const sl of sourceLoyalty) {
+          const [targetLoyalty] = await tx
+            .select()
+            .from(schema.customerLoyalty)
+            .where(
+              and(
+                eq(schema.customerLoyalty.customer_id, targetId),
+                eq(schema.customerLoyalty.program_id, sl.program_id),
+              ),
+            )
+            .limit(1);
+
+          if (targetLoyalty) {
+            // Move transactions + redemptions from source enrollment to target.
+            await tx
+              .update(schema.loyaltyTransactions)
+              .set({ customer_loyalty_id: targetLoyalty.id })
+              .where(eq(schema.loyaltyTransactions.customer_loyalty_id, sl.id));
+
+            await tx
+              .update(schema.rewardRedemptions)
+              .set({ customer_loyalty_id: targetLoyalty.id })
+              .where(eq(schema.rewardRedemptions.customer_loyalty_id, sl.id));
+
+            // SUM points into the target enrollment.
+            await tx
+              .update(schema.customerLoyalty)
+              .set({
+                points_balance: sql`${schema.customerLoyalty.points_balance} + ${sl.points_balance}`,
+                total_points_earned: sql`${schema.customerLoyalty.total_points_earned} + ${sl.total_points_earned}`,
+              })
+              .where(eq(schema.customerLoyalty.id, targetLoyalty.id));
+
+            // Drop the now-empty source enrollment.
+            await tx
+              .delete(schema.customerLoyalty)
+              .where(eq(schema.customerLoyalty.id, sl.id));
+          } else {
+            // No conflicting target enrollment — just re-parent the row.
+            await tx
+              .update(schema.customerLoyalty)
+              .set({ customer_id: targetId })
+              .where(eq(schema.customerLoyalty.id, sl.id));
+          }
+        }
+
+        // Re-parent any coupon assignments. The unique (coupon_id, customer_id)
+        // constraint can collide if both customers hold the same coupon; drop the
+        // source's duplicate assignments first, then re-parent the rest.
+        const sourceAssignments = await tx
+          .select({ id: schema.couponAssignments.id, coupon_id: schema.couponAssignments.coupon_id })
+          .from(schema.couponAssignments)
+          .where(eq(schema.couponAssignments.customer_id, sourceCustomerId));
+
+        for (const sa of sourceAssignments) {
+          const [dup] = await tx
+            .select({ id: schema.couponAssignments.id })
+            .from(schema.couponAssignments)
+            .where(
+              and(
+                eq(schema.couponAssignments.customer_id, targetId),
+                eq(schema.couponAssignments.coupon_id, sa.coupon_id),
+              ),
+            )
+            .limit(1);
+
+          if (dup) {
+            await tx
+              .delete(schema.couponAssignments)
+              .where(eq(schema.couponAssignments.id, sa.id));
+          } else {
+            await tx
+              .update(schema.couponAssignments)
+              .set({ customer_id: targetId })
+              .where(eq(schema.couponAssignments.id, sa.id));
+          }
+        }
+
+        // Finally remove the source customer.
+        await tx.delete(schema.customers).where(eq(schema.customers.id, sourceCustomerId));
+
+        return { targetId, mergedFrom: sourceCustomerId };
+      });
+
+      return c.json({ success: true, data: result });
+    } catch (err: any) {
+      if (err.message === "TARGET_NOT_FOUND" || err.message === "SOURCE_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+          404,
+        );
+      }
+      throw err;
+    }
+  },
+);
+
 // ---------------------------------------------------------------------------
 // PROGRAMS
 // ---------------------------------------------------------------------------
@@ -433,6 +810,8 @@ loyalty.patch(
       pointsPerCurrencyUnit: z.number().int().min(1).optional(),
       currencyPerPoint: z.number().int().min(1).optional(),
       isActive: z.boolean().optional(),
+      // null = points never expire; positive int = expire after N days.
+      pointsExpireAfterDays: z.number().int().min(1).nullable().optional(),
     }),
   ),
   async (c) => {
@@ -463,12 +842,33 @@ loyalty.patch(
     if (body.pointsPerCurrencyUnit !== undefined) updates.points_per_currency_unit = body.pointsPerCurrencyUnit;
     if (body.currencyPerPoint !== undefined) updates.currency_per_point = body.currencyPerPoint;
     if (body.isActive !== undefined) updates.is_active = body.isActive;
+    if (body.pointsExpireAfterDays !== undefined) updates.points_expire_after_days = body.pointsExpireAfterDays;
 
-    const [updated] = await db
-      .update(schema.loyaltyPrograms)
-      .set(updates)
-      .where(eq(schema.loyaltyPrograms.id, id))
-      .returning();
+    // Single-active invariant: the DB has a partial unique index on
+    // (organization_id) WHERE is_active. When activating this program, deactivate
+    // the org's other active programs FIRST in the same transaction so the unique
+    // index never sees two active rows mid-update.
+    const updated = await db.transaction(async (tx) => {
+      if (body.isActive === true) {
+        await tx
+          .update(schema.loyaltyPrograms)
+          .set({ is_active: false })
+          .where(
+            and(
+              eq(schema.loyaltyPrograms.organization_id, tenant.organizationId),
+              eq(schema.loyaltyPrograms.is_active, true),
+              sql`${schema.loyaltyPrograms.id} <> ${id}`,
+            ),
+          );
+      }
+
+      const [row] = await tx
+        .update(schema.loyaltyPrograms)
+        .set(updates)
+        .where(eq(schema.loyaltyPrograms.id, id))
+        .returning();
+      return row;
+    });
 
     return c.json({ success: true, data: updated });
   },
@@ -668,8 +1068,14 @@ loyalty.get("/rewards", requirePermission("loyalty:read"), async (c) => {
       name: schema.rewards.name,
       description: schema.rewards.description,
       points_cost: schema.rewards.points_cost,
+      reward_type: schema.rewards.reward_type,
       discount_type: schema.rewards.discount_type,
       discount_value: schema.rewards.discount_value,
+      menu_item_id: schema.rewards.menu_item_id,
+      stock_remaining: schema.rewards.stock_remaining,
+      max_per_customer: schema.rewards.max_per_customer,
+      starts_at: schema.rewards.starts_at,
+      expires_at: schema.rewards.expires_at,
       is_active: schema.rewards.is_active,
     })
     .from(schema.rewards)
@@ -682,6 +1088,47 @@ loyalty.get("/rewards", requirePermission("loyalty:read"), async (c) => {
   return c.json({ success: true, data: result });
 });
 
+// Validate reward business rules. Returns an error string (code) or null if OK.
+// `rewardType` defaults to "discount" when omitted.
+function validateRewardRules(input: {
+  rewardType?: "discount" | "free_item";
+  discountType?: "percentage" | "fixed";
+  discountValue?: number;
+  menuItemId?: string | null;
+}): { code: string; message: string } | null {
+  const rewardType = input.rewardType ?? "discount";
+
+  if (rewardType === "free_item") {
+    if (!input.menuItemId) {
+      return { code: "BAD_REQUEST", message: "Una recompensa de producto gratis requiere un producto del menú" };
+    }
+  }
+
+  // Percentage discounts must be 1..100.
+  if (input.discountType === "percentage" && input.discountValue !== undefined) {
+    if (input.discountValue < 1 || input.discountValue > 100) {
+      return { code: "BAD_REQUEST", message: "El descuento porcentual debe estar entre 1 y 100" };
+    }
+  }
+
+  return null;
+}
+
+// Verify a menu item belongs to the org. Returns true if owned.
+async function menuItemBelongsToOrg(menuItemId: string, organizationId: string): Promise<boolean> {
+  const [item] = await db
+    .select({ id: schema.menuItems.id })
+    .from(schema.menuItems)
+    .where(
+      and(
+        eq(schema.menuItems.id, menuItemId),
+        eq(schema.menuItems.organization_id, organizationId),
+      ),
+    )
+    .limit(1);
+  return !!item;
+}
+
 // POST /rewards - Create reward
 loyalty.post(
   "/rewards",
@@ -693,13 +1140,39 @@ loyalty.post(
       name: z.string().min(1).max(255),
       description: z.string().max(500).optional(),
       pointsCost: z.number().int().min(1),
-      discountType: z.enum(["percentage", "fixed"]),
-      discountValue: z.number().int().min(1),
+      rewardType: z.enum(["discount", "free_item"]).optional(),
+      discountType: z.enum(["percentage", "fixed"]).optional(),
+      discountValue: z.number().int().min(1).optional(),
+      menuItemId: z.string().uuid().nullable().optional(),
+      stockRemaining: z.number().int().min(0).nullable().optional(),
+      maxPerCustomer: z.number().int().min(1).nullable().optional(),
+      startsAt: z.string().datetime().nullable().optional(),
+      expiresAt: z.string().datetime().nullable().optional(),
     }),
   ),
   async (c) => {
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
+
+    const rewardType = body.rewardType ?? "discount";
+
+    // A discount reward needs a discount type + value (the columns are NOT NULL).
+    if (rewardType === "discount" && (body.discountType === undefined || body.discountValue === undefined)) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "Una recompensa de descuento requiere tipo y valor de descuento" } },
+        400,
+      );
+    }
+
+    const ruleError = validateRewardRules({
+      rewardType,
+      discountType: body.discountType,
+      discountValue: body.discountValue,
+      menuItemId: body.menuItemId,
+    });
+    if (ruleError) {
+      return c.json({ success: false, error: ruleError }, 400);
+    }
 
     // Verify program belongs to org
     const [program] = await db
@@ -720,6 +1193,22 @@ loyalty.post(
       );
     }
 
+    // free_item: the menu item must belong to this org.
+    if (rewardType === "free_item" && body.menuItemId) {
+      const ok = await menuItemBelongsToOrg(body.menuItemId, tenant.organizationId);
+      if (!ok) {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "El producto del menú no pertenece a la organización" } },
+          400,
+        );
+      }
+    }
+
+    // discount_type/discount_value are NOT NULL in the schema. For free_item rewards
+    // (which carry no discount), default to a zero "fixed" discount.
+    const discountType = body.discountType ?? "fixed";
+    const discountValue = rewardType === "free_item" ? (body.discountValue ?? 0) : body.discountValue!;
+
     const [reward] = await db
       .insert(schema.rewards)
       .values({
@@ -727,8 +1216,14 @@ loyalty.post(
         name: body.name,
         description: body.description,
         points_cost: body.pointsCost,
-        discount_type: body.discountType,
-        discount_value: body.discountValue,
+        reward_type: rewardType,
+        discount_type: discountType,
+        discount_value: discountValue,
+        menu_item_id: rewardType === "free_item" ? body.menuItemId ?? null : null,
+        stock_remaining: body.stockRemaining ?? null,
+        max_per_customer: body.maxPerCustomer ?? null,
+        starts_at: body.startsAt ? new Date(body.startsAt) : null,
+        expires_at: body.expiresAt ? new Date(body.expiresAt) : null,
       })
       .returning();
 
@@ -747,8 +1242,14 @@ loyalty.patch(
       name: z.string().min(1).max(255).optional(),
       description: z.string().max(500).optional(),
       pointsCost: z.number().int().min(1).optional(),
+      rewardType: z.enum(["discount", "free_item"]).optional(),
       discountType: z.enum(["percentage", "fixed"]).optional(),
       discountValue: z.number().int().min(1).optional(),
+      menuItemId: z.string().uuid().nullable().optional(),
+      stockRemaining: z.number().int().min(0).nullable().optional(),
+      maxPerCustomer: z.number().int().min(1).nullable().optional(),
+      startsAt: z.string().datetime().nullable().optional(),
+      expiresAt: z.string().datetime().nullable().optional(),
       isActive: z.boolean().optional(),
     }),
   ),
@@ -757,9 +1258,14 @@ loyalty.patch(
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
-    // Verify reward belongs to a program owned by this org
+    // Verify reward belongs to a program owned by this org (load current values
+    // so rule validation can fall back to the stored reward_type/discount_type).
     const [reward] = await db
-      .select({ id: schema.rewards.id })
+      .select({
+        id: schema.rewards.id,
+        reward_type: schema.rewards.reward_type,
+        discount_type: schema.rewards.discount_type,
+      })
       .from(schema.rewards)
       .innerJoin(
         schema.loyaltyPrograms,
@@ -778,12 +1284,48 @@ loyalty.patch(
       );
     }
 
+    const effectiveRewardType = (body.rewardType ?? reward.reward_type) as "discount" | "free_item";
+    const effectiveDiscountType = (body.discountType ?? reward.discount_type ?? undefined) as
+      | "percentage"
+      | "fixed"
+      | undefined;
+
+    const ruleError = validateRewardRules({
+      rewardType: effectiveRewardType,
+      discountType: effectiveDiscountType,
+      discountValue: body.discountValue,
+      // Only enforce the free_item-needs-menuItem rule when the type is changing to
+      // free_item without supplying a menu item; otherwise the existing one stands.
+      menuItemId: body.rewardType === "free_item" ? body.menuItemId : undefined,
+    });
+    // Allow free_item rule to be skipped when rewardType isn't being switched to it.
+    if (ruleError && !(effectiveRewardType === "free_item" && body.rewardType === undefined)) {
+      return c.json({ success: false, error: ruleError }, 400);
+    }
+
+    // free_item: validate ownership of any new menu item.
+    if (body.menuItemId) {
+      const ok = await menuItemBelongsToOrg(body.menuItemId, tenant.organizationId);
+      if (!ok) {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: "El producto del menú no pertenece a la organización" } },
+          400,
+        );
+      }
+    }
+
     const updates: any = {};
     if (body.name !== undefined) updates.name = body.name;
     if (body.description !== undefined) updates.description = body.description;
     if (body.pointsCost !== undefined) updates.points_cost = body.pointsCost;
+    if (body.rewardType !== undefined) updates.reward_type = body.rewardType;
     if (body.discountType !== undefined) updates.discount_type = body.discountType;
     if (body.discountValue !== undefined) updates.discount_value = body.discountValue;
+    if (body.menuItemId !== undefined) updates.menu_item_id = body.menuItemId;
+    if (body.stockRemaining !== undefined) updates.stock_remaining = body.stockRemaining;
+    if (body.maxPerCustomer !== undefined) updates.max_per_customer = body.maxPerCustomer;
+    if (body.startsAt !== undefined) updates.starts_at = body.startsAt ? new Date(body.startsAt) : null;
+    if (body.expiresAt !== undefined) updates.expires_at = body.expiresAt ? new Date(body.expiresAt) : null;
     if (body.isActive !== undefined) updates.is_active = body.isActive;
 
     const [updated] = await db

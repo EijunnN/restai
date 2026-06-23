@@ -104,6 +104,7 @@ customer.post(
     customerPhone: z.string().optional(),
     email: z.string().email().optional(),
     birthDate: z.string().optional(),
+    marketingOptIn: z.boolean().optional(),
   })),
   async (c) => {
     const branchSlug = c.req.param("branchSlug");
@@ -185,6 +186,7 @@ customer.post(
       email: body.email,
       phone: body.customerPhone,
       birthDate: body.birthDate,
+      marketingOptIn: body.marketingOptIn,
     });
 
     // Create session with pending status
@@ -1300,6 +1302,18 @@ customer.post(
       if (message === "PROGRAM_MISMATCH") {
         return c.json({ success: false, error: { code: "BAD_REQUEST", message: "La recompensa no pertenece a tu programa" } }, 400);
       }
+      if (message === "LOYALTY_NOT_FOUND") {
+        return c.json({ success: false, error: { code: "NOT_FOUND", message: "No estas inscrito en el programa de fidelidad" } }, 404);
+      }
+      if (message === "REWARD_NOT_AVAILABLE") {
+        return c.json({ success: false, error: { code: "BAD_REQUEST", message: "Recompensa no disponible" } }, 400);
+      }
+      if (message === "MAX_PER_CUSTOMER") {
+        return c.json({ success: false, error: { code: "BAD_REQUEST", message: "Ya alcanzaste el limite de canjes de esta recompensa" } }, 400);
+      }
+      if (message === "AGOTADO") {
+        return c.json({ success: false, error: { code: "CONFLICT", message: "Recompensa agotada" } }, 409);
+      }
       throw err;
     }
   },
@@ -1387,6 +1401,56 @@ customer.get("/my-redemptions", customerAuth, requireActiveSession, async (c) =>
     );
 
   return c.json({ success: true, data: redemptions });
+});
+
+// GET /my-transactions - Points history for the current customer (customer auth)
+customer.get("/my-transactions", customerAuth, requireActiveSession, async (c) => {
+  const user = c.get("user") as any;
+  const customerId = user.customerId;
+  const orgId = user.org;
+
+  if (!customerId) {
+    return c.json({ success: true, data: [] });
+  }
+
+  const limit = Math.min(Number(c.req.query("limit")) || 50, 100);
+
+  // Resolve the caller's enrollment in the org's ACTIVE program, scoped strictly
+  // to their own customerId (never another customer's history).
+  const [enrollment] = await db
+    .select({ id: schema.customerLoyalty.id })
+    .from(schema.customerLoyalty)
+    .innerJoin(
+      schema.loyaltyPrograms,
+      and(
+        eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+        eq(schema.loyaltyPrograms.organization_id, orgId),
+        eq(schema.loyaltyPrograms.is_active, true),
+      ),
+    )
+    .where(eq(schema.customerLoyalty.customer_id, customerId))
+    .limit(1);
+
+  if (!enrollment) {
+    return c.json({ success: true, data: [] });
+  }
+
+  const transactions = await db
+    .select({
+      id: schema.loyaltyTransactions.id,
+      points: schema.loyaltyTransactions.points,
+      type: schema.loyaltyTransactions.type,
+      description: schema.loyaltyTransactions.description,
+      created_at: schema.loyaltyTransactions.created_at,
+      expires_at: schema.loyaltyTransactions.expires_at,
+      expired: schema.loyaltyTransactions.expired,
+    })
+    .from(schema.loyaltyTransactions)
+    .where(eq(schema.loyaltyTransactions.customer_loyalty_id, enrollment.id))
+    .orderBy(desc(schema.loyaltyTransactions.created_at))
+    .limit(limit);
+
+  return c.json({ success: true, data: transactions });
 });
 
 export { customer };
