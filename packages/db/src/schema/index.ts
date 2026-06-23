@@ -10,3 +10,5 @@ export * from "./payments";
 export * from "./staff";
 export * from "./coupons";
 export * from "./notifications";
+export * from "./referrals";
+export * from "./campaigns";

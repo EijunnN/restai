@@ -50,6 +50,13 @@
 			"when": 1782196243533,
 			"tag": "0006_loyalty_maturity",
 			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "7",
+			"when": 1782198997778,
+			"tag": "0007_loyalty_growth",
+			"breakpoints": true
 		}
 	]
 }

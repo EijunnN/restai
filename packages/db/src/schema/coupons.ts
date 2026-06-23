@@ -32,11 +32,14 @@ export const coupons = pgTable("coupons", {
   max_uses_total: integer("max_uses_total"),
   max_uses_per_customer: integer("max_uses_per_customer").default(1),
   current_uses: integer("current_uses").default(0).notNull(),
+  // Groups coupons generated together in a bulk batch (null = created individually).
+  batch_id: uuid("batch_id"),
   starts_at: timestamp("starts_at", { withTimezone: true }),
   expires_at: timestamp("expires_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   unique("uq_coupons_org_code").on(table.organization_id, table.code),
+  index("idx_coupons_batch").on(table.batch_id),
 ]);
 
 export const couponAssignments = pgTable(

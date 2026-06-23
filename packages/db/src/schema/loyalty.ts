@@ -29,6 +29,11 @@ export const customers = pgTable("customers", {
   // Marketing consent (Ley 29733). marketing_opt_in gates all notifications.
   marketing_opt_in: boolean("marketing_opt_in").default(false).notNull(),
   consent_at: timestamp("consent_at", { withTimezone: true }),
+  // Referrals: each customer has a shareable code; referred_by points to the
+  // referrer. anonymized_at marks a Ley 29733 data-subject anonymization.
+  referral_code: varchar("referral_code", { length: 20 }),
+  referred_by: uuid("referred_by"), // FK to customers (self) -- via migration
+  anonymized_at: timestamp("anonymized_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -43,6 +48,10 @@ export const loyaltyPrograms = pgTable("loyalty_programs", {
   is_active: boolean("is_active").default(true).notNull(),
   // null = points never expire; otherwise earned points expire after N days.
   points_expire_after_days: integer("points_expire_after_days"),
+  // Referral rewards: points granted to referrer and referee on the referee's
+  // first completed order (0 = referrals disabled).
+  referral_referrer_points: integer("referral_referrer_points").default(0).notNull(),
+  referral_referee_points: integer("referral_referee_points").default(0).notNull(),
 });
 
 export const loyaltyTiers = pgTable("loyalty_tiers", {
