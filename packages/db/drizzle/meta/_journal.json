@@ -1,48 +1,55 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1770427939583,
-      "tag": "0000_bent_sentinels",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1770620476442,
-      "tag": "0001_loving_namor",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1774479333454,
-      "tag": "0002_shocking_lady_mastermind",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1774482632443,
-      "tag": "0003_regular_leo",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1774482632444,
-      "tag": "0004_inventory_non_negative_stock",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1774482632445,
-      "tag": "0005_deferred_order_fks",
-      "breakpoints": true
-    }
-  ]
+	"version": "7",
+	"dialect": "postgresql",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "7",
+			"when": 1770427939583,
+			"tag": "0000_bent_sentinels",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "7",
+			"when": 1770620476442,
+			"tag": "0001_loving_namor",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "7",
+			"when": 1774479333454,
+			"tag": "0002_shocking_lady_mastermind",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "7",
+			"when": 1774482632443,
+			"tag": "0003_regular_leo",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "7",
+			"when": 1774482632444,
+			"tag": "0004_inventory_non_negative_stock",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1774482632445,
+			"tag": "0005_deferred_order_fks",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "7",
+			"when": 1782196243533,
+			"tag": "0006_loyalty_maturity",
+			"breakpoints": true
+		}
+	]
 }

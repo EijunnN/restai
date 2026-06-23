@@ -26,6 +26,9 @@ export const customers = pgTable("customers", {
   email: varchar("email", { length: 255 }),
   phone: varchar("phone", { length: 20 }),
   birth_date: date("birth_date"),
+  // Marketing consent (Ley 29733). marketing_opt_in gates all notifications.
+  marketing_opt_in: boolean("marketing_opt_in").default(false).notNull(),
+  consent_at: timestamp("consent_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -38,6 +41,8 @@ export const loyaltyPrograms = pgTable("loyalty_programs", {
   points_per_currency_unit: integer("points_per_currency_unit").default(1).notNull(),
   currency_per_point: integer("currency_per_point").default(100).notNull(), // in cents
   is_active: boolean("is_active").default(true).notNull(),
+  // null = points never expire; otherwise earned points expire after N days.
+  points_expire_after_days: integer("points_expire_after_days"),
 });
 
 export const loyaltyTiers = pgTable("loyalty_tiers", {
@@ -81,10 +86,15 @@ export const loyaltyTransactions = pgTable("loyalty_transactions", {
   points: integer("points").notNull(),
   type: loyaltyTransactionTypeEnum("type").notNull(),
   description: text("description"),
+  // Set on 'earned' rows when the program has an expiry policy; the expiry job
+  // consumes still-unexpired earned points and writes negative 'expired' rows.
+  expires_at: timestamp("expires_at", { withTimezone: true }),
+  expired: boolean("expired").default(false).notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("idx_loyalty_tx_customer_loyalty").on(table.customer_loyalty_id),
   index("idx_loyalty_tx_order").on(table.order_id),
+  index("idx_loyalty_tx_expiry").on(table.type, table.expired, table.expires_at),
 ]);
 
 export const rewards = pgTable("rewards", {
@@ -95,8 +105,15 @@ export const rewards = pgTable("rewards", {
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   points_cost: integer("points_cost").notNull(),
+  // "discount" (percentage/fixed off the order) or "free_item" (a specific menu item).
+  reward_type: text("reward_type").default("discount").notNull(),
   discount_type: discountTypeEnum("discount_type").notNull(),
   discount_value: integer("discount_value").notNull(),
+  menu_item_id: uuid("menu_item_id"), // FK to menu_items (free_item rewards) -- via migration
+  stock_remaining: integer("stock_remaining"), // null = unlimited
+  max_per_customer: integer("max_per_customer"), // null = unlimited
+  starts_at: timestamp("starts_at", { withTimezone: true }),
+  expires_at: timestamp("expires_at", { withTimezone: true }),
   is_active: boolean("is_active").default(true).notNull(),
 });
 
@@ -109,5 +126,12 @@ export const rewardRedemptions = pgTable("reward_redemptions", {
     .notNull()
     .references(() => rewards.id, { onDelete: "restrict" }),
   order_id: uuid("order_id"), // FK to orders -- applied via migration to avoid circular import
+  // Snapshot of the reward's value at redeem time so later admin edits to the
+  // reward never retroactively change an already-claimed redemption.
+  reward_type: text("reward_type").default("discount").notNull(),
+  discount_type: discountTypeEnum("discount_type"),
+  discount_value: integer("discount_value"),
+  menu_item_id: uuid("menu_item_id"),
+  points_spent: integer("points_spent"),
   redeemed_at: timestamp("redeemed_at", { withTimezone: true }).defaultNow().notNull(),
 });
