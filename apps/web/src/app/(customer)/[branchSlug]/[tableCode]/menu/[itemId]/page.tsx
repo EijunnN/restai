@@ -459,7 +459,7 @@ export default function ProductDetailPage({
               fill
               sizes="100vw"
               unoptimized
-              className="object-cover"
+              className="object-contain"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-background via-background/60 to-transparent" />
           </>

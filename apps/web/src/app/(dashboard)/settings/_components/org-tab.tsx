@@ -71,11 +71,13 @@ export function OrgTab() {
               <Label>Logo</Label>
               <div className="flex items-center gap-4">
                 {orgForm.logoUrl && (
-                  <img
-                    src={orgForm.logoUrl}
-                    alt="Logo"
-                    className="h-24 w-24 rounded-lg object-cover border"
-                  />
+                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted/30">
+                    <img
+                      src={orgForm.logoUrl}
+                      alt="Logo"
+                      className="h-full w-full object-contain p-1.5"
+                    />
+                  </div>
                 )}
                 <div className="flex flex-col gap-2">
                   <Button

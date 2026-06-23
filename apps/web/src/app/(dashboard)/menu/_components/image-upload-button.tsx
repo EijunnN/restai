@@ -36,7 +36,7 @@ export function ImageUploadButton({
         <img
           src={currentUrl}
           alt=""
-          className="h-20 w-20 rounded-lg object-cover"
+          className="h-20 w-20 rounded-lg object-contain bg-muted"
         />
       )}
       <button

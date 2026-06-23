@@ -123,7 +123,7 @@ export function ModifierDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
             {item.image_url ? (
-              <img src={item.image_url} alt="" className="h-12 w-12 rounded-lg object-cover" />
+              <img src={item.image_url} alt="" className="h-12 w-12 rounded-lg object-contain bg-muted" />
             ) : (
               <div className="h-12 w-12 rounded-lg bg-muted flex items-center justify-center">
                 <UtensilsCrossed className="h-5 w-5 text-muted-foreground/50" />

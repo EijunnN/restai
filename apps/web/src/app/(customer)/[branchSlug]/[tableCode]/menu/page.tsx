@@ -328,7 +328,7 @@ export default function CustomerMenuPage({
                               fill
                               sizes="(max-width: 768px) 50vw, 200px"
                               unoptimized
-                              className="object-cover"
+                              className="object-contain"
                             />
                           ) : (
                             <div className="w-full h-full bg-muted flex items-center justify-center">

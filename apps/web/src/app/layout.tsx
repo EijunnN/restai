@@ -17,11 +17,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="es" suppressHydrationWarning className="light">
+    <html lang="es" suppressHydrationWarning className="dark">
       <body className={inter.className}>
         <Providers>
           {children}
-          <Toaster position="top-right" richColors />
+          <Toaster position="bottom-right" theme="dark" />
         </Providers>
       </body>
     </html>

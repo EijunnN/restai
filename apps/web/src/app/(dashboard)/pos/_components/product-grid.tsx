@@ -142,7 +142,7 @@ function ProductGridComponent({
                       <img
                         src={item.image_url}
                         alt={item.name}
-                        className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+                        className="h-full w-full object-contain transition-transform duration-200 group-hover:scale-105"
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center">

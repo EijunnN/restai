@@ -106,6 +106,21 @@ function isActive(pathname: string, href: string) {
   return pathname === href || (href !== "/" && pathname.startsWith(href));
 }
 
+function BrandMark({ logoUrl }: { logoUrl?: string | null }) {
+  if (logoUrl) {
+    return (
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white">
+        <img src={logoUrl} alt="Logo" className="h-full w-full object-contain p-0.5" />
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+      <Store className="h-4 w-4" />
+    </div>
+  );
+}
+
 export default function DashboardLayout({
   children,
 }: {
@@ -185,9 +200,7 @@ export default function DashboardLayout({
       >
         {/* Brand header */}
         <div className="h-14 flex items-center gap-3 px-4 border-b border-sidebar-border">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-            <Store className="h-4 w-4" />
-          </div>
+          <BrandMark logoUrl={org?.logo_url} />
           {!collapsed && (
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-sidebar-foreground truncate leading-tight">
@@ -396,9 +409,7 @@ export default function DashboardLayout({
               {/* Mobile header */}
               <div className="h-14 flex items-center justify-between px-4 border-b border-sidebar-border">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                    <Store className="h-4 w-4" />
-                  </div>
+                  <BrandMark logoUrl={org?.logo_url} />
                   <span className="font-semibold text-sm text-sidebar-foreground">
                     {orgName}
                   </span>
