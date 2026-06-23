@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { createTestOrg, createTestCustomer, createTestLoyaltyProgram, createTestTier, createTestReward, cleanup } from "../setup";
+import { createTestOrg, createTestBranch, createTestOrder, createTestCustomer, createTestLoyaltyProgram, createTestTier, createTestReward, cleanup } from "../setup";
 import { enrollCustomer, awardPoints, redeemReward } from "../../services/loyalty.service";
 import { db, schema } from "@restai/db";
 import { eq } from "drizzle-orm";
 
 describe("loyalty.service", () => {
   let orgId: string;
+  let branchId: string;
   let customerId: string;
   let programId: string;
   let baseTierId: string;
@@ -14,6 +15,8 @@ describe("loyalty.service", () => {
   beforeAll(async () => {
     const org = await createTestOrg();
     orgId = org.id;
+    const branch = await createTestBranch(orgId);
+    branchId = branch.id;
     const customer = await createTestCustomer(orgId);
     customerId = customer.id;
     const program = await createTestLoyaltyProgram(orgId);
@@ -50,8 +53,9 @@ describe("loyalty.service", () => {
   });
 
   it("awardPoints calculates points with tier multiplier", async () => {
-    // Create a test order ID
-    const orderId = crypto.randomUUID();
+    // Use a real order so the loyalty_transactions.order_id FK is satisfied.
+    const order = await createTestOrder(orgId, branchId);
+    const orderId = order.id;
     const result = await awardPoints({
       customerId,
       orderId,
@@ -71,7 +75,8 @@ describe("loyalty.service", () => {
   });
 
   it("awardPoints is idempotent (same orderId)", async () => {
-    const orderId = crypto.randomUUID();
+    const order = await createTestOrder(orgId, branchId);
+    const orderId = order.id;
     await awardPoints({
       customerId,
       orderId,
@@ -97,7 +102,8 @@ describe("loyalty.service", () => {
     const goldTier = await createTestTier(programId, 100, 150); // needs 100 points
 
     // Award enough points to qualify
-    const orderId = crypto.randomUUID();
+    const order = await createTestOrder(orgId, branchId);
+    const orderId = order.id;
     await awardPoints({
       customerId,
       orderId,

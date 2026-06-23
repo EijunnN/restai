@@ -55,6 +55,20 @@ export async function createTestTable(branchId: string, orgId: string, number: n
   return table;
 }
 
+export async function createTestOrder(
+  orgId: string,
+  branchId: string,
+  overrides: Partial<typeof schema.orders.$inferInsert> = {},
+) {
+  const [order] = await db.insert(schema.orders).values({
+    organization_id: orgId,
+    branch_id: branchId,
+    order_number: `TST${counter++}`,
+    ...overrides,
+  }).returning();
+  return order;
+}
+
 export async function createTestCustomer(orgId: string, overrides: Partial<typeof schema.customers.$inferInsert> = {}) {
   const [customer] = await db.insert(schema.customers).values({
     organization_id: orgId,
