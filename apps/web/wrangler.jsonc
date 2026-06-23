@@ -11,7 +11,7 @@
   "observability": {
     "enabled": true
   },
-  // Dominio propio del dashboard. La API vive en restai.bezenti.com; el web va en
+  // Dominio propio del dashboard. La API vive en api.restai.bezenti.com; el web va en
   // app.restai.bezenti.com. La zona bezenti.com está en esta cuenta de Cloudflare,
   // así que wrangler crea el registro DNS y el certificado automáticamente.
   "routes": [

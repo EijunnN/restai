@@ -20,10 +20,11 @@ compatibility_date = "2025-09-01"
 # (writable) en worker.ts → configure().
 compatibility_flags = ["nodejs_compat"]
 
-# Dominio propio (la zona bezenti.com vive en esta cuenta de Cloudflare).
-# wrangler crea el registro DNS y el certificado automáticamente.
+# Dominio propio de la API (la zona bezenti.com vive en esta cuenta de Cloudflare).
+# wrangler crea el registro DNS y el certificado automáticamente. El apex
+# `restai.bezenti.com` queda libre para una landing/web informativa del sistema.
 routes = [
-  { pattern = "restai.bezenti.com", custom_domain = true },
+  { pattern = "api.restai.bezenti.com", custom_domain = true },
 ]
 
 [observability]

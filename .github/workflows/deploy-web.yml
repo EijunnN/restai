@@ -8,7 +8,7 @@ name: Deploy Web (Cloudflare Worker)
 #   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
 #
 # El web se publica en https://app.restai.bezenti.com (ver apps/web/wrangler.jsonc);
-# la API vive en https://restai.bezenti.com. NEXT_PUBLIC_API_URL se inyecta en build
+# la API vive en https://api.restai.bezenti.com. NEXT_PUBLIC_API_URL se inyecta en build
 # (es una var pública, se "hornea" en el bundle del cliente).
 
 on:
@@ -38,7 +38,7 @@ jobs:
         working-directory: apps/web
         run: bun run cf:build
         env:
-          NEXT_PUBLIC_API_URL: https://restai.bezenti.com
+          NEXT_PUBLIC_API_URL: https://api.restai.bezenti.com
       - name: Deploy del Worker
         working-directory: apps/web
         run: bunx wrangler deploy
