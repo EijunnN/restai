@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://restai.bezenti.com/sitemap.xml

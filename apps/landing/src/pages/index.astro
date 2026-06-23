@@ -1,38 +1,78 @@
 ---
+const SITE = "https://restai.bezenti.com";
 const APP_URL = "https://app.restai.bezenti.com";
+const API_HEALTH = "https://api.restai.bezenti.com/health";
+const OG_IMAGE = `${SITE}/og.png`;
+const DESC =
+  "RestAI es el sistema todo-en-uno para restaurantes: POS multicanal, comandas a cocina en tiempo real, carta por QR, facturación electrónica SUNAT, inventario, fidelidad y multi-sucursal.";
+
+const steps = [
+  { n: "01", title: "El cliente escanea el QR", desc: "Abre la carta en su celular, arma su pedido y lo envía. Sin apps, sin esperas." },
+  { n: "02", title: "La cocina lo recibe al instante", desc: "La comanda aparece en el tablero Kanban en tiempo real, lista para preparar." },
+  { n: "03", title: "El equipo despacha y cobra", desc: "Mozos y caja gestionan el servicio, los pagos y el estado de cada mesa." },
+  { n: "04", title: "Se emite el comprobante", desc: "Boleta o factura electrónica enviada a SUNAT, sin pasos manuales." },
+];
 
 const features = [
-  {
-    icon: "🧾",
-    title: "Punto de venta (POS)",
-    desc: "Toma pedidos para mesa, mostrador o delivery desde un solo lugar, con carrito completo y cobro rápido.",
-  },
-  {
-    icon: "🍳",
-    title: "Cocina en tiempo real",
-    desc: "Las comandas llegan a un tablero Kanban al instante. La cocina ve, prepara y marca cada plato sin papel.",
-  },
-  {
-    icon: "📱",
-    title: "Pedidos por QR",
-    desc: "El cliente escanea el QR de su mesa, ve el menú, arma su pedido y llama al mozo desde su propio celular.",
-  },
-  {
-    icon: "🧮",
-    title: "Facturación SUNAT",
-    desc: "Emisión de boletas y facturas electrónicas con envío y resúmenes a SUNAT integrados en el flujo de cobro.",
-  },
-  {
-    icon: "🏢",
-    title: "Multi-sucursal",
-    desc: "Varias sedes bajo una misma cuenta, con aislamiento de datos por sucursal y control de personal y roles.",
-  },
-  {
-    icon: "📦",
-    title: "Inventario y fidelidad",
-    desc: "Control de stock con descuento automático y un programa de puntos para que tus clientes vuelvan.",
-  },
+  { icon: "🧾", title: "POS multicanal", desc: "Toma pedidos para mesa, mostrador o delivery desde una sola pantalla, con carrito completo y cobro ágil.", benefit: "Un solo flujo para todo el servicio." },
+  { icon: "🍳", title: "Cocina en tiempo real", desc: "Las comandas llegan a un tablero Kanban al instante; la cocina ve, prepara y marca cada plato.", benefit: "Cero papel y menos errores de pedido." },
+  { icon: "📱", title: "Carta digital por QR", desc: "El comensal escanea el QR de su mesa, navega el menú con fotos y pide desde su propio teléfono.", benefit: "Menos carga para los mozos, más rotación." },
+  { icon: "🔔", title: "Llamar al mozo y pedir la cuenta", desc: "El cliente solicita atención o la cuenta con un toque; el personal lo ve en su panel al momento.", benefit: "Mejor atención, mesas que rotan más rápido." },
+  { icon: "🧮", title: "Facturación electrónica SUNAT", desc: "Emisión de boletas y facturas, con envío y resúmenes diarios a SUNAT integrados en el cobro.", benefit: "Cumples la norma sin fricción ni reprocesos." },
+  { icon: "🏢", title: "Multi-sucursal", desc: "Varias sedes bajo una misma cuenta, con aislamiento de datos por sucursal y configuración propia.", benefit: "Escala a nuevas sedes sin rehacer nada." },
+  { icon: "📦", title: "Inventario inteligente", desc: "Control de stock con descuento automático por venta y manejo de concurrencia para evitar sobreventa.", benefit: "Tu stock siempre refleja la realidad." },
+  { icon: "🎁", title: "Fidelidad y cupones", desc: "Programa de puntos y cupones para premiar y traer de vuelta a tus clientes recurrentes.", benefit: "Más clientes que regresan." },
+  { icon: "👥", title: "Personal y roles", desc: "Cuentas para tu equipo con permisos por rol y por sede; cada quien ve solo lo que le corresponde.", benefit: "Operación ordenada y segura." },
+  { icon: "📊", title: "Reportes y pagos", desc: "Ventas, productos y cobros a la vista para tomar decisiones con datos reales del día a día.", benefit: "Decisiones con información, no a ciegas." },
+  { icon: "⚡", title: "Tiempo real, en todo", desc: "Mensajería en vivo (WebSocket/Ably) que sincroniza pedidos, cocina y mesas al instante.", benefit: "Todos ven el mismo estado, siempre." },
+  { icon: "🛡️", title: "Seguro por diseño", desc: "Multi-tenant con aislamiento estricto, sesiones con expiración y borrado lógico de datos.", benefit: "Tu información protegida de extremo a extremo." },
 ];
+
+const benefits = [
+  { stat: "−Horas", title: "Menos tiempo perdido", desc: "Pedidos que fluyen del QR a la cocina sin intermediarios ni comandas en papel." },
+  { stat: "−Errores", title: "Menos platos mal pedidos", desc: "La cocina recibe exactamente lo que el cliente eligió, sin malentendidos." },
+  { stat: "100% SUNAT", title: "Cumplimiento automático", desc: "Cada venta puede convertirse en comprobante electrónico válido, sin pasos extra." },
+  { stat: "+Clientes", title: "Más fidelidad", desc: "Puntos, cupones y una experiencia de pedido moderna que invita a volver." },
+];
+
+const stats = [
+  { value: 3, suffix: "", label: "canales de venta (mesa · mostrador · delivery)" },
+  { value: 100, suffix: "%", label: "comprobantes listos para SUNAT" },
+  { value: null, display: "<1s", label: "para reflejar un pedido en cocina" },
+  { value: null, display: "∞", label: "sucursales bajo una sola cuenta" },
+];
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${SITE}/#org`,
+      name: "RestAI",
+      url: SITE,
+      logo: `${SITE}/og.svg`,
+      description: DESC,
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${SITE}/#website`,
+      url: SITE,
+      name: "RestAI",
+      publisher: { "@id": `${SITE}/#org` },
+      inLanguage: "es",
+    },
+    {
+      "@type": "SoftwareApplication",
+      name: "RestAI",
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web",
+      url: SITE,
+      description: DESC,
+      offers: { "@type": "Offer", price: "0", priceCurrency: "PEN", availability: "https://schema.org/InStock" },
+      featureList: features.map((f) => f.title),
+    },
+  ],
+};
 ---
 
 <!doctype html>
@@ -40,187 +80,410 @@ const features = [
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RestAI — Sistema de gestión para restaurantes</title>
-    <meta
-      name="description"
-      content="RestAI es el sistema todo-en-uno para restaurantes: POS, cocina en tiempo real, pedidos por QR, facturación electrónica SUNAT y multi-sucursal."
-    />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%BD%EF%B8%8F%3C/text%3E%3C/svg%3E" />
-    <meta property="og:title" content="RestAI — Sistema de gestión para restaurantes" />
-    <meta property="og:description" content="POS, cocina en tiempo real, QR, facturación SUNAT y multi-sucursal." />
+    <link rel="canonical" href={SITE} />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="theme-color" content="#0b0f17" />
+    <meta name="generator" content={Astro.generator} />
+
+    <title>RestAI — Sistema de gestión todo-en-uno para restaurantes</title>
+    <meta name="description" content={DESC} />
+    <meta name="keywords" content="software para restaurantes, POS restaurante, comandas en tiempo real, carta QR, facturación electrónica SUNAT, sistema multisucursal, punto de venta, gestión de restaurante Perú" />
+    <meta name="author" content="RestAI" />
+
+    <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://restai.bezenti.com" />
+    <meta property="og:site_name" content="RestAI" />
+    <meta property="og:locale" content="es_PE" />
+    <meta property="og:url" content={SITE} />
+    <meta property="og:title" content="RestAI — Gestión todo-en-uno para restaurantes" />
+    <meta property="og:description" content={DESC} />
+    <meta property="og:image" content={OG_IMAGE} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="RestAI — Sistema de gestión para restaurantes" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="RestAI — Gestión todo-en-uno para restaurantes" />
+    <meta name="twitter:description" content={DESC} />
+    <meta name="twitter:image" content={OG_IMAGE} />
+
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%BD%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+
+    <!-- Marca la presencia de JS para ocultar elementos solo cuando podremos animarlos. -->
+    <script is:inline>
+      document.documentElement.classList.add("js");
+    </script>
   </head>
+
   <body>
-    <header class="nav">
-      <a class="brand" href="/">
-        <span class="brand-mark">🍽️</span> RestAI
-      </a>
-      <a class="btn btn-ghost" href={APP_URL}>Ingresar al panel</a>
+    <header class="nav" id="nav">
+      <a class="brand" href="/"><span aria-hidden="true">🍽️</span> RestAI</a>
+      <nav class="nav-links" aria-label="Principal">
+        <a href="#como-funciona">Cómo funciona</a>
+        <a href="#features">Características</a>
+        <a href="#beneficios">Beneficios</a>
+      </nav>
+      <a class="btn btn-primary" href={APP_URL}>Ingresar al panel</a>
     </header>
 
     <main>
+      <!-- HERO -->
       <section class="hero">
-        <p class="eyebrow">Sistema de gestión para restaurantes</p>
-        <h1>Todo tu restaurante, <span class="grad">en una sola plataforma.</span></h1>
-        <p class="lead">
-          POS, cocina en tiempo real, pedidos por QR y facturación electrónica
-          SUNAT. Desde una sola mesa hasta varias sucursales, RestAI ordena tu
-          operación de principio a fin.
-        </p>
-        <div class="cta">
-          <a class="btn btn-primary" href={APP_URL}>Ingresar al panel →</a>
-          <a class="btn btn-ghost" href="#features">Ver características</a>
+        <div class="blob blob-a" aria-hidden="true"></div>
+        <div class="blob blob-b" aria-hidden="true"></div>
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow reveal">Sistema de gestión para restaurantes</p>
+            <h1 class="reveal">Todo tu restaurante,<br /><span class="grad">en una sola plataforma.</span></h1>
+            <p class="lead reveal">{DESC}</p>
+            <div class="cta reveal">
+              <a class="btn btn-primary btn-lg" href={APP_URL}>Ingresar al panel →</a>
+              <a class="btn btn-ghost btn-lg" href="#features">Ver todo lo que hace</a>
+            </div>
+            <p class="microcopy reveal">Del QR a la cocina y a SUNAT, sin papel y en tiempo real.</p>
+          </div>
+
+          <!-- Mockup flotante -->
+          <div class="hero-art" aria-hidden="true">
+            <div class="ui-card ui-ticket float">
+              <div class="ui-head"><span class="dot"></span> Comanda · Mesa 4</div>
+              <div class="ui-row"><span>2× Lomo saltado</span><span class="tag">En cocina</span></div>
+              <div class="ui-row"><span>1× Ceviche</span><span class="tag warn">Pendiente</span></div>
+              <div class="ui-row"><span>3× Chicha morada</span><span class="tag ok">Listo</span></div>
+            </div>
+            <div class="ui-card ui-qr float float-delay">
+              <div class="qr"></div>
+              <div class="ui-sub">Escanea y pide</div>
+            </div>
+            <div class="ui-card ui-bill float float-delay2">
+              <div class="ui-head">Boleta electrónica</div>
+              <div class="ui-total">S/ 128.00</div>
+              <div class="ui-sub ok-text">✓ Enviada a SUNAT</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- STATS -->
+        <div class="stats reveal" id="stats">
+          {stats.map((s) => (
+            <div class="stat">
+              <div class="stat-value" data-count={s.value ?? ""} data-suffix={s.suffix ?? ""}>
+                {s.display ?? `0${s.suffix ?? ""}`}
+              </div>
+              <div class="stat-label">{s.label}</div>
+            </div>
+          ))}
         </div>
       </section>
 
-      <section id="features" class="features">
-        {
-          features.map((f) => (
-            <article class="card">
-              <div class="card-icon">{f.icon}</div>
-              <h3>{f.title}</h3>
-              <p>{f.desc}</p>
-            </article>
-          ))
-        }
+      <!-- CÓMO FUNCIONA -->
+      <section id="como-funciona" class="section">
+        <header class="section-head reveal">
+          <p class="kicker">Cómo funciona</p>
+          <h2>Del pedido al comprobante, en cuatro pasos</h2>
+        </header>
+        <ol class="steps">
+          {steps.map((s) => (
+            <li class="step reveal">
+              <span class="step-n">{s.n}</span>
+              <h3>{s.title}</h3>
+              <p>{s.desc}</p>
+            </li>
+          ))}
+        </ol>
       </section>
 
-      <section class="closing">
-        <h2>Listo para ordenar tu operación</h2>
-        <p>Entra al panel y empieza a gestionar tu restaurante hoy.</p>
-        <a class="btn btn-primary" href={APP_URL}>Ingresar al panel →</a>
+      <!-- FEATURES -->
+      <section id="features" class="section">
+        <header class="section-head reveal">
+          <p class="kicker">Características</p>
+          <h2>Todo lo que tu restaurante necesita</h2>
+          <p class="section-sub">Cada módulo resuelve un dolor real de la operación — y suma un beneficio concreto.</p>
+        </header>
+        <div class="features">
+          {features.map((f) => (
+            <article class="card reveal" itemscope itemtype="https://schema.org/Service">
+              <div class="card-icon" aria-hidden="true">{f.icon}</div>
+              <h3 itemprop="name">{f.title}</h3>
+              <p itemprop="description">{f.desc}</p>
+              <p class="benefit"><span aria-hidden="true">✓</span> {f.benefit}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <!-- BENEFICIOS -->
+      <section id="beneficios" class="section">
+        <header class="section-head reveal">
+          <p class="kicker">Beneficios</p>
+          <h2>Lo que ganas al usar RestAI</h2>
+        </header>
+        <div class="benefits">
+          {benefits.map((b) => (
+            <article class="benefit-card reveal">
+              <div class="benefit-stat grad">{b.stat}</div>
+              <h3>{b.title}</h3>
+              <p>{b.desc}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <!-- CTA FINAL -->
+      <section class="closing reveal">
+        <h2>Ordena tu operación, <span class="grad">hoy mismo.</span></h2>
+        <p>Entra al panel y empieza a gestionar tu restaurante de punta a punta.</p>
+        <a class="btn btn-primary btn-lg" href={APP_URL}>Ingresar al panel →</a>
       </section>
     </main>
 
     <footer class="foot">
-      <span>© {new Date().getFullYear()} RestAI</span>
-      <nav>
+      <div class="foot-brand"><span aria-hidden="true">🍽️</span> RestAI</div>
+      <nav class="foot-links" aria-label="Pie">
+        <a href="#features">Características</a>
+        <a href="#beneficios">Beneficios</a>
         <a href={APP_URL}>Panel</a>
-        <a href="https://api.restai.bezenti.com/health">Estado de la API</a>
+        <a href={API_HEALTH}>Estado de la API</a>
       </nav>
+      <span class="foot-copy">© {new Date().getFullYear()} RestAI</span>
     </footer>
 
     <style is:global>
       :root {
         --bg: #0b0f17;
         --bg-soft: #121826;
-        --fg: #e6eaf2;
-        --muted: #97a3b6;
+        --bg-card: #141b2b;
+        --fg: #e9edf5;
+        --muted: #98a3b8;
         --accent: #ff7849;
         --accent-2: #ffb347;
         --border: #1f2937;
+        --radius: 1rem;
+        --max: 1140px;
       }
       * { box-sizing: border-box; }
       html { scroll-behavior: smooth; }
+      @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
       body {
         margin: 0;
         background:
-          radial-gradient(1100px 500px at 50% -10%, rgba(255, 120, 73, 0.16), transparent 60%),
+          radial-gradient(900px 480px at 80% -8%, rgba(255, 179, 71, 0.10), transparent 60%),
+          radial-gradient(1000px 520px at 12% 2%, rgba(255, 120, 73, 0.14), transparent 55%),
           var(--bg);
         color: var(--fg);
-        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         line-height: 1.6;
         -webkit-font-smoothing: antialiased;
+        overflow-x: hidden;
       }
-      main { max-width: 1080px; margin: 0 auto; padding: 0 1.25rem; }
       a { color: inherit; text-decoration: none; }
-
-      .nav {
-        max-width: 1080px;
-        margin: 0 auto;
-        padding: 1.25rem;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
+      h1, h2, h3 { letter-spacing: -0.03em; line-height: 1.1; }
+      .grad {
+        background: linear-gradient(120deg, var(--accent), var(--accent-2));
+        -webkit-background-clip: text; background-clip: text; color: transparent;
       }
-      .brand { font-weight: 700; font-size: 1.2rem; letter-spacing: -0.02em; }
-      .brand-mark { margin-right: 0.35rem; }
+
+      /* Reveal: solo se ocultan si hay JS y no hay reduce-motion. */
+      .js .reveal { opacity: 0; transform: translateY(26px); }
+      @media (prefers-reduced-motion: reduce) { .js .reveal { opacity: 1; transform: none; } }
 
       .btn {
-        display: inline-block;
-        padding: 0.7rem 1.15rem;
-        border-radius: 0.7rem;
-        font-weight: 600;
-        font-size: 0.95rem;
-        transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
-        border: 1px solid transparent;
+        display: inline-flex; align-items: center; gap: .4rem;
+        padding: .7rem 1.2rem; border-radius: .7rem; font-weight: 650; font-size: .95rem;
+        border: 1px solid transparent; cursor: pointer;
+        transition: transform .14s ease, box-shadow .14s ease, background .14s ease;
       }
-      .btn:hover { transform: translateY(-1px); }
+      .btn-lg { padding: .9rem 1.5rem; font-size: 1.02rem; }
+      .btn:hover { transform: translateY(-2px); }
       .btn-primary {
         background: linear-gradient(135deg, var(--accent), var(--accent-2));
-        color: #1a1205;
-        box-shadow: 0 8px 24px rgba(255, 120, 73, 0.25);
+        color: #19120a; box-shadow: 0 10px 30px rgba(255, 120, 73, .28);
       }
       .btn-ghost { border-color: var(--border); color: var(--fg); }
       .btn-ghost:hover { background: var(--bg-soft); }
 
-      .hero { text-align: center; padding: 4rem 0 3.5rem; }
-      .eyebrow {
-        text-transform: uppercase;
-        letter-spacing: 0.18em;
-        font-size: 0.78rem;
-        color: var(--accent-2);
-        margin: 0 0 0.75rem;
+      /* NAV */
+      .nav {
+        position: sticky; top: 0; z-index: 50;
+        display: flex; align-items: center; gap: 1rem;
+        max-width: var(--max); margin: 0 auto; padding: .9rem 1.25rem;
+        transition: background .2s ease, border-color .2s ease, backdrop-filter .2s ease;
+        border-bottom: 1px solid transparent;
       }
-      .hero h1 {
-        font-size: clamp(2.2rem, 6vw, 3.6rem);
-        line-height: 1.08;
-        letter-spacing: -0.03em;
-        margin: 0 auto 1.1rem;
-        max-width: 16ch;
+      .nav.scrolled {
+        background: rgba(11, 15, 23, .72); backdrop-filter: blur(12px);
+        border-bottom-color: var(--border);
       }
-      .grad {
-        background: linear-gradient(135deg, var(--accent), var(--accent-2));
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-      }
-      .lead { color: var(--muted); font-size: 1.15rem; max-width: 52ch; margin: 0 auto 2rem; }
-      .cta { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+      .brand { font-weight: 750; font-size: 1.2rem; }
+      .nav-links { margin-left: auto; display: flex; gap: 1.4rem; }
+      .nav-links a { color: var(--muted); font-size: .95rem; }
+      .nav-links a:hover { color: var(--fg); }
+      .nav .btn-primary { padding: .55rem 1rem; }
+      @media (max-width: 760px) { .nav-links { display: none; } }
 
-      .features {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 1rem;
-        padding: 1.5rem 0 3rem;
-      }
-      .card {
-        background: var(--bg-soft);
-        border: 1px solid var(--border);
-        border-radius: 1rem;
-        padding: 1.5rem;
-      }
-      .card-icon { font-size: 1.8rem; }
-      .card h3 { margin: 0.6rem 0 0.4rem; font-size: 1.15rem; }
-      .card p { margin: 0; color: var(--muted); font-size: 0.97rem; }
+      main { max-width: var(--max); margin: 0 auto; padding: 0 1.25rem; }
+      .section { padding: 5rem 0; }
+      .section-head { max-width: 60ch; margin: 0 auto 2.5rem; text-align: center; }
+      .kicker { text-transform: uppercase; letter-spacing: .18em; font-size: .76rem; color: var(--accent-2); margin: 0 0 .6rem; }
+      .section-head h2 { font-size: clamp(1.8rem, 4.5vw, 2.7rem); margin: 0; }
+      .section-sub { color: var(--muted); margin: .8rem auto 0; }
 
-      .closing {
-        text-align: center;
-        background: var(--bg-soft);
-        border: 1px solid var(--border);
-        border-radius: 1.25rem;
-        padding: 3rem 1.5rem;
-        margin: 1rem 0 4rem;
-      }
-      .closing h2 { font-size: clamp(1.6rem, 4vw, 2.2rem); margin: 0 0 0.5rem; letter-spacing: -0.02em; }
-      .closing p { color: var(--muted); margin: 0 0 1.5rem; }
+      /* HERO */
+      .hero { position: relative; padding: 3.5rem 0 2rem; }
+      .hero-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 2.5rem; align-items: center; }
+      @media (max-width: 920px) { .hero-grid { grid-template-columns: 1fr; } .hero-art { order: -1; } }
+      .eyebrow { text-transform: uppercase; letter-spacing: .18em; font-size: .8rem; color: var(--accent-2); margin: 0 0 1rem; }
+      .hero h1 { font-size: clamp(2.4rem, 6.4vw, 4rem); margin: 0 0 1.1rem; }
+      .lead { color: var(--muted); font-size: 1.15rem; max-width: 54ch; margin: 0 0 1.8rem; }
+      .cta { display: flex; gap: .8rem; flex-wrap: wrap; }
+      .microcopy { color: var(--muted); font-size: .9rem; margin: 1.1rem 0 0; }
 
-      .foot {
-        max-width: 1080px;
-        margin: 0 auto;
-        padding: 2rem 1.25rem 3rem;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 1rem;
-        color: var(--muted);
-        font-size: 0.9rem;
-        border-top: 1px solid var(--border);
+      .blob { position: absolute; border-radius: 50%; filter: blur(60px); opacity: .5; z-index: -1; pointer-events: none; }
+      .blob-a { width: 420px; height: 420px; background: rgba(255,120,73,.5); top: -120px; left: -120px; }
+      .blob-b { width: 360px; height: 360px; background: rgba(255,179,71,.4); bottom: -140px; right: -100px; }
+
+      /* HERO ART (mockup) */
+      .hero-art { position: relative; min-height: 360px; }
+      .ui-card {
+        position: absolute; background: var(--bg-card); border: 1px solid var(--border);
+        border-radius: 1rem; padding: 1rem 1.1rem; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+        width: 280px;
       }
-      .foot nav { display: flex; gap: 1.25rem; }
-      .foot nav a:hover { color: var(--fg); }
+      .ui-ticket { top: 10px; right: 0; }
+      .ui-qr { top: 150px; left: 0; width: 150px; text-align: center; }
+      .ui-bill { bottom: 0; right: 40px; width: 210px; }
+      .ui-head { font-weight: 650; font-size: .9rem; margin-bottom: .7rem; display: flex; align-items: center; gap: .4rem; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
+      .ui-row { display: flex; justify-content: space-between; align-items: center; font-size: .82rem; color: var(--muted); padding: .28rem 0; }
+      .tag { font-size: .68rem; padding: .12rem .5rem; border-radius: 999px; background: #20283a; color: var(--muted); }
+      .tag.ok { background: rgba(74,222,128,.14); color: #6ee7a8; }
+      .tag.warn { background: rgba(255,179,71,.16); color: var(--accent-2); }
+      .qr { width: 84px; height: 84px; margin: .2rem auto .5rem; border-radius: .5rem;
+        background:
+          conic-gradient(from 0deg, #0000 0 25%, #fff0 0) ,
+          repeating-conic-gradient(#e9edf5 0 90deg, #141b2b 0 180deg);
+        background-size: 100% 100%, 21px 21px; outline: 6px solid #e9edf5; outline-offset: -6px; }
+      .ui-sub { font-size: .78rem; color: var(--muted); }
+      .ui-total { font-size: 1.6rem; font-weight: 750; margin: .2rem 0 .3rem; }
+      .ok-text { color: #6ee7a8; }
+
+      /* STATS */
+      .stats {
+        display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;
+        margin-top: 3.5rem; padding: 1.5rem; background: var(--bg-soft);
+        border: 1px solid var(--border); border-radius: var(--radius);
+      }
+      @media (max-width: 760px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+      .stat { text-align: center; }
+      .stat-value { font-size: clamp(1.8rem, 4vw, 2.4rem); font-weight: 780; letter-spacing: -.03em;
+        background: linear-gradient(120deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .stat-label { color: var(--muted); font-size: .82rem; margin-top: .25rem; }
+
+      /* STEPS */
+      .steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; counter-reset: s; }
+      @media (max-width: 880px) { .steps { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 480px) { .steps { grid-template-columns: 1fr; } }
+      .step { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.4rem; }
+      .step-n { font-weight: 800; font-size: 1.1rem; color: var(--accent); }
+      .step h3 { font-size: 1.05rem; margin: .6rem 0 .4rem; }
+      .step p { margin: 0; color: var(--muted); font-size: .92rem; }
+
+      /* FEATURES */
+      .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+      .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem;
+        transition: transform .16s ease, border-color .16s ease; }
+      .card:hover { transform: translateY(-4px); border-color: #2b3a52; }
+      .card-icon { font-size: 1.9rem; }
+      .card h3 { margin: .7rem 0 .45rem; font-size: 1.12rem; }
+      .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+      .benefit { margin-top: .9rem !important; color: #cdd6e6 !important; font-size: .88rem !important; font-weight: 600; }
+      .benefit span { color: var(--accent-2); margin-right: .35rem; }
+
+      /* BENEFITS */
+      .benefits { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+      .benefit-card { background: linear-gradient(180deg, var(--bg-soft), var(--bg-card));
+        border: 1px solid var(--border); border-radius: var(--radius); padding: 1.6rem; }
+      .benefit-stat { font-size: 1.7rem; font-weight: 800; }
+      .benefit-card h3 { margin: .5rem 0 .4rem; font-size: 1.12rem; }
+      .benefit-card p { margin: 0; color: var(--muted); font-size: .93rem; }
+
+      /* CLOSING */
+      .closing { text-align: center; background: linear-gradient(135deg, rgba(255,120,73,.12), rgba(255,179,71,.08));
+        border: 1px solid var(--border); border-radius: 1.4rem; padding: 4rem 1.5rem; margin: 1rem 0 4rem; }
+      .closing h2 { font-size: clamp(1.9rem, 5vw, 2.8rem); margin: 0 0 .6rem; }
+      .closing p { color: var(--muted); margin: 0 0 1.6rem; }
+
+      /* FOOTER */
+      .foot { max-width: var(--max); margin: 0 auto; padding: 2.2rem 1.25rem 3.5rem;
+        display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+        border-top: 1px solid var(--border); color: var(--muted); font-size: .9rem; }
+      .foot-brand { font-weight: 700; color: var(--fg); }
+      .foot-links { display: flex; gap: 1.3rem; margin: 0 auto; flex-wrap: wrap; }
+      .foot-links a:hover { color: var(--fg); }
     </style>
+
+    <!-- GSAP: entrada del hero, reveals por scroll, contadores, nav y parallax. -->
+    <script>
+      import gsap from "gsap";
+      import { ScrollTrigger } from "gsap/ScrollTrigger";
+
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      // Nav con fondo al hacer scroll (siempre, es barato y sin animación intrusiva).
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav?.classList.toggle("scrolled", window.scrollY > 8);
+      onScroll();
+      window.addEventListener("scroll", onScroll, { passive: true });
+
+      if (!reduce) {
+        gsap.registerPlugin(ScrollTrigger);
+
+        // Entrada del hero.
+        gsap.timeline({ defaults: { ease: "power3.out", duration: 0.8 } })
+          .to(".hero .reveal", { opacity: 1, y: 0, stagger: 0.1 })
+          .to(".hero-art .ui-card", { opacity: 1, y: 0, stagger: 0.12, duration: 0.7 }, "-=0.5");
+
+        // Flotación continua de las tarjetas del mockup.
+        gsap.utils.toArray<HTMLElement>(".hero-art .float").forEach((el, i) => {
+          gsap.to(el, { y: "+=14", duration: 2.4 + i * 0.4, ease: "sine.inOut", yoyo: true, repeat: -1 });
+        });
+
+        // Parallax suave de los blobs.
+        gsap.to(".blob-a", { yPercent: 30, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
+        gsap.to(".blob-b", { yPercent: -20, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
+
+        // Reveals por scroll (cualquier .reveal fuera del hero).
+        gsap.utils.toArray<HTMLElement>(".section .reveal, .closing.reveal, #stats.reveal").forEach((el) => {
+          gsap.to(el, {
+            opacity: 1, y: 0, duration: 0.7, ease: "power3.out",
+            scrollTrigger: { trigger: el, start: "top 85%" },
+          });
+        });
+
+        // Stagger especial para grupos de tarjetas.
+        ["#features .card", ".steps .step", ".benefits .benefit-card"].forEach((sel) => {
+          gsap.to(sel, {
+            opacity: 1, y: 0, duration: 0.6, ease: "power3.out", stagger: 0.08,
+            scrollTrigger: { trigger: sel, start: "top 88%" },
+          });
+        });
+
+        // Contadores numéricos.
+        gsap.utils.toArray<HTMLElement>(".stat-value").forEach((el) => {
+          const target = parseFloat(el.dataset.count || "");
+          if (Number.isNaN(target)) return; // valores como "<1s" o "∞" quedan estáticos
+          const suffix = el.dataset.suffix || "";
+          const obj = { v: 0 };
+          gsap.to(obj, {
+            v: target, duration: 1.4, ease: "power1.out",
+            scrollTrigger: { trigger: "#stats", start: "top 85%" },
+            onUpdate: () => { el.textContent = Math.round(obj.v) + suffix; },
+          });
+        });
+      }
+    </script>
   </body>
 </html>
