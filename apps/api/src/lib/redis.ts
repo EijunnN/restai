@@ -11,10 +11,13 @@ const retryStrategy = (times: number) => {
   return Math.min(times * 200, 5000);
 };
 
+// lazyConnect: la conexión se abre en el primer comando. Así, en un despliegue
+// de un solo proceso sin Redis (coordinador "local"), importar este módulo NO
+// abre ningún socket ni genera reintentos contra localhost.
 const redis = new Redis(REDIS_URL, {
   retryStrategy,
   maxRetriesPerRequest: 3,
-  lazyConnect: false,
+  lazyConnect: true,
 });
 
 redis.on("error", (err) => {

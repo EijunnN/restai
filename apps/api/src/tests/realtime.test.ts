@@ -6,6 +6,8 @@ import {
 } from "../infrastructure/realtime/pusher.adapter.js";
 import { AblyProvider } from "../infrastructure/realtime/ably.adapter.js";
 import { NoopRealtime } from "../infrastructure/realtime/noop.adapter.js";
+import { WebSocketManager } from "../infrastructure/realtime/websocket.adapter.js";
+import { LocalCoordinator } from "../infrastructure/realtime/coordinator.js";
 
 describe("Pusher adapter", () => {
   const provider = new PusherProvider({
@@ -79,6 +81,68 @@ describe("Ably adapter", () => {
   it("usa capacidad comodín si no hay salas", async () => {
     const token: any = await provider.authorize({ clientId: "u1" });
     expect(JSON.parse(token.capability)).toEqual({ "*": ["subscribe"] });
+  });
+});
+
+describe("WebSocket manager + LocalCoordinator (in-process, sin Redis)", () => {
+  /** Socket falso que captura lo que se le envía. */
+  function fakeSocket() {
+    return {
+      readyState: 1,
+      sent: [] as string[],
+      closed: false,
+      send(m: string) {
+        this.sent.push(m);
+      },
+      close() {
+        this.closed = true;
+      },
+    };
+  }
+
+  it("entrega un publish a los clientes de la sala, en el mismo proceso", async () => {
+    const mgr = new WebSocketManager(new LocalCoordinator());
+    expect(mgr.coordinatorName).toBe("local");
+
+    const staff = fakeSocket();
+    await mgr.register("c1", staff, {
+      sub: "u1",
+      role: "org_admin",
+      branches: ["b1"],
+    });
+    // El register envía auth:success.
+    expect(staff.sent.some((m) => m.includes("auth:success"))).toBe(true);
+
+    await mgr.publish("branch:b1", { type: "order:new", id: 7 });
+
+    const got = staff.sent.find((m) => m.includes("order:new"));
+    expect(got).toBeTruthy();
+    expect(JSON.parse(got!)).toEqual({ type: "order:new", id: 7 });
+  });
+
+  it("no entrega a clientes que no están en la sala", async () => {
+    const mgr = new WebSocketManager(new LocalCoordinator());
+    const other = fakeSocket();
+    await mgr.register("c2", other, {
+      sub: "u2",
+      role: "org_admin",
+      branches: ["b2"],
+    });
+
+    await mgr.publish("branch:b1", { type: "order:new" });
+
+    expect(other.sent.some((m) => m.includes("order:new"))).toBe(false);
+  });
+
+  it("deja de entregar tras removeClient", async () => {
+    const mgr = new WebSocketManager(new LocalCoordinator());
+    const ws = fakeSocket();
+    await mgr.register("c3", ws, { sub: "u3", role: "org_admin", branches: ["b1"] });
+    mgr.removeClient("c3");
+    expect(mgr.clientCount).toBe(0);
+
+    await mgr.publish("branch:b1", { type: "order:new" });
+    expect(ws.sent.some((m) => m.includes("order:new"))).toBe(false);
   });
 });
 

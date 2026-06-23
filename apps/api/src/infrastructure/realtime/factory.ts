@@ -1,9 +1,31 @@
 import type { RealtimeProvider } from "../../core/ports/realtime.js";
 import { logger } from "../../lib/logger.js";
 import { NoopRealtime } from "./noop.adapter.js";
-import { WebSocketManager } from "./bun-redis.adapter.js";
+import { WebSocketManager } from "./websocket.adapter.js";
+import { LocalCoordinator, type RealtimeCoordinator } from "./coordinator.js";
+import { RedisCoordinator } from "./redis-coordinator.js";
 import { PusherProvider, pusherConfigFromEnv } from "./pusher.adapter.js";
 import { AblyProvider, ablyConfigFromEnv } from "./ably.adapter.js";
+
+/**
+ * Elige el coordinador de fan-out del servidor WebSocket nativo:
+ *  - `REALTIME_WS_COORDINATOR=local|redis` lo fuerza explícitamente.
+ *  - Si no se fuerza: `redis` cuando hay `REDIS_URL` (multi-instancia), si no
+ *    `local` (un solo proceso, p. ej. un VPS sencillo — WS en el mismo proceso
+ *    del backend, sin dependencias externas).
+ */
+function createWsCoordinator(): RealtimeCoordinator {
+  const explicit = process.env.REALTIME_WS_COORDINATOR?.toLowerCase();
+  const useRedis =
+    explicit === "redis" || (explicit !== "local" && !!process.env.REDIS_URL);
+
+  if (useRedis) {
+    logger.info("WebSocket coordinator: redis (multi-instancia)");
+    return new RedisCoordinator();
+  }
+  logger.info("WebSocket coordinator: local (un solo proceso)");
+  return new LocalCoordinator();
+}
 
 /**
  * Crea el proveedor realtime según `REALTIME_PROVIDER`
@@ -40,6 +62,6 @@ export function createRealtimeProvider(): RealtimeProvider {
     case "websocket":
     default:
       logger.info("Realtime provider: websocket");
-      return new WebSocketManager();
+      return new WebSocketManager(createWsCoordinator());
   }
 }

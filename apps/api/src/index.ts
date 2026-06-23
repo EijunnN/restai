@@ -2,7 +2,7 @@ import { app } from "./app.js";
 import { logger } from "./lib/logger.js";
 import { redis } from "./lib/redis.js";
 import { verifyAccessToken } from "./lib/jwt.js";
-import { WebSocketManager } from "./infrastructure/realtime/bun-redis.adapter.js";
+import { WebSocketManager } from "./infrastructure/realtime/websocket.adapter.js";
 import { createRealtimeProvider } from "./infrastructure/realtime/factory.js";
 import { Argon2Hasher } from "./infrastructure/security/argon2.adapter.js";
 import { useRealtime, useHasher } from "./infrastructure/container.js";
@@ -56,20 +56,8 @@ const server = Bun.serve({
     async open(ws) {
       if (!wsManager) return;
       const data = ws.data as any;
-      wsManager.addClient(data.id, ws, data.payload.sub, undefined, data.payload.exp);
-
-      // Auto-join rooms based on pre-verified token payload
-      if (data.payload.role === "customer") {
-        if (data.payload.branch) await wsManager.joinRoom(data.id, `branch:${data.payload.branch}`);
-        if (data.payload.table) await wsManager.joinRoom(data.id, `table:${data.payload.table}`);
-        await wsManager.joinRoom(data.id, `session:${data.payload.sub}`);
-      } else if (data.payload.branches) {
-        for (const branchId of data.payload.branches) {
-          await wsManager.joinRoom(data.id, `branch:${branchId}`);
-        }
-      }
-
-      ws.send(JSON.stringify({ type: "auth:success", userId: data.payload.sub, timestamp: Date.now() }));
+      // addClient + auto-join de salas + auth:success (lógica compartida con Node).
+      await wsManager.register(data.id, ws, data.payload);
     },
     message(ws, message) {
       if (!wsManager) return;
@@ -107,10 +95,15 @@ async function shutdown(signal: string) {
   clearInterval(sessionExpiryInterval);
   clearInterval(wsHeartbeatInterval);
   server.stop();
-  try {
-    await redis.quit();
-  } catch {
-    // Redis may already be disconnected
+  // Cierra el coordinador del WS (subscriber de Redis, si aplica).
+  await wsManager?.close().catch(() => {});
+  // Solo cierra Redis si llegó a conectarse (en modo local nunca conecta).
+  if (redis.status === "ready" || redis.status === "connecting") {
+    try {
+      await redis.quit();
+    } catch {
+      // Redis may already be disconnected
+    }
   }
   logger.info("Server stopped");
   process.exit(0);
