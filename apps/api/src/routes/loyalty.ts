@@ -727,6 +727,203 @@ loyalty.post(
 );
 
 // ---------------------------------------------------------------------------
+// DATA-SUBJECT RIGHTS (Ley 29733)
+// ---------------------------------------------------------------------------
+
+// GET /customers/:id/export - Data-subject access request (Ley 29733).
+// Returns a single JSON document with the customer's full record (PII) plus all
+// loyalty/transaction/order/referral data linked to them. Strictly org-scoped.
+loyalty.get(
+  "/customers/:id/export",
+  requirePermission("customers:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    // Full customer record (includes PII) — must belong to this org.
+    const [customer] = await db
+      .select()
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.id, id),
+          eq(schema.customers.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!customer) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+        404,
+      );
+    }
+
+    // Loyalty enrollments for this customer (with tier + program names).
+    const loyaltyEnrollments = await db
+      .select({
+        id: schema.customerLoyalty.id,
+        program_id: schema.customerLoyalty.program_id,
+        program_name: schema.loyaltyPrograms.name,
+        points_balance: schema.customerLoyalty.points_balance,
+        total_points_earned: schema.customerLoyalty.total_points_earned,
+        tier_id: schema.customerLoyalty.tier_id,
+        tier_name: schema.loyaltyTiers.name,
+      })
+      .from(schema.customerLoyalty)
+      .leftJoin(
+        schema.loyaltyTiers,
+        eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
+      )
+      .leftJoin(
+        schema.loyaltyPrograms,
+        eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+      )
+      .where(eq(schema.customerLoyalty.customer_id, id));
+
+    const loyaltyIds = loyaltyEnrollments.map((e) => e.id);
+    const { inArray } = await import("drizzle-orm");
+
+    // Loyalty transactions + reward redemptions hang off the enrollment rows.
+    const [loyaltyTransactions, rewardRedemptions] = await Promise.all([
+      loyaltyIds.length > 0
+        ? db
+            .select()
+            .from(schema.loyaltyTransactions)
+            .where(inArray(schema.loyaltyTransactions.customer_loyalty_id, loyaltyIds))
+            .orderBy(desc(schema.loyaltyTransactions.created_at))
+        : Promise.resolve([] as any[]),
+      loyaltyIds.length > 0
+        ? db
+            .select()
+            .from(schema.rewardRedemptions)
+            .where(inArray(schema.rewardRedemptions.customer_loyalty_id, loyaltyIds))
+            .orderBy(desc(schema.rewardRedemptions.redeemed_at))
+        : Promise.resolve([] as any[]),
+    ]);
+
+    // Coupon redemptions, orders, and referrals reference the customer directly.
+    const [couponRedemptions, orders, referralsAsReferrer, referralsAsReferee] =
+      await Promise.all([
+        db
+          .select()
+          .from(schema.couponRedemptions)
+          .where(eq(schema.couponRedemptions.customer_id, id))
+          .orderBy(desc(schema.couponRedemptions.redeemed_at)),
+        db
+          .select()
+          .from(schema.orders)
+          .where(
+            and(
+              eq(schema.orders.customer_id, id),
+              eq(schema.orders.organization_id, tenant.organizationId),
+            ),
+          )
+          .orderBy(desc(schema.orders.created_at)),
+        db
+          .select()
+          .from(schema.referrals)
+          .where(
+            and(
+              eq(schema.referrals.referrer_customer_id, id),
+              eq(schema.referrals.organization_id, tenant.organizationId),
+            ),
+          )
+          .orderBy(desc(schema.referrals.created_at)),
+        db
+          .select()
+          .from(schema.referrals)
+          .where(
+            and(
+              eq(schema.referrals.referee_customer_id, id),
+              eq(schema.referrals.organization_id, tenant.organizationId),
+            ),
+          )
+          .orderBy(desc(schema.referrals.created_at)),
+      ]);
+
+    return c.json({
+      success: true,
+      data: {
+        exported_at: new Date().toISOString(),
+        customer,
+        loyaltyEnrollments,
+        loyaltyTransactions,
+        rewardRedemptions,
+        couponRedemptions,
+        orders,
+        referrals: {
+          asReferrer: referralsAsReferrer,
+          asReferee: referralsAsReferee,
+        },
+      },
+    });
+  },
+);
+
+// POST /customers/:id/anonymize - Data-subject erasure (Ley 29733).
+// Irreversibly scrubs PII while PRESERVING loyalty/transaction/order rows so
+// aggregate analytics and program integrity are unaffected. Org-scoped; rejects
+// a customer that has already been anonymized.
+loyalty.post(
+  "/customers/:id/anonymize",
+  requirePermission("customers:update"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    // Must belong to this org; load anonymized_at to enforce idempotency guard.
+    const [existing] = await db
+      .select({
+        id: schema.customers.id,
+        anonymized_at: schema.customers.anonymized_at,
+      })
+      .from(schema.customers)
+      .where(
+        and(
+          eq(schema.customers.id, id),
+          eq(schema.customers.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!existing) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Cliente no encontrado" } },
+        404,
+      );
+    }
+
+    if (existing.anonymized_at) {
+      return c.json(
+        { success: false, error: { code: "CONFLICT", message: "El cliente ya fue anonimizado" } },
+        409,
+      );
+    }
+
+    // Scrub every PII column; preserve loyalty/transaction/order rows untouched.
+    const [anonymized] = await db
+      .update(schema.customers)
+      .set({
+        name: "Cliente anónimo",
+        email: null,
+        phone: null,
+        birth_date: null,
+        referral_code: null,
+        marketing_opt_in: false,
+        consent_at: null,
+        anonymized_at: new Date(),
+      })
+      .where(eq(schema.customers.id, id))
+      .returning();
+
+    return c.json({ success: true, data: anonymized });
+  },
+);
+
+// ---------------------------------------------------------------------------
 // PROGRAMS
 // ---------------------------------------------------------------------------
 

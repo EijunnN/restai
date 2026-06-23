@@ -2,6 +2,8 @@ import { eq, and, desc, gte, lte, lt, sql, isNull, isNotNull, or } from "drizzle
 import { db, schema, type DbOrTx } from "@restai/db";
 import { sendLoyaltyEmail } from "../lib/notifications.js";
 import { logger } from "../lib/logger.js";
+import { getActiveCampaignBoost } from "./campaign.service.js";
+import { completeReferralForFirstOrder } from "./referral.service.js";
 
 // Default birthday bonus, in whole points. Kept as a const so the value lives in
 // one place (and the idempotency guard below references the same constant).
@@ -127,11 +129,20 @@ export async function awardPoints(params: {
 
     if (!enrollment) return null;
 
-    // Calculate points with tier multiplier
+    // Calculate base points with tier multiplier
     const multiplier = enrollment.multiplier ?? 100;
-    const pointsEarned = Math.floor(
+    const basePoints = Math.floor(
       Math.floor(orderTotal / 100) * enrollment.points_per_currency_unit * multiplier / 100,
     );
+
+    // Apply any active earning campaign (extra multiplier + flat bonus) matching
+    // now, the customer's tier, and the day/time window.
+    const boost = await getActiveCampaignBoost({
+      organizationId,
+      tierId: enrollment.tier_id,
+      at: new Date(),
+    });
+    const pointsEarned = Math.floor((basePoints * boost.multiplier) / 100) + boost.bonusPoints;
 
     if (pointsEarned <= 0) return null;
 
@@ -219,6 +230,18 @@ export async function awardPoints(params: {
       unlockedReward: unlockedReward ?? null,
     };
   });
+
+  // Complete a pending referral for this customer on their qualifying order.
+  // Runs outside the award tx (uses its own), idempotent via the service's
+  // pending->completed guard, and best-effort so it never breaks point awarding.
+  try {
+    await completeReferralForFirstOrder({ organizationId, customerId });
+  } catch (err) {
+    logger.warn("referral completion failed", {
+      customerId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   if (!result) return null;
 

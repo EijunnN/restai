@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { randomUUID } from "node:crypto";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, or, lt, gte, isNull, desc, sql } from "drizzle-orm";
@@ -54,6 +55,19 @@ function isEffectivelyExpired(
   return coupon.expires_at != null && coupon.expires_at < now;
 }
 
+// Unambiguous uppercase alphabet for generated codes — excludes easily-confused
+// characters (0/O, 1/I) so printed/handed-out single-use codes are readable.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/** Generate a random uppercase suffix of `length` chars from CODE_ALPHABET. */
+function randomCodeSuffix(length: number): string {
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  }
+  return out;
+}
+
 coupons.use("*", authMiddleware);
 coupons.use("*", tenantMiddleware);
 
@@ -61,6 +75,14 @@ coupons.use("*", tenantMiddleware);
 coupons.get("/", requirePermission("loyalty:read"), zValidator("query", couponQuerySchema), async (c) => {
   const tenant = c.get("tenant") as any;
   const { status: statusFilter, type: typeFilter } = c.req.valid("query");
+  // `batchId` is an additive, optional filter read from the raw query (it is not
+  // part of couponQuerySchema, which strips unknown keys). When present and a
+  // valid uuid, scope the list to a single bulk batch.
+  const batchIdRaw = c.req.query("batchId");
+  const batchId =
+    batchIdRaw && z.string().uuid().safeParse(batchIdRaw).success
+      ? batchIdRaw
+      : null;
   const now = new Date();
 
   const conditions: any[] = [
@@ -69,6 +91,10 @@ coupons.get("/", requirePermission("loyalty:read"), zValidator("query", couponQu
 
   if (typeFilter) {
     conditions.push(eq(schema.coupons.type, typeFilter as any));
+  }
+
+  if (batchId) {
+    conditions.push(eq(schema.coupons.batch_id, batchId));
   }
 
   // Status filtering is derived from expires_at at read time, not just the
@@ -166,6 +192,147 @@ coupons.post(
       .returning();
 
     return c.json({ success: true, data: coupon }, 201);
+  },
+);
+
+// POST /bulk - Generate a batch of single-use coupons in one transaction.
+// Each coupon gets a unique PREFIX-XXXXXX code, max_uses_total = 1,
+// max_uses_per_customer = 1, and shares one generated batch_id.
+const bulkCouponSchema = z
+  .object({
+    count: z.number().int().min(1).max(1000),
+    // Prefix is normalized to uppercase; allow A-Z/0-9/_/- only, up to 20 chars.
+    prefix: z
+      .string()
+      .max(20)
+      .regex(/^[A-Za-z0-9_-]*$/, "Prefijo invalido")
+      .optional()
+      .default(""),
+    // Optional shared name/label. When omitted, each coupon is named after its
+    // generated code (the column is NOT NULL). The frontend bulk dialog does not
+    // currently send a name, so it must remain optional.
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(500).optional(),
+    type: z.enum([
+      "percentage",
+      "fixed",
+      "item_free",
+      "item_discount",
+      "category_discount",
+      "buy_x_get_y",
+    ]),
+    discountValue: z.number().int().min(0).optional(),
+    menuItemId: z.string().uuid().optional(),
+    categoryId: z.string().uuid().optional(),
+    buyQuantity: z.number().int().min(1).optional(),
+    getQuantity: z.number().int().min(1).optional(),
+    minOrderAmount: z.number().int().min(0).optional(),
+    maxDiscountAmount: z.number().int().min(0).optional(),
+    startsAt: z.string().optional(),
+    expiresAt: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.type === "percentage" &&
+      data.discountValue != null &&
+      data.discountValue > 100
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["discountValue"],
+        message: "El porcentaje no puede ser mayor a 100",
+      });
+    }
+  });
+
+coupons.post(
+  "/bulk",
+  requirePermission("loyalty:create"),
+  zValidator("json", bulkCouponSchema),
+  async (c) => {
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const batchId = randomUUID();
+    const prefix = body.prefix.toUpperCase();
+    // PREFIX-XXXXXX; bare "XXXXXX" when no prefix supplied.
+    const buildCode = () => {
+      const suffix = randomCodeSuffix(6);
+      return prefix ? `${prefix}-${suffix}` : suffix;
+    };
+
+    const startsAt = parseCouponDate(body.startsAt, "start") ?? undefined;
+    const expiresAt = parseCouponDate(body.expiresAt, "end") ?? undefined;
+
+    const baseValues = {
+      organization_id: tenant.organizationId,
+      description: body.description,
+      type: body.type,
+      discount_value: body.discountValue,
+      menu_item_id: body.menuItemId,
+      category_id: body.categoryId,
+      buy_quantity: body.buyQuantity,
+      get_quantity: body.getQuantity,
+      min_order_amount: body.minOrderAmount,
+      max_discount_amount: body.maxDiscountAmount,
+      max_uses_total: 1,
+      max_uses_per_customer: 1,
+      batch_id: batchId,
+      starts_at: startsAt,
+      expires_at: expiresAt,
+    };
+
+    const codes: string[] = [];
+
+    // Insert all coupons in a single transaction so no partial batch is ever
+    // persisted (any throw rolls the whole batch back). Codes are inserted one
+    // at a time with onConflictDoNothing on uq_coupons_org_code: a collision
+    // yields no returned row (instead of a 23505 that would poison the tx), so
+    // we simply retry that slot with a fresh suffix.
+    await db.transaction(async (tx) => {
+      // Track codes generated within this batch to avoid in-flight duplicates.
+      const seen = new Set<string>();
+      const MAX_ATTEMPTS = 10;
+
+      for (let i = 0; i < body.count; i++) {
+        let inserted = false;
+
+        for (let attempt = 0; attempt < MAX_ATTEMPTS && !inserted; attempt++) {
+          let code = buildCode();
+          // Cheap in-memory dedupe before hitting the DB.
+          let guard = 0;
+          while (seen.has(code) && guard < MAX_ATTEMPTS) {
+            code = buildCode();
+            guard++;
+          }
+
+          const rows = await tx
+            .insert(schema.coupons)
+            .values({ ...baseValues, code, name: body.name ?? code })
+            .onConflictDoNothing({
+              target: [schema.coupons.organization_id, schema.coupons.code],
+            })
+            .returning({ id: schema.coupons.id });
+
+          if (rows.length > 0) {
+            seen.add(code);
+            codes.push(code);
+            inserted = true;
+          }
+        }
+
+        if (!inserted) {
+          throw new Error(
+            "No se pudo generar un codigo unico para el lote",
+          );
+        }
+      }
+    });
+
+    return c.json(
+      { success: true, data: { batchId, count: codes.length, codes } },
+      201,
+    );
   },
 );
 

@@ -14,6 +14,7 @@ import { wsManager } from "../ws/manager.js";
 import { findOrCreate } from "../services/customer.service.js";
 import { createOrder, OrderValidationError } from "../services/order.service.js";
 import { redeemReward } from "../services/loyalty.service.js";
+import * as referralService from "../services/referral.service.js";
 import * as sessionService from "../services/session.service.js";
 import { rateLimiter } from "../middleware/rate-limit.js";
 
@@ -105,6 +106,7 @@ customer.post(
     email: z.string().email().optional(),
     birthDate: z.string().optional(),
     marketingOptIn: z.boolean().optional(),
+    referralCode: z.string().max(20).optional(),
   })),
   async (c) => {
     const branchSlug = c.req.param("branchSlug");
@@ -188,6 +190,21 @@ customer.post(
       birthDate: body.birthDate,
       marketingOptIn: body.marketingOptIn,
     });
+
+    // Best-effort referral registration: bind this customer to the referrer
+    // identified by the code. Never fail registration if the code is invalid,
+    // self-referential, or the customer is already referred (idempotent no-op).
+    if (body.referralCode) {
+      try {
+        await referralService.registerReferral({
+          organizationId: branch.organization_id,
+          refereeCustomerId: customer_record.id,
+          code: body.referralCode,
+        });
+      } catch {
+        // Swallow: referral binding must never block customer registration.
+      }
+    }
 
     // Create session with pending status
     const sessionId = crypto.randomUUID();
@@ -1401,6 +1418,26 @@ customer.get("/my-redemptions", customerAuth, requireActiveSession, async (c) =>
     );
 
   return c.json({ success: true, data: redemptions });
+});
+
+// GET /my-referral-code - Get (or lazily create) this customer's referral code (customer auth)
+customer.get("/my-referral-code", customerAuth, requireActiveSession, async (c) => {
+  const user = c.get("user") as any;
+  const customerId = user.customerId;
+
+  if (!customerId) {
+    return c.json(
+      { success: false, error: { code: "BAD_REQUEST", message: "No tienes cuenta de cliente" } },
+      400,
+    );
+  }
+
+  const code = await referralService.getOrCreateReferralCode({
+    organizationId: user.org,
+    customerId,
+  });
+
+  return c.json({ success: true, data: { code } });
 });
 
 // GET /my-transactions - Points history for the current customer (customer auth)
