@@ -5,7 +5,11 @@ import type { PasswordHasher } from "../../core/ports/password-hasher.js";
  * Es puro y portable: funciona en Node, Bun, Vercel y Cloudflare Workers (edge),
  * sin binarios nativos. Formato: `pbkdf2$<iter>$<saltB64>$<hashB64>`.
  */
-const ITERATIONS = 210_000;
+// Cloudflare Workers (WebCrypto) limita PBKDF2 a 100 000 iteraciones como máximo;
+// pedir más lanza NotSupportedError. 100 000 es el tope soportado en ese runtime.
+// `verify` usa las iteraciones embebidas en cada hash, así que bajar este valor no
+// rompe hashes ya creados.
+const ITERATIONS = 100_000;
 const KEY_LEN = 32;
 const SALT_LEN = 16;
 

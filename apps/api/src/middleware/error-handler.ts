@@ -100,8 +100,6 @@ export const errorHandler: ErrorHandler = (err, c) => {
       error: {
         code: "INTERNAL_ERROR",
         message: status === 500 ? "Error interno del servidor" : err.message,
-        // TEMP debug: expone el error real para diagnosticar registro en Worker.
-        debug: { name: err.name, message: err.message },
       },
     },
     status,
