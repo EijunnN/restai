@@ -113,6 +113,8 @@ export const errorHandler: ErrorHandler = (err, c) => {
       error: {
         code: "INTERNAL_ERROR",
         message: status === 500 ? "Error interno del servidor" : err.message,
+        // TEMP debug: diagnóstico de 500 intermitentes en el Worker.
+        debug: { name: err.name, message: err.message, stack: (err.stack || "").split("\n").slice(0, 4) },
       },
     },
     status,
