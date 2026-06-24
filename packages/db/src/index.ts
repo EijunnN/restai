@@ -108,6 +108,11 @@ export async function createRequestDb(
   if (typeof WebSocket !== "undefined") {
     neonConfig.webSocketConstructor = WebSocket as unknown as never;
   }
+  // En Cloudflare Workers, abrir un WebSocket a Neon por cada request es frágil
+  // (fallos intermitentes / "I/O on behalf of a different request"). Con
+  // poolQueryViaFetch las queries de una sola sentencia van por HTTP fetch (sin
+  // estado, fiable); solo las transacciones (pool.connect) usan WebSocket.
+  neonConfig.poolQueryViaFetch = true;
   const pool = new Pool({ connectionString: url });
   const requestDb = drizzle(pool, { schema }) as unknown as DB;
   return { db: requestDb, close: () => pool.end() };
