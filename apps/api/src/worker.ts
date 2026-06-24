@@ -82,10 +82,10 @@ export default {
       // La app lee su config desde process.env (hidratado en configure()).
       return await runWithDb(db, () => app.fetch(request));
     } finally {
-      // Cierra DENTRO del ciclo del request (no con waitUntil): con respuestas
-      // JSON ya están bufferizadas, y así las conexiones a Neon NO se acumulan
-      // entre requests (evita agotar el límite de conexiones → 1101).
-      await close();
+      // Cierra tras responder sin bloquear (patrón recomendado por Neon para
+      // Workers). NO usar `await close()`: pool.end() puede colgar en workerd y
+      // dejar el request sin responder.
+      ctx.waitUntil(close());
     }
   },
 
