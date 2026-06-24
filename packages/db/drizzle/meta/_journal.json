@@ -64,6 +64,13 @@
 			"when": 1782199000000,
 			"tag": "0008_sunat_integration",
 			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "7",
+			"when": 1782262622222,
+			"tag": "0009_invoice_fk_ruc_check",
+			"breakpoints": true
 		}
 	]
 }

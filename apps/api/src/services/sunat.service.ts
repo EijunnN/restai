@@ -95,20 +95,48 @@ export async function loadSunatConfig(
   return { row, client: new SunatClient(clientConfig), emisor };
 }
 
-/** Construye las líneas (detalles) del comprobante a partir de los items de la orden. */
-function buildDetalles(items: OrderItemRow[]): DetalleItem[] {
-  return items.map((item) => {
+/**
+ * Construye las líneas (detalles) del comprobante a partir de los items de la
+ * orden, RECONCILIANDO contra los totales fiscales ya guardados en el invoice
+ * (invoice.subtotal = base gravable post-descuento, invoice.igv). Cada línea se
+ * prorratea sobre el total con IGV de los items y el residuo de redondeo se
+ * ajusta en la última línea, de modo que Σ valorVenta == invoice.subtotal y
+ * Σ igv == invoice.igv EXACTAMENTE (SUNAT valida estas sumas con tolerancia de
+ * 1 céntimo). Así el comprobante refleja el descuento y cuadra con lo cobrado,
+ * en vez de re-derivar cada línea con un /1.18 fijo que no suma al total.
+ */
+function buildDetalles(items: OrderItemRow[], invoice: InvoiceRow): DetalleItem[] {
+  const targetGravadas = round2(invoice.subtotal / 100);
+  const targetIgv = round2(invoice.igv / 100);
+  const sumConIgv = items.reduce((s, i) => s + i.total, 0); // céntimos
+  if (sumConIgv <= 0) return fallbackDetalle(invoice);
+
+  let accVV = 0;
+  let accIgv = 0;
+  const last = items.length - 1;
+
+  return items.map((item, idx) => {
     const qty = item.quantity;
-    const lineTotalConIgv = item.total / 100;
-    const valorVenta = round2(lineTotalConIgv / (1 + IGV_TASA));
-    const igv = round2(valorVenta * IGV_TASA);
+    let valorVenta: number;
+    let igv: number;
+    if (idx === last) {
+      // La última línea absorbe el residuo para que las sumas cuadren exacto.
+      valorVenta = round2(targetGravadas - accVV);
+      igv = round2(targetIgv - accIgv);
+    } else {
+      const share = item.total / sumConIgv;
+      valorVenta = round2(targetGravadas * share);
+      igv = round2(targetIgv * share);
+      accVV = round2(accVV + valorVenta);
+      accIgv = round2(accIgv + igv);
+    }
     return {
       cantidad: qty,
       unidad: UNIDAD_MEDIDA.UNIDAD,
       descripcion: item.name,
       codigo: item.menu_item_id ?? undefined,
       valorUnitario: round2(valorVenta / qty),
-      precioUnitario: round2(lineTotalConIgv / qty),
+      precioUnitario: round2((valorVenta + igv) / qty),
       valorVenta,
       igv,
       porcentajeIgv: IGV_TASA * 100,
@@ -161,8 +189,13 @@ async function buildComprobante(
     .from(schema.orderItems)
     .where(eq(schema.orderItems.order_id, invoice.order_id));
 
-  const detalles = items.length ? buildDetalles(items) : fallbackDetalle(invoice);
-  const totales = totalesDeDetalles(detalles);
+  const detalles = items.length ? buildDetalles(items, invoice) : fallbackDetalle(invoice);
+  // Totales del documento tomados de los importes fiscales guardados (no de una
+  // re-derivación /1.18): gravadas = base post-descuento, igv = tributo, e
+  // importeTotal = gravadas + igv (bienes). Las líneas suman exactamente a estos.
+  const gravadas = round2(invoice.subtotal / 100);
+  const igv = round2(invoice.igv / 100);
+  const totales: Totales = { gravadas, igv, importeTotal: round2(gravadas + igv) };
   const { fecha, hora } = fechaHoraLima(invoice.created_at);
 
   return {
@@ -192,12 +225,34 @@ async function persistResult(
   result: SunatResult,
   conn: DbOrTx,
 ): Promise<void> {
+  // Idempotency: never downgrade an already-finalized comprobante. A retried or
+  // concurrent declarar that comes back with "ya presentado" must not clobber an
+  // accepted/observed result (and lose its CDR).
+  const [current] = await conn
+    .select({ s: schema.invoices.sunat_status })
+    .from(schema.invoices)
+    .where(eq(schema.invoices.id, invoiceId))
+    .limit(1);
+  if (current && (current.s === "accepted" || current.s === "observed")) return;
+
+  const codigo = result.codigo ?? "";
+  // SUNAT 1033 = "el comprobante ya fue presentado": the document IS registered,
+  // so treat a duplicate submission as accepted (idempotent), not as a retryable error.
+  const yaPresentado =
+    codigo === "1033" ||
+    /ya (fue|ha sido|est[áa]) (presentad|registrad)/i.test(result.descripcion ?? "");
+
   let status: typeof schema.invoices.$inferInsert.sunat_status;
   if (result.ticket && !result.cdrXml) {
     status = "sent";
   } else if (result.exito) {
     status = result.notas && result.notas.length ? "observed" : "accepted";
-  } else if (result.codigo && /^[23]\d{3}$/.test(result.codigo)) {
+  } else if (yaPresentado) {
+    status = "accepted";
+  } else if (codigo && /^[23]\d{3}$/.test(codigo)) {
+    // 2xxx/3xxx = rechazo definitivo del documento. (1xxx suelen ser
+    // transitorios/reintentables y 4xxx son observaciones → quedan como 'error'
+    // hasta que un reintento aclare el estado.)
     status = "rejected";
   } else {
     status = "error";
