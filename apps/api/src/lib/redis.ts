@@ -1,6 +1,12 @@
 import Redis from "ioredis";
 import { logger } from "./logger.js";
 
+// Mismo patrón de detección de Workers que en packages/db/src/index.ts.
+const isWorkers =
+  typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair !== "undefined" ||
+  (typeof navigator !== "undefined" &&
+    (navigator as { userAgent?: string }).userAgent === "Cloudflare-Workers");
+
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
 const retryStrategy = (times: number) => {
@@ -11,26 +17,51 @@ const retryStrategy = (times: number) => {
   return Math.min(times * 200, 5000);
 };
 
-// lazyConnect: la conexión se abre en el primer comando. Así, en un despliegue
-// de un solo proceso sin Redis (coordinador "local"), importar este módulo NO
-// abre ningún socket ni genera reintentos contra localhost.
-const redis = new Redis(REDIS_URL, {
-  retryStrategy,
-  maxRetriesPerRequest: 3,
-  lazyConnect: true,
-});
+// Cloudflare Workers no soporta conexiones TCP: ioredis colgaría el request y
+// contaminaría I/O pendiente en el scope del módulo (shared entre requests),
+// lo que hace que workerd cancele los requests siguientes con el error
+// "Worker hung and would never generate a response" (aparece como 1101).
+// El noop rechaza inmediatamente → el fallback in-memory del rate limiter entra
+// sin ningún delay, y el Worker nunca intenta TCP.
+let _redis: Redis;
 
-redis.on("error", (err) => {
-  logger.error("Redis connection error", { error: err.message });
-});
+if (isWorkers) {
+  const unavailable = () =>
+    Promise.reject(new Error("Redis unavailable in Cloudflare Workers"));
+  _redis = {
+    incr: unavailable,
+    expire: unavailable,
+    pttl: unavailable,
+    ping: unavailable,
+    get: unavailable,
+    set: unavailable,
+    del: unavailable,
+    quit: () => Promise.resolve("OK" as "OK"),
+    status: "end" as Redis["status"],
+    on: (_event: string, _handler: unknown) => _redis,
+    off: (_event: string, _handler: unknown) => _redis,
+    disconnect: () => {},
+  } as unknown as Redis;
+} else {
+  _redis = new Redis(REDIS_URL, {
+    retryStrategy,
+    maxRetriesPerRequest: 3,
+    lazyConnect: true,
+  });
+  _redis.on("error", (err) => {
+    logger.error("Redis connection error", { error: err.message });
+  });
+  _redis.on("connect", () => {
+    logger.info("Redis connected");
+  });
+}
 
-redis.on("connect", () => {
-  logger.info("Redis connected");
-});
+export const redis = _redis;
 
-export { redis };
-
-export const createSubscriber = () => {
+export const createSubscriber = (): Redis => {
+  if (isWorkers) {
+    throw new Error("Redis pub/sub not available in Cloudflare Workers");
+  }
   const sub = new Redis(REDIS_URL, {
     retryStrategy,
     maxRetriesPerRequest: null,
@@ -42,8 +73,9 @@ export const createSubscriber = () => {
 };
 
 export async function getRedisStatus(): Promise<"ok" | "error"> {
+  if (isWorkers) return "error";
   try {
-    const pong = await redis.ping();
+    const pong = await _redis.ping();
     return pong === "PONG" ? "ok" : "error";
   } catch {
     return "error";
