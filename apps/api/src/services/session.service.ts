@@ -17,6 +17,14 @@ function addHours(date: Date, hours: number): Date {
 // ── Create Session ──────────────────────────────────────────────────
 
 export async function createSession(params: {
+  /**
+   * Optional explicit row id. The customer JWT is signed with `sub = <this id>`
+   * BEFORE the row exists (the token is then stored on the row), so the caller
+   * must pin the row id to that same value. Otherwise the DB defaultRandom() id
+   * diverges from token.sub and every requireActiveSession lookup
+   * (tableSessions.id == token.sub) fails with SESSION_ENDED.
+   */
+  id?: string;
   tableId: string;
   branchId: string;
   organizationId: string;
@@ -34,6 +42,7 @@ export async function createSession(params: {
   const [session] = await db
     .insert(schema.tableSessions)
     .values({
+      ...(params.id ? { id: params.id } : {}),
       table_id: params.tableId,
       branch_id: params.branchId,
       organization_id: params.organizationId,

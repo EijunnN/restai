@@ -62,7 +62,7 @@ referrals.get("/", requirePermission("loyalty:read"), async (c) => {
         total: stats?.total ?? 0,
         completed: stats?.completed ?? 0,
         pending: stats?.pending ?? 0,
-        pointsAwarded: stats?.points_awarded ?? 0,
+        points_awarded: stats?.points_awarded ?? 0,
       },
     },
   });

@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "restai-landing",
+  "compatibility_date": "2025-09-01",
+  // Sitio 100% estático servido como Workers Static Assets (sin código de servidor).
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "drop-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  // Apex propio: la zona bezenti.com vive en esta cuenta de Cloudflare; wrangler
+  // crea el registro DNS y el certificado automáticamente.
+  "routes": [
+    {
+      "pattern": "restai.bezenti.com",
+      "custom_domain": true
+    }
+  ]
+}

@@ -58,16 +58,33 @@ const isWorkers =
     (navigator as { userAgent?: string }).userAgent === "Cloudflare-Workers");
 
 // Conexión a nivel de módulo: la usan los runtimes con proceso persistente
-// (contenedor Bun). En Workers es un placeholder que obliga a usar runWithDb.
-const defaultDb: DB = isWorkers
-  ? new Proxy({} as DB, {
-      get() {
-        throw new Error(
-          "En Cloudflare Workers la conexión de DB es por-request: usa runWithDb()",
-        );
-      },
-    })
-  : await buildDb(connectionString);
+// (contenedor Bun). En Workers nunca se usa (siempre runWithDb por-request).
+//
+// IMPORTANTE: sin top-level await. Un TLA en este paquete compartido hace que la
+// validación del Worker de Cloudflare falle con "Top-level await in module is
+// unsettled". Por eso la conexión de módulo se inicia con `.then` (no se espera
+// aquí) y el entrypoint del contenedor llama a `await whenDbReady()` antes de
+// servir. En Workers `isWorkers` es true → no se construye nada.
+let moduleDb: DB | null = null;
+const moduleDbReady: Promise<void> = isWorkers
+  ? Promise.resolve()
+  : buildDb(connectionString).then((d) => {
+      moduleDb = d;
+    });
+
+/** Resuelve cuando la conexión de módulo está lista (contenedor/Bun). */
+export const whenDbReady = (): Promise<void> => moduleDbReady;
+
+function activeDb(): DB {
+  const scoped = requestScope.getStore();
+  if (scoped) return scoped;
+  if (moduleDb) return moduleDb;
+  throw new Error(
+    isWorkers
+      ? "En Cloudflare Workers la conexión de DB es por-request: usa runWithDb()"
+      : "La conexión de DB aún no está lista: usa `await whenDbReady()` en el arranque",
+  );
+}
 
 /**
  * `db` resuelve dinámicamente a la conexión por-request (si hay una en el ALS) o,
@@ -76,7 +93,7 @@ const defaultDb: DB = isWorkers
  */
 export const db: DB = new Proxy({} as DB, {
   get(_target, prop, receiver) {
-    const active = requestScope.getStore() ?? defaultDb;
+    const active = activeDb();
     const value = Reflect.get(active as object, prop, receiver);
     return typeof value === "function" ? value.bind(active) : value;
   },
@@ -91,6 +108,11 @@ export async function createRequestDb(
   if (typeof WebSocket !== "undefined") {
     neonConfig.webSocketConstructor = WebSocket as unknown as never;
   }
+  // En Cloudflare Workers, abrir un WebSocket a Neon por cada request es frágil
+  // (fallos intermitentes / "I/O on behalf of a different request"). Con
+  // poolQueryViaFetch las queries de una sola sentencia van por HTTP fetch (sin
+  // estado, fiable); solo las transacciones (pool.connect) usan WebSocket.
+  neonConfig.poolQueryViaFetch = true;
   const pool = new Pool({ connectionString: url });
   const requestDb = drizzle(pool, { schema }) as unknown as DB;
   return { db: requestDb, close: () => pool.end() };

@@ -1,0 +1,61 @@
+# Despliegue de la API de RestAI como Cloudflare Worker (serverless, SIN contenedor).
+#
+# Requisitos previos (una vez):
+#   cd deploy/cloudflare-worker && bun install
+#   wrangler secret put DATABASE_URL          # Neon
+#   wrangler secret put JWT_SECRET
+#   wrangler secret put JWT_REFRESH_SECRET
+#   wrangler secret put SUNAT_ENCRYPTION_KEY
+#   # Realtime (elige uno y añade su secreto + cambia REALTIME_PROVIDER abajo):
+#   wrangler secret put ABLY_API_KEY          # si REALTIME_PROVIDER=ably
+#   # o PUSHER_APP_ID/KEY/SECRET + var PUSHER_CLUSTER, si REALTIME_PROVIDER=pusher
+#   wrangler deploy
+#
+# No necesita Docker ni el plan Containers: usa permisos estándar de Workers.
+name = "restai-api"
+main = "../../apps/api/src/worker.ts"
+compatibility_date = "2025-09-01"
+# Sin nodejs_compat_populate_process_env: ese flag hace process.env de solo-lectura
+# y no puebla secretos; preferimos copiar nosotros las claves desde el binding `env`
+# (writable) en worker.ts → configure().
+compatibility_flags = ["nodejs_compat"]
+
+# Dominio propio de la API (la zona bezenti.com vive en esta cuenta de Cloudflare).
+# wrangler crea el registro DNS y el certificado automáticamente. El apex
+# `restai.bezenti.com` queda libre para una landing/web informativa del sistema.
+routes = [
+  { pattern = "api.restai.bezenti.com", custom_domain = true },
+]
+
+[observability]
+enabled = true
+
+# Cron Trigger: expira sesiones pendientes (reemplaza el setInterval del contenedor).
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Migraciones de Durable Objects. v1 (create) quedó de intentos previos con
+# Containers; v2 elimina ese DO huérfano ya que el Worker puro no lo usa.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RestaiApiContainer"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["RestaiApiContainer"]
+
+# Variables públicas (no secretas). Los secretos van con `wrangler secret put`.
+[vars]
+DATABASE_DRIVER = "neon"           # driver serverless de Neon (WebSocket)
+REALTIME_PROVIDER = "ably"         # realtime vía Ably (Pub/Sub); secreto ABLY_API_KEY
+LOG_LEVEL = "info"
+CORS_ORIGINS = "https://app.restai.bezenti.com"
+PUSHER_CLUSTER = ""                # solo si usas pusher
+# URL pública del bucket R2 (acceso público habilitado)
+R2_PUBLIC_URL = "https://pub-e50c13f9123a472dadafeaa4900775e5.r2.dev"
+
+# Binding nativo al bucket R2 — el Worker accede a R2 sin credenciales externas.
+# En Bun/Node el fallback usa @aws-sdk/client-s3 con R2_ACCESS_KEY_ID etc.
+[[r2_buckets]]
+binding = "R2_IMAGES"
+bucket_name = "restai-images"

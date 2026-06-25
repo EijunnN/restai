@@ -9,6 +9,7 @@ import { createRealtimeProvider } from "./infrastructure/realtime/factory.js";
 import { Argon2Hasher } from "./infrastructure/security/argon2.adapter.js";
 import { useRealtime, useHasher } from "./infrastructure/container.js";
 import { handleWsMessage } from "./ws/handlers.js";
+import { whenDbReady } from "@restai/db";
 import { expireStale } from "./services/session.service.js";
 import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.js";
 
@@ -32,6 +33,9 @@ useHasher(new Argon2Hasher());
 
 const wsManager =
   realtimeProvider instanceof WebSocketManager ? realtimeProvider : null;
+
+// Espera la conexión de DB de módulo antes de servir (proceso persistente).
+await whenDbReady();
 
 const port = parseInt(process.env.API_PORT || process.env.PORT || "3001");
 

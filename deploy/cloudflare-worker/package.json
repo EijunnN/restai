@@ -1,0 +1,14 @@
+{
+  "name": "restai-cloudflare-worker",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Despliegue de la API de RestAI como Cloudflare Worker (serverless, sin contenedor).",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
