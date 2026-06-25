@@ -39,6 +39,7 @@ jobs:
         run: bun run cf:build
         env:
           NEXT_PUBLIC_API_URL: https://api.restai.bezenti.com
+          NEXT_PUBLIC_APP_URL: https://app.restai.bezenti.com
       - name: Deploy del Worker
         working-directory: apps/web
         run: bunx wrangler deploy
