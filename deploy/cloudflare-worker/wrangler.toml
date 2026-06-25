@@ -51,3 +51,11 @@ REALTIME_PROVIDER = "ably"         # realtime vía Ably (Pub/Sub); secreto ABLY_
 LOG_LEVEL = "info"
 CORS_ORIGINS = "https://app.restai.bezenti.com"
 PUSHER_CLUSTER = ""                # solo si usas pusher
+# URL pública del bucket R2 (acceso público habilitado)
+R2_PUBLIC_URL = "https://pub-e50c13f9123a472dadafeaa4900775e5.r2.dev"
+
+# Binding nativo al bucket R2 — el Worker accede a R2 sin credenciales externas.
+# En Bun/Node el fallback usa @aws-sdk/client-s3 con R2_ACCESS_KEY_ID etc.
+[[r2_buckets]]
+binding = "R2_IMAGES"
+bucket_name = "restai-images"

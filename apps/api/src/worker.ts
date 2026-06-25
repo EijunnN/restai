@@ -5,6 +5,7 @@ import { WebCryptoHasher } from "./infrastructure/security/webcrypto.adapter.js"
 import { createServerlessRealtimeProvider } from "./infrastructure/realtime/factory.serverless.js";
 import { expireStale } from "./services/session.service.js";
 import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.js";
+import { configureR2Bucket } from "./lib/r2.js";
 
 /**
  * Entrypoint para Cloudflare Workers (serverless, sin contenedor).
@@ -19,7 +20,8 @@ import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.j
 
 interface Env {
   DATABASE_URL: string;
-  [key: string]: string | undefined;
+  R2_IMAGES?: R2Bucket;
+  [key: string]: string | R2Bucket | undefined;
 }
 
 interface ExecutionContext {
@@ -46,11 +48,11 @@ const ENV_KEYS = [
   "PUSHER_CLUSTER",
   "LOG_LEVEL",
   "CORS_ORIGINS",
+  "R2_PUBLIC_URL",
   "R2_ACCOUNT_ID",
   "R2_ACCESS_KEY_ID",
   "R2_SECRET_ACCESS_KEY",
   "R2_BUCKET_NAME",
-  "R2_PUBLIC_URL",
 ] as const;
 
 function configure(env: Env): void {
@@ -77,6 +79,7 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     configure(env);
+    configureR2Bucket(env.R2_IMAGES);
     const { db, close } = await createRequestDb(env.DATABASE_URL);
     try {
       // La app lee su config desde process.env (hidratado en configure()).
