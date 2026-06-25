@@ -921,7 +921,6 @@ customer.get("/orders/:id", customerAuth, requireActiveSession, zValidator("para
 customer.post(
   "/validate-coupon",
   customerAuth,
-  requireActiveSession,
   zValidator("json", z.object({ code: z.string().min(1) })),
   async (c) => {
     const user = c.get("user") as any;
@@ -1272,7 +1271,6 @@ customer.post(
 customer.post(
   "/redeem-reward",
   customerAuth,
-  requireActiveSession,
   zValidator("json", z.object({ rewardId: z.string().uuid() })),
   async (c) => {
     const user = c.get("user") as any;
