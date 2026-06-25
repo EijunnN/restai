@@ -8,11 +8,13 @@ interface OrderItem {
   unit_price: number;
   total: number;
   notes?: string;
+  modifiers?: { name: string }[];
 }
 
 interface KitchenTicketData {
   orderNumber: string;
   tableNumber?: string | number;
+  orderType?: string;
   customerName?: string;
   createdAt: string;
   items: OrderItem[];
@@ -66,7 +68,13 @@ function buildKitchenTicketHtml(data: KitchenTicketData): string {
     .map(
       (item) =>
         `<tr>
-          <td style="text-align:left;padding:2px 0;">${item.quantity}x ${item.name}${item.notes ? `<br><span style="font-size:10px;color:#666;">* ${item.notes}</span>` : ""}</td>
+          <td style="text-align:left;padding:2px 0;">${item.quantity}x ${item.name}${
+            item.modifiers && item.modifiers.length > 0
+              ? item.modifiers
+                  .map((m) => `<br><span style="font-size:11px;">&nbsp;&nbsp;+ ${m.name}</span>`)
+                  .join("")
+              : ""
+          }${item.notes ? `<br><span style="font-size:10px;color:#666;">* ${item.notes}</span>` : ""}</td>
         </tr>`
     )
     .join("");
@@ -88,7 +96,15 @@ function buildKitchenTicketHtml(data: KitchenTicketData): string {
   <div class="divider"></div>
   <table>
     <tr>
-      <td>${data.tableNumber ? `Mesa: ${data.tableNumber}` : "Para llevar"}</td>
+      <td>${
+        data.tableNumber
+          ? `Mesa: ${data.tableNumber}`
+          : data.orderType === "takeout"
+            ? "Para llevar"
+            : data.orderType === "delivery"
+              ? "Delivery"
+              : "En local"
+      }</td>
       <td style="text-align:right;">${formatDateTime(data.createdAt)}</td>
     </tr>
     ${data.customerName ? `<tr><td colspan="2">Cliente: ${data.customerName}</td></tr>` : ""}

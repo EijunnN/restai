@@ -231,6 +231,27 @@ export async function findOrCreate(params: {
 }
 
 // ---------------------------------------------------------------------------
+// findByEmail — resolve a customer by org + email (for email-code login)
+// ---------------------------------------------------------------------------
+
+export async function findByEmail(params: {
+  organizationId: string;
+  email: string;
+}) {
+  const [customer] = await db
+    .select()
+    .from(schema.customers)
+    .where(
+      and(
+        eq(schema.customers.organization_id, params.organizationId),
+        eq(schema.customers.email, params.email),
+      ),
+    )
+    .limit(1);
+  return customer ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // findOrCreateByPhone — used by loyalty.ts for phone-based customer lookup
 // ---------------------------------------------------------------------------
 

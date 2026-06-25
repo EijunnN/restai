@@ -92,6 +92,32 @@ const itemStatusVariants: Record<string, string> = {
   cancelled: "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/20",
 };
 
+// The per-item badge reads order_items.status, which can lag behind the order
+// (e.g. orders created before the cascade fix, or transient WS lag). Derive the
+// displayed item status as the furthest-along of the item's own status and the
+// status implied by the ORDER, so a served order never shows "En cola" items.
+const itemStatusRank: Record<string, number> = {
+  pending: 0,
+  preparing: 1,
+  ready: 2,
+  served: 3,
+};
+const orderToItemStatus: Record<string, string> = {
+  pending: "pending",
+  confirmed: "pending",
+  preparing: "preparing",
+  ready: "ready",
+  served: "served",
+  completed: "served",
+};
+function effectiveItemStatus(itemStatus: string, orderStatus: string): string {
+  if (itemStatus === "cancelled" || orderStatus === "cancelled") return itemStatus;
+  const derived = orderToItemStatus[orderStatus] ?? itemStatus;
+  return (itemStatusRank[derived] ?? 0) > (itemStatusRank[itemStatus] ?? 0)
+    ? derived
+    : itemStatus;
+}
+
 export default function OrderStatusPage({
   params,
 }: {
@@ -479,24 +505,27 @@ export default function OrderStatusPage({
           <CardTitle className="text-base">Detalle del Pedido</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {order.items.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30"
-            >
-              <p className="font-medium text-sm">
-                {item.quantity}x {item.name}
-              </p>
-              <span
-                className={cn(
-                  "text-xs px-2.5 py-1 rounded-full font-medium border",
-                  itemStatusVariants[item.status] || "bg-muted text-muted-foreground border-border",
-                )}
+          {order.items.map((item) => {
+            const displayStatus = effectiveItemStatus(item.status, order.status);
+            return (
+              <div
+                key={item.id}
+                className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30"
               >
-                {itemStatusLabels[item.status] || item.status}
-              </span>
-            </div>
-          ))}
+                <p className="font-medium text-sm">
+                  {item.quantity}x {item.name}
+                </p>
+                <span
+                  className={cn(
+                    "text-xs px-2.5 py-1 rounded-full font-medium border",
+                    itemStatusVariants[displayStatus] || "bg-muted text-muted-foreground border-border",
+                  )}
+                >
+                  {itemStatusLabels[displayStatus] || displayStatus}
+                </span>
+              </div>
+            );
+          })}
 
           {/* Order total summary */}
           {order.total != null && (

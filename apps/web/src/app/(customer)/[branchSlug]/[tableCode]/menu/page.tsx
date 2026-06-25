@@ -22,6 +22,9 @@ interface MenuItem {
   image_url?: string | null;
   is_available: boolean;
   category_id: string;
+  // True when the item has modifier groups: quick-add must route to the detail
+  // page so required options are chosen (otherwise the order fails at checkout).
+  has_modifiers?: boolean;
 }
 
 interface Category {
@@ -75,7 +78,7 @@ export default function CustomerMenuPage({
   "use no memo";
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
-  const { addItem, getItemCount, items, updateQuantity } = useCartStore();
+  const { addItem, getItemCount, items, updateLineQuantity, getItemQty } = useCartStore();
   const setSession = useCustomerStore((s) => s.setSession);
   const {
     menuData,
@@ -222,9 +225,20 @@ export default function CustomerMenuPage({
   }
 
   const itemCount = getItemCount();
-  const cartTotal = items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
+  // Modifier-inclusive total so the floating bar matches the cart estimate.
+  const cartTotal = items.reduce(
+    (sum, i) => sum + (i.unitPrice + i.modifiers.reduce((m, x) => m + x.price, 0)) * i.quantity,
+    0,
+  );
 
+  // Quick-add from the grid targets the plain (no-modifier) line of a product.
+  // Items WITH modifier groups must be configured on the detail page, otherwise
+  // a required-modifier order would be rejected by the server at checkout.
   const handleAddItem = (item: MenuItem) => {
+    if (item.has_modifiers) {
+      router.push(`/${branchSlug}/${tableCode}/menu/${item.id}`);
+      return;
+    }
     addItem({
       menuItemId: item.id,
       name: item.name,
@@ -232,11 +246,6 @@ export default function CustomerMenuPage({
       quantity: 1,
       modifiers: [],
     });
-  };
-
-  const getItemQty = (itemId: string) => {
-    const cartItem = items.find((i) => i.menuItemId === itemId);
-    return cartItem?.quantity || 0;
   };
 
   if (loading || sessionValid === null) {
@@ -345,7 +354,7 @@ export default function CustomerMenuPage({
                               className="w-7 h-7 flex items-center justify-center text-foreground hover:text-primary transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                updateQuantity(item.id, qty - 1);
+                                updateLineQuantity(item.id, qty - 1);
                               }}
                             >
                               <Minus className="h-3.5 w-3.5" />

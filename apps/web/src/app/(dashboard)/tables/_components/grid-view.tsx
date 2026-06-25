@@ -37,6 +37,7 @@ interface GridViewProps {
   onAssign: (table: any) => void;
   onDelete: (table: any) => void;
   onStatusChange: (tableId: string, status: string) => void;
+  onCharge: (table: any) => void;
 }
 
 export function GridView({
@@ -50,6 +51,7 @@ export function GridView({
   onAssign,
   onDelete,
   onStatusChange,
+  onCharge,
 }: GridViewProps) {
   return (
     <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 mt-4">
@@ -69,6 +71,7 @@ export function GridView({
               onAssign={onAssign}
               onDelete={onDelete}
               onStatusChange={onStatusChange}
+              onCharge={onCharge}
             />
           ))}
     </div>

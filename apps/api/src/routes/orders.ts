@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, sql, getTableColumns } from "drizzle-orm";
+import { eq, and, ne, desc, sql, getTableColumns } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createOrderSchema,
@@ -329,6 +329,30 @@ orders.patch(
         },
         409,
       );
+    }
+
+    // Cascade the order-level status down to its items so the customer's per-item
+    // badge (status/page.tsx) tracks the order. The Kanban only advances the ORDER;
+    // without this, order_items.status stays 'pending' ("En cola") forever even
+    // after the order is served. Never overwrite items already cancelled.
+    const ITEM_CASCADE: Record<string, "preparing" | "ready" | "served" | "cancelled"> = {
+      preparing: "preparing",
+      ready: "ready",
+      served: "served",
+      completed: "served",
+      cancelled: "cancelled",
+    };
+    const itemTarget = ITEM_CASCADE[status];
+    if (itemTarget) {
+      await db
+        .update(schema.orderItems)
+        .set({ status: itemTarget })
+        .where(
+          and(
+            eq(schema.orderItems.order_id, id),
+            ne(schema.orderItems.status, "cancelled"),
+          ),
+        );
     }
 
     const updatePayload = {

@@ -44,6 +44,15 @@ function ItemRow({
           <span className="font-bold text-foreground mr-1">{item.quantity}x</span>
           <span className="font-medium">{item.name}</span>
         </span>
+        {Array.isArray(item.modifiers) && item.modifiers.length > 0 && (
+          <ul className="mt-0.5 space-y-0.5">
+            {item.modifiers.map((m: any) => (
+              <li key={m.id} className="text-xs leading-tight text-foreground/80">
+                <span className="text-muted-foreground">+</span> {m.name}
+              </li>
+            ))}
+          </ul>
+        )}
         {item.notes && (
           <p className="text-xs mt-0.5 px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-medium leading-tight">
             {item.notes}
@@ -111,7 +120,7 @@ export function KitchenOrderCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const orderNum = order.orderNumber || order.order_number || order.id;
-  const tableName = order.tableName || order.table_name || "";
+  const tableName = order.tableName || order.table_name || order.table_number || "";
   const createdAt = order.createdAt || order.created_at || "";
   const items: any[] = order.items || [];
   const isDelivery = order.type === "delivery";

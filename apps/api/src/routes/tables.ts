@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, isNull, desc, inArray, notInArray } from "drizzle-orm";
+import { eq, and, isNull, desc, inArray, notInArray, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createTableSchema,
@@ -18,6 +18,7 @@ import { generateQrCode } from "../lib/id.js";
 import { signCustomerToken } from "../lib/jwt.js";
 import { realtime } from "../infrastructure/container.js";
 import * as sessionService from "../services/session.service.js";
+import { handleOrderCompletion } from "../services/order.service.js";
 
 const tables = new Hono<AppEnv>();
 
@@ -840,6 +841,169 @@ tables.get(
       }
       throw e;
     }
+  },
+);
+
+// GET /:id/active-session - Current active/pending session for a table + its
+// orders with per-order payment status, for the "cobrar desde mesa" dialog.
+tables.get(
+  "/:id/active-session",
+  requirePermission("tables:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    // Prefer an active session; fall back to a pending one (no orders yet).
+    const [session] = await db
+      .select({
+        id: schema.tableSessions.id,
+        customer_name: schema.tableSessions.customer_name,
+        customer_phone: schema.tableSessions.customer_phone,
+        status: schema.tableSessions.status,
+        started_at: schema.tableSessions.started_at,
+      })
+      .from(schema.tableSessions)
+      .where(
+        and(
+          eq(schema.tableSessions.table_id, id),
+          eq(schema.tableSessions.branch_id, tenant.branchId),
+          eq(schema.tableSessions.organization_id, tenant.organizationId),
+          inArray(schema.tableSessions.status, ["active", "pending"]),
+        ),
+      )
+      .orderBy(desc(schema.tableSessions.started_at))
+      .limit(1);
+
+    if (!session) {
+      return c.json({
+        success: true,
+        data: { session: null, orders: [], totals: { total: 0, total_paid: 0, remaining: 0 } },
+      });
+    }
+
+    const orders = await db
+      .select({
+        id: schema.orders.id,
+        order_number: schema.orders.order_number,
+        status: schema.orders.status,
+        total: schema.orders.total,
+        created_at: schema.orders.created_at,
+        total_paid: sql<number>`COALESCE((SELECT SUM(amount)::bigint FROM payments WHERE payments.order_id = ${schema.orders.id} AND payments.status = 'completed'), 0)::int`,
+      })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.table_session_id, session.id),
+          eq(schema.orders.branch_id, tenant.branchId),
+          sql`${schema.orders.status} != 'cancelled'`,
+        ),
+      )
+      .orderBy(desc(schema.orders.created_at));
+
+    const orderIds = orders.map((o) => o.id);
+    const items = orderIds.length
+      ? await db
+          .select({
+            id: schema.orderItems.id,
+            order_id: schema.orderItems.order_id,
+            name: schema.orderItems.name,
+            quantity: schema.orderItems.quantity,
+            total: schema.orderItems.total,
+          })
+          .from(schema.orderItems)
+          .where(inArray(schema.orderItems.order_id, orderIds))
+      : [];
+
+    const ordersWithDetail = orders.map((o) => {
+      const remaining = Math.max(0, o.total - o.total_paid);
+      const payment_status = o.total_paid <= 0 ? "unpaid" : remaining > 0 ? "partial" : "paid";
+      return {
+        ...o,
+        remaining,
+        payment_status,
+        items: items.filter((i) => i.order_id === o.id),
+      };
+    });
+
+    const totals = ordersWithDetail.reduce(
+      (acc, o) => ({
+        total: acc.total + o.total,
+        total_paid: acc.total_paid + o.total_paid,
+        remaining: acc.remaining + o.remaining,
+      }),
+      { total: 0, total_paid: 0, remaining: 0 },
+    );
+
+    return c.json({ success: true, data: { session, orders: ordersWithDetail, totals } });
+  },
+);
+
+// POST /:id/free - Free the table for the next customer (the robust "Liberar").
+// Closes any active/pending session (clearing orphans), finalizes open orders,
+// and sets the table available. See sessionService.freeTable for the rationale.
+tables.post(
+  "/:id/free",
+  requirePermission("tables:update"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [table] = await db
+      .select({ id: schema.tables.id, number: schema.tables.number })
+      .from(schema.tables)
+      .where(
+        and(
+          eq(schema.tables.id, id),
+          eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!table) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+        404,
+      );
+    }
+
+    const { completedOrders } = await sessionService.freeTable({
+      tableId: id,
+      branchId: tenant.branchId,
+      organizationId: tenant.organizationId,
+    });
+
+    // Run completion side effects (loyalty + inventory) outside the tx. Each is
+    // idempotent and best-effort, so this never blocks freeing the table.
+    for (const order of completedOrders) {
+      await handleOrderCompletion({
+        orderId: order.id,
+        orderNumber: order.order_number,
+        orderSubtotal: order.subtotal,
+        orderDiscount: order.discount,
+        customerId: order.customer_id,
+        organizationId: tenant.organizationId,
+        branchId: tenant.branchId,
+      });
+    }
+
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "table:status",
+      payload: { tableId: id, number: table.number, status: "available" },
+      timestamp: Date.now(),
+    });
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "session:ended",
+      payload: { tableId: id, tableNumber: table.number },
+      timestamp: Date.now(),
+    });
+
+    return c.json({
+      success: true,
+      data: { tableId: id, completedOrders: completedOrders.length },
+    });
   },
 );
 

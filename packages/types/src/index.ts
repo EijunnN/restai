@@ -114,9 +114,16 @@ export interface SalesReport {
 
 // Cart types (for frontend)
 export interface CartItem {
+  /**
+   * Stable identifier for a cart LINE = product + its exact set of modifiers.
+   * The same product with different modifiers is two lines; the plain
+   * (no-modifier) line has lineId === menuItemId. Operations (qty/remove/notes)
+   * key on this, not menuItemId, so modifier variants never collide.
+   */
+  lineId: string;
   menuItemId: string;
   name: string;
-  unitPrice: number; // cents
+  unitPrice: number; // cents (bare product price, EXCLUDES modifiers)
   quantity: number;
   notes?: string;
   modifiers: CartModifier[];

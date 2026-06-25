@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, getTableColumns } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { updateOrderItemStatusSchema, idParamSchema, kitchenQuerySchema } from "@restai/validators";
 import { ORDER_ITEM_STATUS_TRANSITIONS } from "@restai/config";
@@ -23,9 +23,17 @@ kitchen.get("/orders", requirePermission("orders:read"), zValidator("query", kit
 
   const statusList = status ? [status] : ["pending", "confirmed", "preparing", "ready"];
 
+  // Project all order columns + the table number (via session → table) so the
+  // kitchen card can label dine-in orders as "Mesa N" instead of falling back to
+  // "Salon"/customer name. Without this join dine-in tickets look mislabeled.
   const activeOrders = await db
-    .select()
+    .select({
+      ...getTableColumns(schema.orders),
+      table_number: schema.tables.number,
+    })
     .from(schema.orders)
+    .leftJoin(schema.tableSessions, eq(schema.orders.table_session_id, schema.tableSessions.id))
+    .leftJoin(schema.tables, eq(schema.tableSessions.table_id, schema.tables.id))
     .where(
       and(
         eq(schema.orders.branch_id, tenant.branchId),
@@ -33,14 +41,35 @@ kitchen.get("/orders", requirePermission("orders:read"), zValidator("query", kit
       ),
     );
 
-  // Get items for each order
+  // Get items + their selected modifiers for each order. The cook needs to see
+  // the modifiers (e.g. "sin cebolla", "extra queso") to prepare the dish; they
+  // live in a separate order_item_modifiers table and must be joined back in.
   const ordersWithItems = await Promise.all(
     activeOrders.map(async (order) => {
       const items = await db
         .select()
         .from(schema.orderItems)
         .where(eq(schema.orderItems.order_id, order.id));
-      return { ...order, items };
+
+      const itemIds = items.map((i) => i.id);
+      const mods = itemIds.length
+        ? await db
+            .select({
+              id: schema.orderItemModifiers.id,
+              order_item_id: schema.orderItemModifiers.order_item_id,
+              name: schema.orderItemModifiers.name,
+              price: schema.orderItemModifiers.price,
+            })
+            .from(schema.orderItemModifiers)
+            .where(inArray(schema.orderItemModifiers.order_item_id, itemIds))
+        : [];
+
+      const itemsWithMods = items.map((it) => ({
+        ...it,
+        modifiers: mods.filter((m) => m.order_item_id === it.id),
+      }));
+
+      return { ...order, items: itemsWithMods };
     }),
   );
 

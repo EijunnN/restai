@@ -23,6 +23,14 @@ interface CustomerState {
     branchName?: string;
     customerName?: string;
   }) => void;
+  // Email-code login: an "account" token (no table session). Unlocks profile/
+  // loyalty; ordering still needs a QR session (setSession).
+  setAccount: (data: {
+    token: string;
+    branchSlug: string;
+    tableCode: string;
+    customerName?: string;
+  }) => void;
   setOrderId: (orderId: string) => void;
   clear: () => void;
 }
@@ -51,6 +59,26 @@ export const useCustomerStore = create<CustomerState>((set) => ({
       sessionStorage.setItem("customer_table_code", data.tableCode);
       if (data.branchName) sessionStorage.setItem("customer_branch_name", data.branchName);
       if (data.customerName) sessionStorage.setItem("customer_name", data.customerName);
+    }
+  },
+  setAccount: (data) => {
+    // No table session: clear sessionId/orderId so order-scoped flows don't
+    // mistake an account login for an active table session.
+    set({
+      token: data.token,
+      sessionId: null,
+      orderId: null,
+      branchSlug: data.branchSlug,
+      tableCode: data.tableCode,
+      customerName: data.customerName || null,
+    });
+    if (isBrowser) {
+      sessionStorage.setItem("customer_token", data.token);
+      sessionStorage.setItem("customer_branch_slug", data.branchSlug);
+      sessionStorage.setItem("customer_table_code", data.tableCode);
+      if (data.customerName) sessionStorage.setItem("customer_name", data.customerName);
+      sessionStorage.removeItem("customer_session_id");
+      sessionStorage.removeItem("customer_order_id");
     }
   },
   setOrderId: (orderId) => {

@@ -9,7 +9,7 @@ import { Input } from "@restai/ui/components/input";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
 import { formatCurrency } from "@/lib/utils";
-import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift, ChevronRight } from "lucide-react";
+import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift, ChevronRight, UtensilsCrossed } from "lucide-react";
 import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -210,13 +210,16 @@ export default function CartPage({
   const router = useRouter();
   const {
     items,
-    updateQuantity,
-    removeItem,
+    updateLineQuantity,
+    removeLine,
     clearCart,
     getSubtotal,
     getTax,
     getTotal,
   } = useCartStore();
+  // Order type: QR table orders default to dine-in ("en local"). The customer
+  // can switch to takeout ("para llevar"). Sent to the server on confirm.
+  const [orderType, setOrderType] = useState<"dine_in" | "takeout">("dine_in");
   const customerToken = useCustomerStore((s) => s.token);
   const setOrderId = useCustomerStore((s) => s.setOrderId);
   const clearSession = useCustomerStore((s) => s.clear);
@@ -496,11 +499,11 @@ export default function CartPage({
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
-        type: "dine_in",
+        type: orderType,
         items: items.map((item) => ({
           menuItemId: item.menuItemId,
           quantity: item.quantity,
-          notes: notes[item.menuItemId] || undefined,
+          notes: notes[item.lineId] || undefined,
           modifiers: item.modifiers.map((m) => ({
             modifierId: m.modifierId,
           })),
@@ -577,21 +580,57 @@ export default function CartPage({
         </div>
       )}
 
+      {/* Order type selector — en local vs para llevar */}
+      <Card>
+        <CardContent className="p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant={orderType === "dine_in" ? "default" : "outline"}
+              className="h-11"
+              onClick={() => setOrderType("dine_in")}
+            >
+              <UtensilsCrossed className="h-4 w-4 mr-2" />
+              En local
+            </Button>
+            <Button
+              type="button"
+              variant={orderType === "takeout" ? "default" : "outline"}
+              className="h-11"
+              onClick={() => setOrderType("takeout")}
+            >
+              <ShoppingBag className="h-4 w-4 mr-2" />
+              Para llevar
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Cart items */}
       <div className="space-y-3">
         {items.map((item) => (
-          <Card key={item.menuItemId}>
+          <Card key={item.lineId}>
             <CardContent className="p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <h3 className="font-medium">{item.name}</h3>
                   <p className="text-sm text-muted-foreground">
-                    {formatCurrency(item.unitPrice)} c/u
+                    {formatCurrency(effectiveUnitPrice(item))} c/u
                   </p>
                   {item.modifiers.length > 0 && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {item.modifiers.map((m) => m.name).join(", ")}
-                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {item.modifiers.map((m) => (
+                        <li
+                          key={m.modifierId}
+                          className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                        >
+                          <span>+ {m.name}</span>
+                          {m.price > 0 && (
+                            <span className="shrink-0">{formatCurrency(m.price)}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -599,7 +638,7 @@ export default function CartPage({
                     variant="outline"
                     size="icon"
                     className="h-8 w-8 rounded-full"
-                    onClick={() => updateQuantity(item.menuItemId, item.quantity - 1)}
+                    onClick={() => updateLineQuantity(item.lineId, item.quantity - 1)}
                   >
                     <Minus className="h-3.5 w-3.5" />
                   </Button>
@@ -609,17 +648,17 @@ export default function CartPage({
                   <Button
                     size="icon"
                     className="h-8 w-8 rounded-full"
-                    onClick={() => updateQuantity(item.menuItemId, item.quantity + 1)}
+                    onClick={() => updateLineQuantity(item.lineId, item.quantity + 1)}
                   >
                     <Plus className="h-3.5 w-3.5" />
                   </Button>
                 </div>
                 <div className="text-right shrink-0">
                   <p className="font-bold text-sm">
-                    {formatCurrency(item.unitPrice * item.quantity)}
+                    {formatCurrency(effectiveLineTotal(item))}
                   </p>
                   <button
-                    onClick={() => removeItem(item.menuItemId)}
+                    onClick={() => removeLine(item.lineId)}
                     className="text-destructive hover:text-destructive/80 mt-1 p-1"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -630,9 +669,9 @@ export default function CartPage({
                 <Input
                   placeholder="Notas (ej: sin cebolla)"
                   className="text-sm h-9"
-                  value={notes[item.menuItemId] || ""}
+                  value={notes[item.lineId] || ""}
                   onChange={(e) =>
-                    setNotes({ ...notes, [item.menuItemId]: e.target.value })
+                    setNotes({ ...notes, [item.lineId]: e.target.value })
                   }
                 />
               </div>

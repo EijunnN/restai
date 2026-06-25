@@ -1,4 +1,4 @@
-import { eq, and, desc, gte, lte, lt, inArray, notInArray, sql, not } from "drizzle-orm";
+import { eq, and, desc, gte, lte, lt, ne, inArray, notInArray, sql, not } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { logger } from "../lib/logger.js";
 
@@ -195,6 +195,131 @@ export async function endSession(params: {
 
     return { session: updated, tableId: updated.table_id };
   });
+}
+
+// ── Free Table ──────────────────────────────────────────────────────
+
+/**
+ * Frees a table for the next customer, robustly. Unlike PATCH /:id/status
+ * (which only flips tables.status and was the cause of the "Liberar no libera"
+ * bug — it left an orphan ACTIVE table_sessions row that made the customer-entry
+ * side still treat the table as busy), this:
+ *   1. closes every non-terminal session for the table (active -> completed,
+ *      pending -> rejected), clearing any orphan left by the old path;
+ *   2. finalizes any still-open orders (status -> completed, items -> served) so
+ *      the visit is closed out;
+ *   3. sets the table to available (also self-heals a row wrongly left occupied).
+ * Returns the orders that were finalized so the caller can run the completion
+ * side effects (loyalty + inventory) idempotently OUTSIDE this transaction.
+ */
+export async function freeTable(params: {
+  tableId: string;
+  branchId: string;
+  organizationId: string;
+}): Promise<{
+  tableId: string;
+  completedOrders: Array<{
+    id: string;
+    order_number: string;
+    subtotal: number;
+    discount: number;
+    customer_id: string | null;
+  }>;
+}> {
+  const completedOrders = await db.transaction(async (tx) => {
+    const sessions = await tx
+      .select({ id: schema.tableSessions.id })
+      .from(schema.tableSessions)
+      .where(
+        and(
+          eq(schema.tableSessions.table_id, params.tableId),
+          eq(schema.tableSessions.branch_id, params.branchId),
+          inArray(schema.tableSessions.status, ["active", "pending"]),
+        ),
+      );
+
+    const sessionIds = sessions.map((s) => s.id);
+    let openOrders: Array<{
+      id: string;
+      order_number: string;
+      subtotal: number;
+      discount: number;
+      customer_id: string | null;
+    }> = [];
+
+    if (sessionIds.length > 0) {
+      openOrders = await tx
+        .select({
+          id: schema.orders.id,
+          order_number: schema.orders.order_number,
+          subtotal: schema.orders.subtotal,
+          discount: schema.orders.discount,
+          customer_id: schema.orders.customer_id,
+        })
+        .from(schema.orders)
+        .where(
+          and(
+            inArray(schema.orders.table_session_id, sessionIds),
+            notInArray(schema.orders.status, ["completed", "cancelled"]),
+          ),
+        );
+
+      if (openOrders.length > 0) {
+        const orderIds = openOrders.map((o) => o.id);
+        const now = new Date();
+        await tx
+          .update(schema.orders)
+          .set({ status: "completed", updated_at: now })
+          .where(inArray(schema.orders.id, orderIds));
+        await tx
+          .update(schema.orderItems)
+          .set({ status: "served" })
+          .where(
+            and(
+              inArray(schema.orderItems.order_id, orderIds),
+              ne(schema.orderItems.status, "cancelled"),
+            ),
+          );
+      }
+
+      const now2 = new Date();
+      await tx
+        .update(schema.tableSessions)
+        .set({ status: "completed", ended_at: now2 })
+        .where(
+          and(
+            eq(schema.tableSessions.table_id, params.tableId),
+            eq(schema.tableSessions.branch_id, params.branchId),
+            eq(schema.tableSessions.status, "active"),
+          ),
+        );
+      await tx
+        .update(schema.tableSessions)
+        .set({ status: "rejected", ended_at: now2 })
+        .where(
+          and(
+            eq(schema.tableSessions.table_id, params.tableId),
+            eq(schema.tableSessions.branch_id, params.branchId),
+            eq(schema.tableSessions.status, "pending"),
+          ),
+        );
+    }
+
+    await tx
+      .update(schema.tables)
+      .set({ status: "available" })
+      .where(
+        and(
+          eq(schema.tables.id, params.tableId),
+          eq(schema.tables.branch_id, params.branchId),
+          eq(schema.tables.organization_id, params.organizationId),
+        ),
+      );
+
+    return openOrders;
+  });
+
+  return { tableId: params.tableId, completedOrders };
 }
 
 // ── Get Table History ───────────────────────────────────────────────

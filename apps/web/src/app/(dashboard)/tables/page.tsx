@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import {
   useTables,
   useUpdateTableStatus,
+  useFreeTable,
   useDeleteTable,
   useSpaces,
   useDeleteSpace,
@@ -45,6 +46,7 @@ import { CreateTableDialog } from "./_components/create-table-dialog";
 import { CreateSpaceDialog, EditSpaceDialog, SpaceInfoCard } from "./_components/space-management";
 import { HistoryDialog } from "./_components/history-dialog";
 import { AssignmentDialog } from "./_components/assignment-dialog";
+import { CobrarDialog } from "./_components/cobrar-dialog";
 
 interface TableServiceRequest {
   id: string;
@@ -80,6 +82,8 @@ export default function TablesPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "table" | "space"; id: string; name: string } | null>(null);
   const [historyDialog, setHistoryDialog] = useState<any>(null);
   const [assignDialog, setAssignDialog] = useState<any>(null);
+  const [chargeTable, setChargeTable] = useState<any>(null);
+  const [freeConfirm, setFreeConfirm] = useState<{ id: string; number: number } | null>(null);
   const [pendingSessions, setPendingSessions] = useState<PendingSessionRequest[]>([]);
   const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
   const [requestsDialogOpen, setRequestsDialogOpen] = useState(false);
@@ -89,6 +93,7 @@ export default function TablesPage() {
   const { data: spacesData, isLoading: spacesLoading } = useSpaces();
   const { data: tablesData, isLoading: tablesLoading, error, refetch } = useTables();
   const updateTableStatus = useUpdateTableStatus();
+  const freeTable = useFreeTable();
   const deleteTable = useDeleteTable();
   const deleteSpace = useDeleteSpace();
   const { data: pendingData, refetch: refetchPendingSessions } = usePendingSessions();
@@ -257,7 +262,29 @@ export default function TablesPage() {
   };
 
   const handleStatusChange = (tableId: string, newStatus: string) => {
+    // Freeing a table must go through the robust free endpoint (closes the
+    // session + finalizes open orders), NOT a bare tables.status flip — the
+    // latter left an orphan session and the table stayed "ocupada" for the next
+    // customer. Confirm first since it closes out the visit.
+    if (newStatus === "available") {
+      const table = allTables.find((t: any) => t.id === tableId);
+      setFreeConfirm({ id: tableId, number: table?.number ?? 0 });
+      return;
+    }
     updateTableStatus.mutate({ id: tableId, status: newStatus });
+  };
+
+  const handleConfirmFree = () => {
+    if (!freeConfirm) return;
+    freeTable.mutate(freeConfirm.id, {
+      onSuccess: () => {
+        setFreeConfirm(null);
+        toast.success(`Mesa ${freeConfirm.number} liberada`);
+      },
+      onError: (err) => {
+        toast.error(err instanceof Error ? err.message : "No se pudo liberar la mesa");
+      },
+    });
   };
 
   const handleDelete = () => {
@@ -480,6 +507,7 @@ export default function TablesPage() {
               setDeleteConfirm({ type: "table", id: table.id, name: `Mesa ${table.number}` })
             }
             onStatusChange={handleStatusChange}
+            onCharge={setChargeTable}
           />
         )}
       </Tabs>
@@ -554,6 +582,17 @@ export default function TablesPage() {
       />
       <HistoryDialog table={historyDialog} onClose={() => setHistoryDialog(null)} />
       <AssignmentDialog table={assignDialog} onClose={() => setAssignDialog(null)} />
+      <CobrarDialog table={chargeTable} onClose={() => setChargeTable(null)} />
+      <ConfirmDialog
+        open={!!freeConfirm}
+        onOpenChange={(open) => !open && setFreeConfirm(null)}
+        title={`Liberar Mesa ${freeConfirm?.number ?? ""}`}
+        description="Se cerrará la sesión de la mesa y se finalizarán los pedidos pendientes. Asegúrate de haber cobrado antes de liberar."
+        variant="default"
+        confirmLabel="Liberar mesa"
+        onConfirm={handleConfirmFree}
+        loading={freeTable.isPending}
+      />
     </div>
   );
 }

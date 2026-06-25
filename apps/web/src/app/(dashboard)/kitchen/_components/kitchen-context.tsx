@@ -135,6 +135,7 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
       printKitchenTicket({
         orderNumber: order.orderNumber || order.order_number || order.id,
         tableNumber: order.tableName || order.table_name || undefined,
+        orderType: order.type,
         customerName: order.customerName || order.customer_name || undefined,
         createdAt: order.createdAt || order.created_at || new Date().toISOString(),
         items: (order.items || []).map((i: any) => ({
@@ -143,6 +144,9 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
           unit_price: i.unit_price || 0,
           total: i.total || 0,
           notes: i.notes,
+          modifiers: Array.isArray(i.modifiers)
+            ? i.modifiers.map((m: any) => ({ name: m.name }))
+            : undefined,
         })),
         notes: order.notes,
       });

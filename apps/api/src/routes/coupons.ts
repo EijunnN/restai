@@ -2,13 +2,15 @@ import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, or, lt, gte, isNull, desc, sql } from "drizzle-orm";
+import { eq, and, or, lt, gte, isNull, inArray, desc, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { idParamSchema, couponQuerySchema, createCouponSchema, updateCouponSchema } from "@restai/validators";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { sendLoyaltyEmail } from "../lib/notifications.js";
+import { logger } from "../lib/logger.js";
 
 const coupons = new Hono<AppEnv>();
 
@@ -566,9 +568,15 @@ coupons.post(
     const { couponId, customerIds } = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
-    // Verify coupon belongs to org
+    // Verify coupon belongs to org (fetch the fields the email template needs)
     const [coupon] = await db
-      .select({ id: schema.coupons.id })
+      .select({
+        id: schema.coupons.id,
+        code: schema.coupons.code,
+        name: schema.coupons.name,
+        description: schema.coupons.description,
+        expires_at: schema.coupons.expires_at,
+      })
       .from(schema.coupons)
       .where(
         and(
@@ -594,6 +602,76 @@ coupons.post(
       .insert(schema.couponAssignments)
       .values(values)
       .onConflictDoNothing();
+
+    // Email the coupon to assigned customers. Marketing message → consent-gated
+    // (sendLoyaltyEmail skips customers without marketing_opt_in). Best-effort:
+    // a send failure must never fail the assignment.
+    try {
+      const recipients = await db
+        .select({
+          id: schema.customers.id,
+          name: schema.customers.name,
+          email: schema.customers.email,
+          marketing_opt_in: schema.customers.marketing_opt_in,
+        })
+        .from(schema.customers)
+        .where(
+          and(
+            eq(schema.customers.organization_id, tenant.organizationId),
+            inArray(schema.customers.id, customerIds),
+          ),
+        );
+
+      const withEmail = recipients.filter((r) => r.email && r.marketing_opt_in);
+      if (withEmail.length > 0) {
+        const [org] = await db
+          .select({ name: schema.organizations.name })
+          .from(schema.organizations)
+          .where(eq(schema.organizations.id, tenant.organizationId))
+          .limit(1);
+        const expiresOn = coupon.expires_at
+          ? new Date(coupon.expires_at).toLocaleDateString("es-PE", {
+              day: "2-digit",
+              month: "long",
+              year: "numeric",
+            })
+          : null;
+        // Fire-and-forget, chunked (5 at a time) so a large batch (up to 100)
+        // neither blocks the assign HTTP response nor bursts Resend's rate limit
+        // (a 100-way burst would 429 most sends). Best-effort; the assignment
+        // itself already succeeded. Runs to completion on the long-lived API
+        // server (the dashboard/admin runtime).
+        void (async () => {
+          const CHUNK = 5;
+          for (let i = 0; i < withEmail.length; i += CHUNK) {
+            await Promise.allSettled(
+              withEmail.slice(i, i + CHUNK).map((r) =>
+                sendLoyaltyEmail({
+                  organizationId: tenant.organizationId,
+                  customerId: r.id,
+                  toAddress: r.email,
+                  marketingOptIn: r.marketing_opt_in,
+                  type: "coupon_assigned",
+                  orgName: org?.name,
+                  data: {
+                    customerName: r.name,
+                    couponName: coupon.name,
+                    couponCode: coupon.code,
+                    couponDescription: coupon.description,
+                    expiresOn,
+                  },
+                }),
+              ),
+            );
+          }
+        })();
+      }
+    } catch (err) {
+      logger.warn("Coupon assignment email batch failed", {
+        couponId,
+        error: (err as Error).message,
+      });
+    }
 
     return c.json({ success: true, data: { assigned: customerIds.length } }, 201);
   },

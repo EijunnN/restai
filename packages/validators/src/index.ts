@@ -108,6 +108,16 @@ export const startSessionSchema = z.object({
   customerPhone: z.string().max(20).optional(),
 });
 
+// Customer email-code (OTP) login
+export const requestCustomerCodeSchema = z.object({
+  email: z.string().email("Email inválido"),
+});
+
+export const verifyCustomerCodeSchema = z.object({
+  email: z.string().email("Email inválido"),
+  code: z.string().regex(/^\d{6}$/, "El código debe tener 6 dígitos"),
+});
+
 // Order validators
 export const createOrderItemSchema = z.object({
   menuItemId: z.string().uuid(),
@@ -399,6 +409,8 @@ export type CreateSpaceInput = z.infer<typeof createSpaceSchema>;
 export type UpdateSpaceInput = z.infer<typeof updateSpaceSchema>;
 export type CreateTableInput = z.infer<typeof createTableSchema>;
 export type StartSessionInput = z.infer<typeof startSessionSchema>;
+export type RequestCustomerCodeInput = z.infer<typeof requestCustomerCodeSchema>;
+export type VerifyCustomerCodeInput = z.infer<typeof verifyCustomerCodeSchema>;
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
 export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>;

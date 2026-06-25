@@ -1,76 +1,83 @@
 {
-	"version": "7",
-	"dialect": "postgresql",
-	"entries": [
-		{
-			"idx": 0,
-			"version": "7",
-			"when": 1770427939583,
-			"tag": "0000_bent_sentinels",
-			"breakpoints": true
-		},
-		{
-			"idx": 1,
-			"version": "7",
-			"when": 1770620476442,
-			"tag": "0001_loving_namor",
-			"breakpoints": true
-		},
-		{
-			"idx": 2,
-			"version": "7",
-			"when": 1774479333454,
-			"tag": "0002_shocking_lady_mastermind",
-			"breakpoints": true
-		},
-		{
-			"idx": 3,
-			"version": "7",
-			"when": 1774482632443,
-			"tag": "0003_regular_leo",
-			"breakpoints": true
-		},
-		{
-			"idx": 4,
-			"version": "7",
-			"when": 1774482632444,
-			"tag": "0004_inventory_non_negative_stock",
-			"breakpoints": true
-		},
-		{
-			"idx": 5,
-			"version": "7",
-			"when": 1774482632445,
-			"tag": "0005_deferred_order_fks",
-			"breakpoints": true
-		},
-		{
-			"idx": 6,
-			"version": "7",
-			"when": 1782196243533,
-			"tag": "0006_loyalty_maturity",
-			"breakpoints": true
-		},
-		{
-			"idx": 7,
-			"version": "7",
-			"when": 1782198997778,
-			"tag": "0007_loyalty_growth",
-			"breakpoints": true
-		},
-		{
-			"idx": 8,
-			"version": "7",
-			"when": 1782199000000,
-			"tag": "0008_sunat_integration",
-			"breakpoints": true
-		},
-		{
-			"idx": 9,
-			"version": "7",
-			"when": 1782262622222,
-			"tag": "0009_invoice_fk_ruc_check",
-			"breakpoints": true
-		}
-	]
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1770427939583,
+      "tag": "0000_bent_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1770620476442,
+      "tag": "0001_loving_namor",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774479333454,
+      "tag": "0002_shocking_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1774482632443,
+      "tag": "0003_regular_leo",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1774482632444,
+      "tag": "0004_inventory_non_negative_stock",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1774482632445,
+      "tag": "0005_deferred_order_fks",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782196243533,
+      "tag": "0006_loyalty_maturity",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782198997778,
+      "tag": "0007_loyalty_growth",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782199000000,
+      "tag": "0008_sunat_integration",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782262622222,
+      "tag": "0009_invoice_fk_ruc_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1782417359902,
+      "tag": "0010_customer_login_codes",
+      "breakpoints": true
+    }
+  ]
 }

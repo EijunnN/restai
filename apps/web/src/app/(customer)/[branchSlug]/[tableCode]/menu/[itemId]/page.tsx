@@ -294,7 +294,7 @@ export default function ProductDetailPage({
   "use no memo";
   const { branchSlug, tableCode, itemId } = use(params);
   const router = useRouter();
-  const { addItem, items, updateQuantity } = useCartStore();
+  const { addItem, items } = useCartStore();
   const {
     menuData,
     setMenuData,
@@ -411,8 +411,11 @@ export default function ProductDetailPage({
   }
 
   const category = menuData.categories.find((c) => c.id === item.category_id);
-  const cartItem = items.find((i) => i.menuItemId === item.id);
-  const cartQty = cartItem?.quantity || 0;
+  // Total quantity of this product already in the cart, across all modifier
+  // variants (for the "Ya tienes X en tu carrito" indicator).
+  const cartQty = items
+    .filter((i) => i.menuItemId === item.id)
+    .reduce((sum, i) => sum + i.quantity, 0);
 
   const handleAddToCart = () => {
     for (const group of modifierGroups) {
@@ -429,17 +432,16 @@ export default function ProductDetailPage({
 
     const cartModifiers = buildCartModifiers(selectedModifiers, modifierGroups);
 
-    if (cartQty > 0 && cartModifiers.length === 0) {
-      updateQuantity(item.id, cartQty + quantity);
-    } else {
-      addItem({
-        menuItemId: item.id,
-        name: item.name,
-        unitPrice: item.price,
-        quantity,
-        modifiers: cartModifiers,
-      });
-    }
+    // Always add as a line keyed by product+modifiers. The store merges only
+    // when the SAME product with the SAME modifiers is added again, so the
+    // selected modifiers are never discarded into a pre-existing plain line.
+    addItem({
+      menuItemId: item.id,
+      name: item.name,
+      unitPrice: item.price,
+      quantity,
+      modifiers: cartModifiers,
+    });
     router.push(`/${branchSlug}/${tableCode}/menu`);
   };
 

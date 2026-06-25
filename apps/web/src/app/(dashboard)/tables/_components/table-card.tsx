@@ -14,6 +14,7 @@ import {
   UserPlus,
   Circle,
   BellRing,
+  Receipt,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { statusOptions } from "./constants";
@@ -33,6 +34,7 @@ interface TableCardProps {
   onAssign: (table: any) => void;
   onDelete: (table: any) => void;
   onStatusChange: (tableId: string, status: string) => void;
+  onCharge?: (table: any) => void;
 }
 
 const STATUS: Record<
@@ -91,9 +93,12 @@ export function TableCard({
   onAssign,
   onDelete,
   onStatusChange,
+  onCharge,
 }: TableCardProps) {
   const s = STATUS[table.status] || STATUS.available;
   const hasServiceRequest = !!serviceRequest;
+  // Clicking an occupied table opens the charge ("cobrar") dialog.
+  const canCharge = table.status === "occupied" && !!onCharge;
   const requestAccent =
     serviceRequest?.type === "request_bill"
       ? "ring-2 ring-blue-500/70"
@@ -113,9 +118,23 @@ export function TableCard({
     >
       {/* Header: number + status */}
       <div className="flex items-center justify-between">
-        <p className={cn("text-[2.5rem] font-black leading-none tracking-tight tabular-nums", s.number)}>
-          {table.number}
-        </p>
+        {canCharge ? (
+          <button
+            type="button"
+            title="Cobrar / ver pedidos"
+            onClick={() => onCharge!(table)}
+            className={cn(
+              "text-[2.5rem] font-black leading-none tracking-tight tabular-nums text-left transition-opacity hover:opacity-70",
+              s.number,
+            )}
+          >
+            {table.number}
+          </button>
+        ) : (
+          <p className={cn("text-[2.5rem] font-black leading-none tracking-tight tabular-nums", s.number)}>
+            {table.number}
+          </p>
+        )}
         <div className="flex flex-col items-end gap-1">
           <span className={cn("text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/60 dark:bg-white/10", s.text)}>
             {s.label}
@@ -147,6 +166,9 @@ export function TableCard({
         <IconBtn icon={<History className="h-3.5 w-3.5" />} title="Historial" onClick={() => onHistory(table)} />
         {waiterAssignmentEnabled && (
           <IconBtn icon={<UserPlus className="h-3.5 w-3.5" />} title="Asignar" onClick={() => onAssign(table)} />
+        )}
+        {canCharge && (
+          <IconBtn icon={<Receipt className="h-3.5 w-3.5" />} title="Cobrar" onClick={() => onCharge!(table)} />
         )}
 
         <div className="flex-1" />

@@ -126,6 +126,29 @@ export const rewards = pgTable("rewards", {
   is_active: boolean("is_active").default(true).notNull(),
 });
 
+// Email login codes (OTP) for returning customers. A customer proves ownership
+// of their email by entering a short code we email them; on success we mint an
+// account token that unlocks their profile/loyalty (ordering still needs a QR
+// table session). Codes are stored hashed (never plaintext), short-lived, and
+// single-use with an attempt cap to resist brute force.
+export const customerLoginCodes = pgTable("customer_login_codes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organization_id: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  customer_id: uuid("customer_id")
+    .notNull()
+    .references(() => customers.id, { onDelete: "cascade" }),
+  code_hash: text("code_hash").notNull(),
+  expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumed_at: timestamp("consumed_at", { withTimezone: true }),
+  attempts: integer("attempts").default(0).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("idx_customer_login_codes_customer").on(table.customer_id),
+  index("idx_customer_login_codes_expiry").on(table.expires_at),
+]);
+
 export const rewardRedemptions = pgTable("reward_redemptions", {
   id: uuid("id").primaryKey().defaultRandom(),
   customer_loyalty_id: uuid("customer_loyalty_id")

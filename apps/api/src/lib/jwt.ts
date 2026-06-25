@@ -49,6 +49,33 @@ export async function signCustomerToken(payload: {
   );
 }
 
+/**
+ * Account token for a customer who logged in with an email code (OTP). Unlike
+ * signCustomerToken it is NOT bound to a branch/table/session: it carries only
+ * { sub = customerId, customerId, org } so it can power profile/loyalty reads
+ * (customerAuth checks role==="customer" + reads customerId/org). It does NOT
+ * grant ordering, which still requires an active QR table session
+ * (requireActiveSession looks up a session row by sub and would not find one).
+ */
+export async function signCustomerAccountToken(payload: {
+  customerId: string;
+  org: string;
+}) {
+  const now = Math.floor(Date.now() / 1000);
+  return sign(
+    {
+      sub: payload.customerId,
+      customerId: payload.customerId,
+      org: payload.org,
+      role: "customer",
+      account: true,
+      iat: now,
+      exp: now + 30 * 24 * 60 * 60, // 30 días: una sesión de "mi cuenta" persistente
+    },
+    JWT_SECRET(),
+  );
+}
+
 export async function verifyAccessToken(token: string) {
   return verify(token, JWT_SECRET(), "HS256");
 }

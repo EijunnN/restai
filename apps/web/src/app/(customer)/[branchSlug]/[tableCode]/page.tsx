@@ -18,7 +18,8 @@ import {
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { DatePicker } from "@restai/ui/components/date-picker";
-import { UtensilsCrossed, Star, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { UtensilsCrossed, Star, RefreshCw, LogIn, Check } from "lucide-react";
 import { useCustomerStore } from "@/stores/customer-store";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -74,6 +75,9 @@ function CustomerEntryPageContent({
   const router = useRouter();
   // Referral link support: /{branch}/{table}?ref=CODE → forwarded on register.
   const referralCode = useSearchParams().get("ref") || undefined;
+  // Marketing consent (Ley 29733). Defaults on for loyalty joiners so they get
+  // coupons/offers by email; clearly shown and toggleable.
+  const [marketingOptIn, setMarketingOptIn] = useState(true);
   const {
     loading,
     setLoading,
@@ -165,6 +169,7 @@ function CustomerEntryPageContent({
           customerPhone: data.customerPhone || undefined,
           email: data.email || undefined,
           birthDate: data.birthDate || undefined,
+          marketingOptIn: data.email ? marketingOptIn : false,
           referralCode,
         }
       : {
@@ -408,12 +413,50 @@ function CustomerEntryPageContent({
                     )}
                   />
                 </div>
+
+                {/* Marketing consent (Ley 29733): controls coupon/offer emails. */}
+                <button
+                  type="button"
+                  aria-pressed={marketingOptIn}
+                  onClick={() => setMarketingOptIn((v) => !v)}
+                  className="flex w-full items-start gap-3 rounded-lg border border-border bg-muted/20 p-3 text-left"
+                >
+                  <span
+                    className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition-colors ${
+                      marketingOptIn
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-muted-foreground/40"
+                    }`}
+                  >
+                    {marketingOptIn && <Check className="h-3.5 w-3.5" />}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    Quiero recibir <span className="font-medium text-foreground">cupones y novedades</span> por correo.
+                    Necesitas tu email para iniciar sesión y recibir tus recompensas.
+                  </span>
+                </button>
               </div>
             )}
 
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Iniciando..." : "Ver Menu"}
+              {loading ? "Iniciando..." : "Empezar a ordenar"}
             </Button>
+
+            {/* Existing members: log in with an email code to see points/rewards. */}
+            <div className="flex items-center gap-3 pt-1">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                ¿Ya eres miembro?
+              </span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+            <Link
+              href={`/${branchSlug}/${tableCode}/login`}
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
+            >
+              <LogIn className="h-4 w-4" />
+              Iniciar sesión con mi correo
+            </Link>
           </CardContent>
         </form>
       </Card>

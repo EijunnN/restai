@@ -136,6 +136,33 @@ export function useUpdateTableStatus() {
   });
 }
 
+// Frees a table robustly (closes session, finalizes open orders, sets available).
+// Use this for "Liberar" instead of useUpdateTableStatus({status:'available'}),
+// which only flips tables.status and leaves an orphan session.
+export function useFreeTable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tableId: string) =>
+      apiFetch(`/api/tables/${tableId}/free`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tables"] });
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+      qc.invalidateQueries({ queryKey: ["payments"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
+}
+
+// Active/pending session for a table + its orders with payment status, for the
+// "cobrar desde mesa" dialog. Enabled only while a tableId is provided.
+export function useTableActiveSession(tableId: string | null) {
+  return useQuery({
+    queryKey: ["tables", tableId, "active-session"],
+    queryFn: () => apiFetch(`/api/tables/${tableId}/active-session`),
+    enabled: !!tableId,
+  });
+}
+
 // --- Sessions ---
 
 export function useSessions(status?: string) {

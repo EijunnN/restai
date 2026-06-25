@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, inArray, sql, desc, isNull, gte } from "drizzle-orm";
+import { eq, and, inArray, sql, desc, isNull, gte, lt } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   startSessionSchema,
@@ -9,21 +9,28 @@ import {
   idParamSchema,
 } from "@restai/validators";
 import { z } from "zod";
-import { signCustomerToken, verifyAccessToken } from "../lib/jwt.js";
+import { signCustomerToken, signCustomerAccountToken, verifyAccessToken } from "../lib/jwt.js";
 import { realtime } from "../infrastructure/container.js";
-import { findOrCreate } from "../services/customer.service.js";
+import { findOrCreate, findByEmail } from "../services/customer.service.js";
 import { createOrder, OrderValidationError } from "../services/order.service.js";
 import { redeemReward } from "../services/loyalty.service.js";
 import * as referralService from "../services/referral.service.js";
 import * as sessionService from "../services/session.service.js";
 import { rateLimiter } from "../middleware/rate-limit.js";
+import { sendTransactionalEmail } from "../lib/notifications.js";
+import { hashPassword, verifyPassword } from "../lib/hash.js";
+import { requestCustomerCodeSchema, verifyCustomerCodeSchema } from "@restai/validators";
 
 const customer = new Hono<AppEnv>();
 
 // Stricter rate limit for session creation (5 per 10 minutes per IP)
 customer.use("/:branchSlug/:tableCode/register", rateLimiter(5, 600_000, "session-create"));
 customer.use("/:branchSlug/:tableCode/session", rateLimiter(5, 600_000, "session-create"));
+// Email-code login: tight limits to deter code spam / brute force.
+customer.use("/:branchSlug/login/request-code", rateLimiter(5, 600_000, "login-request"));
+customer.use("/:branchSlug/login/verify-code", rateLimiter(15, 600_000, "login-verify"));
 const TABLE_ACTION_COOLDOWN_MS = 30_000;
+const MAX_LOGIN_CODE_ATTEMPTS = 5;
 const tableActionCooldownBySession = new Map<string, number>();
 
 // GET /:branchSlug/:tableCode/menu - Get menu for branch (public)
@@ -86,13 +93,30 @@ customer.get("/:branchSlug/:tableCode/menu", async (c) => {
       ),
     );
 
+  // Flag which items have modifier groups so the menu grid can route their
+  // quick-add to the detail page (where required options are chosen) instead of
+  // adding a bare line that the server would later reject at checkout.
+  const itemIds = items.map((i) => i.id);
+  let modifierItemIds = new Set<string>();
+  if (itemIds.length > 0) {
+    const links = await db
+      .select({ item_id: schema.menuItemModifierGroups.item_id })
+      .from(schema.menuItemModifierGroups)
+      .where(inArray(schema.menuItemModifierGroups.item_id, itemIds));
+    modifierItemIds = new Set(links.map((l) => l.item_id));
+  }
+  const itemsWithFlags = items.map((it) => ({
+    ...it,
+    has_modifiers: modifierItemIds.has(it.id),
+  }));
+
   return c.json({
     success: true,
     data: {
       branch: { id: branch.id, name: branch.name, slug: branch.slug, currency: branch.currency },
       table: { id: table.id, number: table.number },
       categories,
-      items,
+      items: itemsWithFlags,
     },
   });
 });
@@ -182,7 +206,7 @@ customer.post(
     }
 
     // Find existing customer or create new one (dedup by email/phone)
-    const { customer: customer_record } = await findOrCreate({
+    const { customer: customer_record, loyalty, isNew } = await findOrCreate({
       organizationId: branch.organization_id,
       name: body.customerName,
       email: body.email,
@@ -190,6 +214,28 @@ customer.post(
       birthDate: body.birthDate,
       marketingOptIn: body.marketingOptIn,
     });
+
+    // Welcome email for brand-new customers who gave an email. Transactional
+    // (service confirmation of account creation), so it is NOT gated on
+    // marketing consent. Best-effort: never blocks/breaks registration.
+    if (isNew && body.email) {
+      const [org] = await db
+        .select({ name: schema.organizations.name })
+        .from(schema.organizations)
+        .where(eq(schema.organizations.id, branch.organization_id))
+        .limit(1);
+      await sendTransactionalEmail({
+        organizationId: branch.organization_id,
+        customerId: customer_record.id,
+        toAddress: body.email,
+        type: "welcome",
+        orgName: org?.name,
+        data: {
+          customerName: body.customerName,
+          pointsBalance: loyalty?.points_balance ?? 0,
+        },
+      });
+    }
 
     // Best-effort referral registration: bind this customer to the referrer
     // identified by the code. Never fail registration if the code is invalid,
@@ -599,6 +645,178 @@ customer.get("/:branchSlug/menu/items/:itemId/modifiers", async (c) => {
 
   return c.json({ success: true, data: result });
 });
+
+// POST /:branchSlug/login/request-code - Email a 6-digit login code (public)
+// Resolves the org from the branch in the URL (customers are tenant-scoped), so
+// the same email under another org is never confused. Returns a generic response
+// regardless of existence so it can't be used to enumerate registered emails.
+customer.post(
+  "/:branchSlug/login/request-code",
+  zValidator("json", requestCustomerCodeSchema),
+  async (c) => {
+    const branchSlug = c.req.param("branchSlug");
+    const { email } = c.req.valid("json");
+
+    const generic = {
+      success: true,
+      data: { message: "Si el correo está registrado, te enviamos un código." },
+    };
+
+    const [branch] = await db
+      .select({ id: schema.branches.id, organization_id: schema.branches.organization_id })
+      .from(schema.branches)
+      .where(eq(schema.branches.slug, branchSlug))
+      .limit(1);
+    if (!branch) return c.json(generic);
+
+    const customer_record = await findByEmail({
+      organizationId: branch.organization_id,
+      email,
+    });
+    if (!customer_record) {
+      // Equalize timing with the registered path (which runs an argon2 hash
+      // below) so response latency does not leak whether the email is
+      // registered — keeps the generic response a real anti-enumeration control.
+      await hashPassword("000000").catch(() => {});
+      return c.json(generic);
+    }
+
+    // 6-digit code; store ONLY its hash (never plaintext), short-lived, single-use.
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    const code = String(buf[0] % 1_000_000).padStart(6, "0");
+    const code_hash = await hashPassword(code);
+
+    await db.insert(schema.customerLoginCodes).values({
+      organization_id: branch.organization_id,
+      customer_id: customer_record.id,
+      code_hash,
+      expires_at: new Date(Date.now() + 10 * 60_000),
+    });
+
+    const [org] = await db
+      .select({ name: schema.organizations.name })
+      .from(schema.organizations)
+      .where(eq(schema.organizations.id, branch.organization_id))
+      .limit(1);
+
+    // Transactional (not marketing) → sent regardless of marketing consent.
+    await sendTransactionalEmail({
+      organizationId: branch.organization_id,
+      customerId: customer_record.id,
+      toAddress: email,
+      type: "login_code",
+      orgName: org?.name,
+      data: { customerName: customer_record.name, code, expiresMinutes: 10 },
+    });
+
+    return c.json(generic);
+  },
+);
+
+// POST /:branchSlug/login/verify-code - Verify code, mint an account token (public)
+// Success returns a 30-day "account" token bound to { customerId, org } (NOT a
+// table session). It unlocks profile/loyalty reads; placing orders still requires
+// scanning a table QR (requireActiveSession). This is the proof-of-email-ownership
+// that the unverified findOrCreate dedup never had.
+customer.post(
+  "/:branchSlug/login/verify-code",
+  zValidator("json", verifyCustomerCodeSchema),
+  async (c) => {
+    const branchSlug = c.req.param("branchSlug");
+    const { email, code } = c.req.valid("json");
+
+    const invalid = c.json(
+      { success: false, error: { code: "INVALID_CODE", message: "Código inválido o expirado" } },
+      400,
+    );
+
+    const [branch] = await db
+      .select({ organization_id: schema.branches.organization_id })
+      .from(schema.branches)
+      .where(eq(schema.branches.slug, branchSlug))
+      .limit(1);
+    if (!branch) return invalid;
+
+    const customer_record = await findByEmail({
+      organizationId: branch.organization_id,
+      email,
+    });
+    if (!customer_record) return invalid;
+
+    // Latest unconsumed, non-expired code for this customer.
+    const [loginCode] = await db
+      .select()
+      .from(schema.customerLoginCodes)
+      .where(
+        and(
+          eq(schema.customerLoginCodes.customer_id, customer_record.id),
+          eq(schema.customerLoginCodes.organization_id, branch.organization_id),
+          isNull(schema.customerLoginCodes.consumed_at),
+          gte(schema.customerLoginCodes.expires_at, new Date()),
+        ),
+      )
+      .orderBy(desc(schema.customerLoginCodes.created_at))
+      .limit(1);
+
+    if (!loginCode) return invalid;
+
+    // Atomically claim ONE attempt: this single UPDATE both increments the
+    // counter (with sql`attempts + 1`, never a stale JS read) and self-limits via
+    // `attempts < MAX`, so concurrent guesses can't bypass the per-code cap
+    // (no TOCTOU). 0 rows back => the code is consumed, expired, or out of
+    // attempts → reject.
+    const [claimed] = await db
+      .update(schema.customerLoginCodes)
+      .set({ attempts: sql`${schema.customerLoginCodes.attempts} + 1` })
+      .where(
+        and(
+          eq(schema.customerLoginCodes.id, loginCode.id),
+          isNull(schema.customerLoginCodes.consumed_at),
+          gte(schema.customerLoginCodes.expires_at, new Date()),
+          lt(schema.customerLoginCodes.attempts, MAX_LOGIN_CODE_ATTEMPTS),
+        ),
+      )
+      .returning({ id: schema.customerLoginCodes.id });
+
+    if (!claimed) return invalid;
+
+    const ok = await verifyPassword(loginCode.code_hash, code);
+    if (!ok) return invalid;
+
+    // Single-use: consume only if still unconsumed (race-safe). If another
+    // concurrent request already consumed it, treat this as invalid.
+    const [consumed] = await db
+      .update(schema.customerLoginCodes)
+      .set({ consumed_at: new Date() })
+      .where(
+        and(
+          eq(schema.customerLoginCodes.id, loginCode.id),
+          isNull(schema.customerLoginCodes.consumed_at),
+        ),
+      )
+      .returning({ id: schema.customerLoginCodes.id });
+
+    if (!consumed) return invalid;
+
+    const token = await signCustomerAccountToken({
+      customerId: customer_record.id,
+      org: branch.organization_id,
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        token,
+        customer: {
+          id: customer_record.id,
+          name: customer_record.name,
+          email: customer_record.email,
+        },
+      },
+    });
+  },
+);
 
 // Customer auth middleware for order routes
 const customerAuth = async (c: any, next: any) => {
