@@ -664,7 +664,7 @@ const requireActiveSession = async (c: any, next: any) => {
 };
 
 // GET /my-loyalty - Get loyalty info for current customer (customer auth)
-customer.get("/my-loyalty", customerAuth, requireActiveSession, async (c) => {
+customer.get("/my-loyalty", customerAuth, async (c) => {
   const user = c.get("user") as any;
   const customerId = user.customerId;
   const orgId = user.org;
@@ -754,7 +754,7 @@ customer.get("/my-loyalty", customerAuth, requireActiveSession, async (c) => {
 });
 
 // GET /my-coupons - Get available coupons for current customer (customer auth)
-customer.get("/my-coupons", customerAuth, requireActiveSession, async (c) => {
+customer.get("/my-coupons", customerAuth, async (c) => {
   const user = c.get("user") as any;
   const customerId = user.customerId;
 
@@ -1337,8 +1337,12 @@ customer.post(
 );
 
 // GET /my-orders - Orders for the current session (customer auth)
-customer.get("/my-orders", customerAuth, requireActiveSession, async (c) => {
-  const session = c.get("session") as any;
+customer.get("/my-orders", customerAuth, async (c) => {
+  // user.sub IS the session ID minted at registration — no active-session gate
+  // needed for read-only history; the customer should see their orders even
+  // while the session is still pending or after it has been closed.
+  const user = c.get("user") as any;
+  const sessionId = user.sub;
 
   const orders = await db
     .select({
@@ -1349,7 +1353,7 @@ customer.get("/my-orders", customerAuth, requireActiveSession, async (c) => {
       created_at: schema.orders.created_at,
     })
     .from(schema.orders)
-    .where(eq(schema.orders.table_session_id, session.id))
+    .where(eq(schema.orders.table_session_id, sessionId))
     .orderBy(desc(schema.orders.created_at));
 
   if (orders.length === 0) {
@@ -1381,7 +1385,7 @@ customer.get("/my-orders", customerAuth, requireActiveSession, async (c) => {
 });
 
 // GET /my-redemptions - Pending redemptions not yet applied to an order (customer auth)
-customer.get("/my-redemptions", customerAuth, requireActiveSession, async (c) => {
+customer.get("/my-redemptions", customerAuth, async (c) => {
   const user = c.get("user") as any;
   const customerId = user.customerId;
 
@@ -1421,7 +1425,7 @@ customer.get("/my-redemptions", customerAuth, requireActiveSession, async (c) =>
 });
 
 // GET /my-referral-code - Get (or lazily create) this customer's referral code (customer auth)
-customer.get("/my-referral-code", customerAuth, requireActiveSession, async (c) => {
+customer.get("/my-referral-code", customerAuth, async (c) => {
   const user = c.get("user") as any;
   const customerId = user.customerId;
 
@@ -1441,7 +1445,7 @@ customer.get("/my-referral-code", customerAuth, requireActiveSession, async (c) 
 });
 
 // GET /my-transactions - Points history for the current customer (customer auth)
-customer.get("/my-transactions", customerAuth, requireActiveSession, async (c) => {
+customer.get("/my-transactions", customerAuth, async (c) => {
   const user = c.get("user") as any;
   const customerId = user.customerId;
   const orgId = user.org;
