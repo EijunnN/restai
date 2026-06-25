@@ -27,7 +27,7 @@ export default function CustomerLoginPage({
   "use no memo";
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
-  const setAccount = useCustomerStore((s) => s.setAccount);
+  const setSession = useCustomerStore((s) => s.setSession);
 
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
@@ -81,21 +81,34 @@ export default function CustomerLoginPage({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: email.trim(), code: trimmedCode }),
+          body: JSON.stringify({ email: email.trim(), code: trimmedCode, tableCode }),
         },
       );
       const result = await res.json();
       if (!res.ok || !result.success) {
+        if (result.error?.code === "SESSION_PENDING") {
+          setError("Esta mesa ya está esperando aprobación del personal.");
+          return;
+        }
         throw new Error(result.error?.message || "Código inválido o expirado");
       }
-      setAccount({
+
+      // The table already has an active session → no token issued.
+      if (result.data.status === "active" || !result.data.token) {
+        setError("Esta mesa ya está ocupada. Pide ayuda al personal.");
+        return;
+      }
+
+      // Verified + pending session created → wait for the waiter to approve.
+      setSession({
         token: result.data.token,
+        sessionId: result.data.sessionId ?? result.data.session?.id,
         branchSlug,
         tableCode,
         customerName: result.data.customer?.name,
       });
-      toast.success(`Hola ${result.data.customer?.name || ""}`);
-      router.push(`/${branchSlug}/${tableCode}/profile`);
+      toast.success(`Hola ${result.data.customer?.name || ""}, solicitamos tu ingreso`);
+      router.push(`/${branchSlug}/${tableCode}/waiting`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error inesperado");
     } finally {

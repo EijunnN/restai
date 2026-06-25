@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, gte, lte, sql, sum } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql, sum, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { createPaymentSchema, idParamSchema } from "@restai/validators";
+import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
@@ -241,6 +242,158 @@ payments.post(
         fully_paid: fullyPaid,
       },
     }, 201);
+  },
+);
+
+// POST /items - Split-bill: pay for selected order items. Records a payment for
+// the selected items' proportional share of the order total and marks them paid,
+// so a shared table can be settled product-by-product. The cash "amount
+// received"/change is purely a client concern; the recorded payment is the owed
+// share. The order is finalized (loyalty/inventory) when the table is freed.
+const payItemsSchema = z.object({
+  orderId: z.string().uuid(),
+  itemIds: z.array(z.string().uuid()).min(1),
+  method: z.enum(["cash", "card", "yape", "plin", "transfer", "other"]),
+  reference: z.string().max(255).optional(),
+  tip: z.number().int().min(0).default(0),
+});
+
+payments.post(
+  "/items",
+  requirePermission("payments:create"),
+  zValidator("json", payItemsSchema),
+  async (c) => {
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const txResult = await db.transaction(async (tx) => {
+      const [order] = await tx
+        .select()
+        .from(schema.orders)
+        .where(
+          and(
+            eq(schema.orders.id, body.orderId),
+            eq(schema.orders.organization_id, tenant.organizationId),
+            eq(schema.orders.branch_id, tenant.branchId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+
+      if (!order) {
+        return { error: { status: 404 as const, code: "NOT_FOUND", message: "Orden no encontrada" } };
+      }
+      if (order.status === "cancelled") {
+        return { error: { status: 400 as const, code: "BAD_REQUEST", message: "La orden está cancelada" } };
+      }
+
+      const allItems = await tx
+        .select({
+          id: schema.orderItems.id,
+          total: schema.orderItems.total,
+          paid_at: schema.orderItems.paid_at,
+        })
+        .from(schema.orderItems)
+        .where(eq(schema.orderItems.order_id, body.orderId));
+
+      const byId = new Map(allItems.map((i) => [i.id, i]));
+      for (const id of body.itemIds) {
+        const it = byId.get(id);
+        if (!it) {
+          return { error: { status: 400 as const, code: "BAD_REQUEST", message: "Ítem inválido para esta orden" } };
+        }
+        if (it.paid_at) {
+          return { error: { status: 409 as const, code: "CONFLICT", message: "Uno de los ítems ya fue pagado" } };
+        }
+      }
+
+      const selectedSet = new Set(body.itemIds);
+      const unpaidItems = allItems.filter((i) => !i.paid_at);
+      const settlingAll =
+        unpaidItems.length === body.itemIds.length &&
+        unpaidItems.every((i) => selectedSet.has(i.id));
+
+      const [prev] = await tx
+        .select({ total_paid: sum(schema.payments.amount) })
+        .from(schema.payments)
+        .where(
+          and(
+            eq(schema.payments.order_id, body.orderId),
+            eq(schema.payments.status, "completed"),
+          ),
+        );
+      const previouslyPaid = Number(prev?.total_paid || 0);
+      const remainingBefore = Math.max(0, order.total - previouslyPaid);
+
+      // Exact remaining when settling everything left (no rounding leftover);
+      // otherwise the proportional share of the selected items.
+      let owed: number;
+      if (settlingAll) {
+        owed = remainingBefore;
+      } else {
+        owed = body.itemIds.reduce((acc, id) => {
+          const it = byId.get(id)!;
+          const share = order.subtotal > 0 ? Math.round((it.total * order.total) / order.subtotal) : 0;
+          return acc + share;
+        }, 0);
+        owed = Math.min(owed, remainingBefore);
+      }
+
+      if (owed <= 0) {
+        return { error: { status: 400 as const, code: "BAD_REQUEST", message: "Nada por cobrar en la selección" } };
+      }
+
+      const [payment] = await tx
+        .insert(schema.payments)
+        .values({
+          order_id: body.orderId,
+          organization_id: tenant.organizationId,
+          branch_id: tenant.branchId,
+          method: body.method,
+          amount: owed,
+          reference: body.reference,
+          tip: body.tip,
+          status: "completed",
+        })
+        .returning();
+
+      // Mark the selected items paid (guarded on still-unpaid for race safety).
+      await tx
+        .update(schema.orderItems)
+        .set({ paid_at: new Date() })
+        .where(
+          and(
+            inArray(schema.orderItems.id, body.itemIds),
+            eq(schema.orderItems.order_id, body.orderId),
+            isNull(schema.orderItems.paid_at),
+          ),
+        );
+
+      const totalPaid = previouslyPaid + owed;
+      return { error: null, order, payment, owed, totalPaid, fullyPaid: totalPaid >= order.total };
+    });
+
+    if (txResult.error) {
+      const { status, code, message } = txResult.error;
+      return c.json({ success: false, error: { code, message } }, status);
+    }
+
+    const { order, payment, owed, totalPaid, fullyPaid } = txResult;
+    return c.json(
+      {
+        success: true,
+        data: {
+          ...payment,
+          order_number: order.order_number,
+          order_total: order.total,
+          charged: owed,
+          total_paid: totalPaid,
+          remaining: Math.max(0, order.total - totalPaid),
+          fully_paid: fullyPaid,
+        },
+      },
+      201,
+    );
   },
 );
 

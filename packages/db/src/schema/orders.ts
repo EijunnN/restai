@@ -72,6 +72,10 @@ export const orderItems = pgTable("order_items", {
   total: integer("total").notNull(), // in cents
   notes: text("notes"),
   status: orderItemStatusEnum("status").default("pending").notNull(),
+  // Set when this line has been paid for (per-item / split-bill payment from the
+  // tables "cobrar" dialog). null = still owed. Lets staff settle a shared table
+  // item-by-item and see exactly which products remain unpaid.
+  paid_at: timestamp("paid_at", { withTimezone: true }),
 }, (table) => [
   index("idx_order_items_order").on(table.order_id),
 ]);

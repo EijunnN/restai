@@ -9,7 +9,7 @@ import {
   idParamSchema,
 } from "@restai/validators";
 import { z } from "zod";
-import { signCustomerToken, signCustomerAccountToken, verifyAccessToken } from "../lib/jwt.js";
+import { signCustomerToken, verifyAccessToken } from "../lib/jwt.js";
 import { realtime } from "../infrastructure/container.js";
 import { findOrCreate, findByEmail } from "../services/customer.service.js";
 import { createOrder, OrderValidationError } from "../services/order.service.js";
@@ -714,17 +714,18 @@ customer.post(
   },
 );
 
-// POST /:branchSlug/login/verify-code - Verify code, mint an account token (public)
-// Success returns a 30-day "account" token bound to { customerId, org } (NOT a
-// table session). It unlocks profile/loyalty reads; placing orders still requires
-// scanning a table QR (requireActiveSession). This is the proof-of-email-ownership
-// that the unverified findOrCreate dedup never had.
+// POST /:branchSlug/login/verify-code - Verify the email code, then start a
+// table session (public). On success this proves email ownership AND creates a
+// PENDING table session for the recognized customer (waiter approval), exactly
+// like register — login = "join this table as a returning member". Returns the
+// session + QR token (which carries customerId, so loyalty works), or
+// { status: "active" } if the table is already taken.
 customer.post(
   "/:branchSlug/login/verify-code",
   zValidator("json", verifyCustomerCodeSchema),
   async (c) => {
     const branchSlug = c.req.param("branchSlug");
-    const { email, code } = c.req.valid("json");
+    const { email, code, tableCode } = c.req.valid("json");
 
     const invalid = c.json(
       { success: false, error: { code: "INVALID_CODE", message: "Código inválido o expirado" } },
@@ -732,7 +733,7 @@ customer.post(
     );
 
     const [branch] = await db
-      .select({ organization_id: schema.branches.organization_id })
+      .select({ id: schema.branches.id, organization_id: schema.branches.organization_id })
       .from(schema.branches)
       .where(eq(schema.branches.slug, branchSlug))
       .limit(1);
@@ -799,22 +800,88 @@ customer.post(
 
     if (!consumed) return invalid;
 
-    const token = await signCustomerAccountToken({
-      customerId: customer_record.id,
+    // Identity proven → start a table session for THIS table. Resolve the table,
+    // refuse if it already has an active/pending session (same rules as register),
+    // otherwise create a PENDING session bound to the recognized customer so the
+    // waiter can approve their entry.
+    const customerInfo = {
+      id: customer_record.id,
+      name: customer_record.name,
+      email: customer_record.email,
+    };
+
+    const [table] = await db
+      .select({ id: schema.tables.id, number: schema.tables.number })
+      .from(schema.tables)
+      .where(and(eq(schema.tables.qr_code, tableCode), eq(schema.tables.branch_id, branch.id)))
+      .limit(1);
+    if (!table) {
+      return c.json({ success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } }, 404);
+    }
+
+    const [activeSession] = await db
+      .select({ id: schema.tableSessions.id })
+      .from(schema.tableSessions)
+      .where(and(
+        eq(schema.tableSessions.organization_id, branch.organization_id),
+        eq(schema.tableSessions.branch_id, branch.id),
+        eq(schema.tableSessions.table_id, table.id),
+        eq(schema.tableSessions.status, "active"),
+      ))
+      .limit(1);
+    if (activeSession) {
+      // Don't disclose the existing session; just report the table is busy.
+      return c.json({ success: true, data: { status: "active", customer: customerInfo } });
+    }
+
+    const [pendingSession] = await db
+      .select({ id: schema.tableSessions.id })
+      .from(schema.tableSessions)
+      .where(and(
+        eq(schema.tableSessions.organization_id, branch.organization_id),
+        eq(schema.tableSessions.branch_id, branch.id),
+        eq(schema.tableSessions.table_id, table.id),
+        eq(schema.tableSessions.status, "pending"),
+        gte(schema.tableSessions.expires_at, new Date()),
+      ))
+      .limit(1);
+    if (pendingSession) {
+      return c.json(
+        { success: false, error: { code: "SESSION_PENDING", message: "Esta mesa esta en espera de aprobacion" } },
+        409,
+      );
+    }
+
+    const sessionId = crypto.randomUUID();
+    const token = await signCustomerToken({
+      sub: sessionId,
       org: branch.organization_id,
+      branch: branch.id,
+      table: table.id,
+      customerId: customer_record.id,
     });
 
-    return c.json({
-      success: true,
-      data: {
-        token,
-        customer: {
-          id: customer_record.id,
-          name: customer_record.name,
-          email: customer_record.email,
-        },
-      },
+    const session = await sessionService.createSession({
+      id: sessionId,
+      tableId: table.id,
+      branchId: branch.id,
+      organizationId: branch.organization_id,
+      customerName: customer_record.name,
+      customerPhone: customer_record.phone ?? undefined,
+      token,
+      status: "pending",
     });
+
+    await realtime.publish(`branch:${branch.id}`, {
+      type: "session:pending",
+      payload: { sessionId: session.id, tableId: table.id, tableNumber: table.number, customerName: customer_record.name },
+      timestamp: Date.now(),
+    });
+
+    return c.json(
+      { success: true, data: { session, token, sessionId: session.id, customer: customerInfo } },
+      201,
+    );
   },
 );
 

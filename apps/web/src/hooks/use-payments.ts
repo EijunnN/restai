@@ -31,6 +31,28 @@ export function usePaymentSummary() {
   });
 }
 
+// Split-bill: pay for selected order items (POST /api/payments/items).
+export function useCreateItemPayment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      orderId: string;
+      itemIds: string[];
+      method: string;
+      reference?: string;
+      tip?: number;
+    }) =>
+      apiFetch("/api/payments/items", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["payments"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
+}
+
 export function useUnpaidOrders() {
   return useQuery({
     queryKey: ["payments", "unpaid-orders"],

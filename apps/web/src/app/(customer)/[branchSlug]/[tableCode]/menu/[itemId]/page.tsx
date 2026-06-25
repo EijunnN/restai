@@ -529,8 +529,10 @@ export default function ProductDetailPage({
         </div>
       </div>
 
-      {/* Fixed bottom CTA with quantity controls */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
+      {/* Fixed bottom CTA with quantity controls — z-30 so it stays above the
+          content section (relative z-10); otherwise the expanded modifier
+          accordion paints over the Agregar bar and the quantity controls. */}
+      <div className="fixed bottom-0 left-0 right-0 z-30 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
         <div className="max-w-lg mx-auto flex items-center gap-3">
           {/* Quantity controls */}
           <div className="flex items-center bg-secondary rounded-2xl shrink-0">

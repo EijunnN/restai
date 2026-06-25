@@ -888,6 +888,7 @@ tables.get(
         order_number: schema.orders.order_number,
         status: schema.orders.status,
         total: schema.orders.total,
+        subtotal: schema.orders.subtotal,
         created_at: schema.orders.created_at,
         total_paid: sql<number>`COALESCE((SELECT SUM(amount)::bigint FROM payments WHERE payments.order_id = ${schema.orders.id} AND payments.status = 'completed'), 0)::int`,
       })
@@ -910,6 +911,7 @@ tables.get(
             name: schema.orderItems.name,
             quantity: schema.orderItems.quantity,
             total: schema.orderItems.total,
+            paid_at: schema.orderItems.paid_at,
           })
           .from(schema.orderItems)
           .where(inArray(schema.orderItems.order_id, orderIds))
@@ -918,11 +920,24 @@ tables.get(
     const ordersWithDetail = orders.map((o) => {
       const remaining = Math.max(0, o.total - o.total_paid);
       const payment_status = o.total_paid <= 0 ? "unpaid" : remaining > 0 ? "partial" : "paid";
+      const lineItems = items.filter((i) => i.order_id === o.id);
+      // Per-item "share" allocates the order total (incl. IGV/discount) across its
+      // lines proportionally, so split-bill selection sums back to the order total.
+      const itemsWithShare = lineItems.map((it) => ({
+        ...it,
+        paid: it.paid_at != null,
+        share:
+          o.subtotal > 0
+            ? Math.round((it.total * o.total) / o.subtotal)
+            : lineItems.length > 0
+              ? Math.round(o.total / lineItems.length)
+              : 0,
+      }));
       return {
         ...o,
         remaining,
         payment_status,
-        items: items.filter((i) => i.order_id === o.id),
+        items: itemsWithShare,
       };
     });
 

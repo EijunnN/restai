@@ -116,6 +116,9 @@ export const requestCustomerCodeSchema = z.object({
 export const verifyCustomerCodeSchema = z.object({
   email: z.string().email("Email inválido"),
   code: z.string().regex(/^\d{6}$/, "El código debe tener 6 dígitos"),
+  // Table the customer is logging in at — on success we create a pending table
+  // session (waiter approval) bound to the recognized customer.
+  tableCode: z.string().min(1).max(100),
 });
 
 // Order validators
