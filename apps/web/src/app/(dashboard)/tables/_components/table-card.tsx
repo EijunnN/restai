@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Select,
   SelectTrigger,
@@ -8,6 +9,11 @@ import {
   SelectValue,
 } from "@restai/ui/components/select";
 import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@restai/ui/components/popover";
+import {
   QrCode,
   Trash2,
   History,
@@ -15,9 +21,16 @@ import {
   Circle,
   BellRing,
   Receipt,
+  MoreHorizontal,
+  MoveRight,
+  Merge,
+  UserCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { statusOptions } from "./constants";
+import type { TableRow } from "@/hooks/use-tables";
+import { useAuthStore } from "@/stores/auth-store";
+import { hasPermission } from "@/lib/permissions";
 
 interface TableServiceRequestIndicator {
   type: "request_bill" | "call_waiter";
@@ -25,61 +38,48 @@ interface TableServiceRequestIndicator {
 }
 
 interface TableCardProps {
-  table: any;
+  table: TableRow;
   waiterAssignmentEnabled: boolean;
   statusChangePending: boolean;
   serviceRequest?: TableServiceRequestIndicator;
-  onQr: (table: any) => void;
-  onHistory: (table: any) => void;
-  onAssign: (table: any) => void;
-  onDelete: (table: any) => void;
+  onQr: (table: TableRow) => void;
+  onHistory: (table: TableRow) => void;
+  onAssign: (table: TableRow) => void;
+  onDelete: (table: TableRow) => void;
   onStatusChange: (tableId: string, status: string) => void;
-  onCharge?: (table: any) => void;
+  onCharge: (table: TableRow) => void;
+  onSeat: (table: TableRow) => void;
+  onMove: (table: TableRow) => void;
+  onMerge: (table: TableRow) => void;
 }
 
 const STATUS: Record<
   string,
-  {
-    label: string;
-    bg: string;
-    text: string;
-    number: string;
-    actionLabel?: string;
-    actionTarget?: string;
-    actionBg: string;
-  }
+  { label: string; bg: string; text: string; number: string }
 > = {
   available: {
     label: "Libre",
     bg: "bg-emerald-50 dark:bg-emerald-950/30",
     text: "text-emerald-700 dark:text-emerald-300",
     number: "text-emerald-900 dark:text-emerald-100",
-    actionLabel: "Ocupar",
-    actionTarget: "occupied",
-    actionBg: "bg-blue-600 hover:bg-blue-700 text-white",
   },
   occupied: {
     label: "Ocupada",
     bg: "bg-blue-50 dark:bg-blue-950/30",
     text: "text-blue-700 dark:text-blue-300",
     number: "text-blue-900 dark:text-blue-100",
-    actionLabel: "Liberar",
-    actionTarget: "available",
-    actionBg: "bg-emerald-600 hover:bg-emerald-700 text-white",
   },
   reserved: {
     label: "Reservada",
     bg: "bg-amber-50 dark:bg-amber-950/30",
     text: "text-amber-700 dark:text-amber-300",
     number: "text-amber-900 dark:text-amber-100",
-    actionBg: "",
   },
   maintenance: {
     label: "Mant.",
     bg: "bg-red-50 dark:bg-red-950/30",
     text: "text-red-700 dark:text-red-300",
     number: "text-red-900 dark:text-red-100",
-    actionBg: "",
   },
 };
 
@@ -94,35 +94,50 @@ export function TableCard({
   onDelete,
   onStatusChange,
   onCharge,
+  onSeat,
+  onMove,
+  onMerge,
 }: TableCardProps) {
-  const s = STATUS[table.status] || STATUS.available;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const role = useAuthStore((state) => state.user?.role);
+  // Cada acción se esconde según el permiso que exige su endpoint. El cajero
+  // entra a esta pantalla con `tables:read` a secas: enseñarle "Sentar",
+  // "Liberar" o "Eliminar" solo servía para que se comiera un 403 por toque.
+  const canOperate = hasPermission(role, "tables:update");
+  const canDelete = hasPermission(role, "tables:delete");
+  const canCharge = hasPermission(role, "payments:create");
+
+  const s = STATUS[table.status] ?? STATUS.available!;
   const hasServiceRequest = !!serviceRequest;
-  // Clicking an occupied table opens the charge ("cobrar") dialog.
-  const canCharge = table.status === "occupied" && !!onCharge;
+  const isOccupied = table.status === "occupied";
+  const canSeat = canOperate && (table.status === "available" || table.status === "reserved");
   const requestAccent =
     serviceRequest?.type === "request_bill"
       ? "ring-2 ring-blue-500/70"
       : "ring-2 ring-orange-500/70";
   const requestLabel =
-    serviceRequest?.type === "request_bill"
-      ? "Solicita cuenta"
-      : "Solicita mozo";
+    serviceRequest?.type === "request_bill" ? "Solicita cuenta" : "Solicita mozo";
+
+  const closeMenuThen = (action: () => void) => () => {
+    setMenuOpen(false);
+    action();
+  };
 
   return (
     <div
       className={cn(
         "rounded-2xl p-4 flex flex-col gap-3 transition-shadow duration-200 hover:shadow-lg",
         s.bg,
-        hasServiceRequest && requestAccent
+        hasServiceRequest && requestAccent,
       )}
     >
-      {/* Header: number + status */}
-      <div className="flex items-center justify-between">
-        {canCharge ? (
+      {/* Cabecera: número + estado */}
+      <div className="flex items-start justify-between gap-2">
+        {isOccupied && canCharge ? (
           <button
             type="button"
-            title="Cobrar / ver pedidos"
-            onClick={() => onCharge!(table)}
+            aria-label={`Cobrar o ver los pedidos de la mesa ${table.number}`}
+            onClick={() => onCharge(table)}
             className={cn(
               "text-[2.5rem] font-black leading-none tracking-tight tabular-nums text-left transition-opacity hover:opacity-70",
               s.number,
@@ -131,12 +146,22 @@ export function TableCard({
             {table.number}
           </button>
         ) : (
-          <p className={cn("text-[2.5rem] font-black leading-none tracking-tight tabular-nums", s.number)}>
+          <p
+            className={cn(
+              "text-[2.5rem] font-black leading-none tracking-tight tabular-nums",
+              s.number,
+            )}
+          >
             {table.number}
           </p>
         )}
         <div className="flex flex-col items-end gap-1">
-          <span className={cn("text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/60 dark:bg-white/10", s.text)}>
+          <span
+            className={cn(
+              "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/60 dark:bg-white/10",
+              s.text,
+            )}
+          >
             {s.label}
           </span>
           {serviceRequest && (
@@ -145,59 +170,129 @@ export function TableCard({
                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
                 serviceRequest.type === "request_bill"
                   ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
-                  : "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
+                  : "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
               )}
             >
-              <BellRing className="h-3 w-3" />
+              <BellRing className="h-3 w-3" aria-hidden="true" />
               {requestLabel}
             </span>
           )}
         </div>
       </div>
 
-      {/* Capacity */}
+      {/* Aforo + código corto para quien no puede escanear el QR */}
       <p className="text-xs text-muted-foreground -mt-1">
         {table.capacity} {table.capacity === 1 ? "persona" : "personas"}
+        {table.short_code && (
+          <>
+            {" · "}
+            <span className="font-semibold tracking-wider text-foreground/70">
+              {table.short_code}
+            </span>
+          </>
+        )}
       </p>
 
-      {/* Actions row */}
-      <div className="flex items-center gap-1 mt-auto">
-        <IconBtn icon={<QrCode className="h-3.5 w-3.5" />} title="QR" onClick={() => onQr(table)} />
-        <IconBtn icon={<History className="h-3.5 w-3.5" />} title="Historial" onClick={() => onHistory(table)} />
-        {waiterAssignmentEnabled && (
-          <IconBtn icon={<UserPlus className="h-3.5 w-3.5" />} title="Asignar" onClick={() => onAssign(table)} />
-        )}
-        {canCharge && (
-          <IconBtn icon={<Receipt className="h-3.5 w-3.5" />} title="Cobrar" onClick={() => onCharge!(table)} />
-        )}
-
-        <div className="flex-1" />
-
-        {s.actionLabel && s.actionTarget && (
+      {/* Acción principal: lo que el mozo va a tocar el 90% de las veces */}
+      <div className="mt-auto flex items-center gap-2">
+        {isOccupied && canCharge ? (
           <button
             type="button"
-            disabled={statusChangePending}
-            onClick={() => onStatusChange(table.id, s.actionTarget!)}
-            className={cn(
-              "text-[10px] font-bold px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50",
-              s.actionBg
-            )}
+            onClick={() => onCharge(table)}
+            className="h-10 flex-1 rounded-xl bg-blue-600 px-3 text-sm font-bold text-white transition-colors hover:bg-blue-700"
           >
-            {s.actionLabel}
+            <span className="inline-flex items-center justify-center gap-1.5">
+              <Receipt className="h-4 w-4" aria-hidden="true" />
+              Cobrar
+            </span>
           </button>
+        ) : canSeat ? (
+          <button
+            type="button"
+            onClick={() => onSeat(table)}
+            className="h-10 flex-1 rounded-xl bg-emerald-600 px-3 text-sm font-bold text-white transition-colors hover:bg-emerald-700"
+          >
+            <span className="inline-flex items-center justify-center gap-1.5">
+              <UserCheck className="h-4 w-4" aria-hidden="true" />
+              Sentar
+            </span>
+          </button>
+        ) : (
+          <div className="flex-1" />
         )}
 
-        <IconBtn
-          icon={<Trash2 className="h-3.5 w-3.5" />}
-          title="Eliminar"
-          onClick={() => onDelete(table)}
-          destructive
-        />
+        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={`Más acciones de la mesa ${table.number}`}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/70 text-muted-foreground transition-colors hover:text-foreground dark:bg-white/10"
+            >
+              <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-60 p-1.5">
+            <MenuItem
+              icon={<QrCode className="h-4 w-4" />}
+              label="Código QR y cartel"
+              onClick={closeMenuThen(() => onQr(table))}
+            />
+            <MenuItem
+              icon={<History className="h-4 w-4" />}
+              label="Historial de la mesa"
+              onClick={closeMenuThen(() => onHistory(table))}
+            />
+            {waiterAssignmentEnabled && canOperate && (
+              <MenuItem
+                icon={<UserPlus className="h-4 w-4" />}
+                label="Asignar mozo"
+                onClick={closeMenuThen(() => onAssign(table))}
+              />
+            )}
+            {isOccupied && canOperate && (
+              <>
+                <MenuItem
+                  icon={<MoveRight className="h-4 w-4" />}
+                  label="Mover la cuenta a otra mesa"
+                  onClick={closeMenuThen(() => onMove(table))}
+                />
+                <MenuItem
+                  icon={<Merge className="h-4 w-4" />}
+                  label="Juntar otras mesas aquí"
+                  onClick={closeMenuThen(() => onMerge(table))}
+                />
+                <MenuItem
+                  icon={<Circle className="h-4 w-4 fill-current text-emerald-600" />}
+                  label="Liberar la mesa"
+                  onClick={closeMenuThen(() => onStatusChange(table.id, "available"))}
+                />
+              </>
+            )}
+            {canDelete && (
+              <>
+                <div className="my-1 border-t" />
+                <MenuItem
+                  icon={<Trash2 className="h-4 w-4" />}
+                  label="Eliminar mesa"
+                  destructive
+                  onClick={closeMenuThen(() => onDelete(table))}
+                />
+              </>
+            )}
+          </PopoverContent>
+        </Popover>
       </div>
 
-      {/* Status selector */}
-      <Select value={table.status} onValueChange={(v) => onStatusChange(table.id, v)}>
-        <SelectTrigger className="h-7 text-xs bg-white/50 dark:bg-white/5 border-0 shadow-none">
+      {/* Estado manual (reservada, mantenimiento…) */}
+      <Select
+        value={table.status}
+        disabled={statusChangePending || !canOperate}
+        onValueChange={(v) => onStatusChange(table.id, v)}
+      >
+        <SelectTrigger
+          aria-label={`Estado de la mesa ${table.number}`}
+          className="h-10 text-xs bg-white/50 dark:bg-white/5 border-0 shadow-none"
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -215,14 +310,14 @@ export function TableCard({
   );
 }
 
-function IconBtn({
+function MenuItem({
   icon,
-  title,
+  label,
   onClick,
   destructive,
 }: {
   icon: React.ReactNode;
-  title: string;
+  label: string;
   onClick: () => void;
   destructive?: boolean;
 }) {
@@ -230,15 +325,17 @@ function IconBtn({
     <button
       type="button"
       onClick={onClick}
-      title={title}
       className={cn(
-        "p-1.5 rounded-lg transition-colors",
+        "flex h-10 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-sm transition-colors",
         destructive
-          ? "text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10"
-          : "text-muted-foreground/80 hover:text-foreground hover:bg-white/60 dark:hover:bg-white/10"
+          ? "text-destructive hover:bg-destructive/10"
+          : "hover:bg-muted",
       )}
     >
-      {icon}
+      <span className="shrink-0" aria-hidden="true">
+        {icon}
+      </span>
+      {label}
     </button>
   );
 }

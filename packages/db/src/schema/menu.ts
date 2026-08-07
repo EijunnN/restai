@@ -8,6 +8,7 @@ import {
   primaryKey,
   index,
   timestamp,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { organizations, branches } from "./tenants";
 
@@ -44,6 +45,16 @@ export const menuItems = pgTable("menu_items", {
   is_available: boolean("is_available").default(true).notNull(),
   sort_order: integer("sort_order").default(0).notNull(),
   preparation_time_min: integer("preparation_time_min"),
+  /**
+   * Alérgenos declarados, p. ej. ["gluten","lacteos","mani"]. No es cosmético:
+   * un comensal celíaco necesita saberlo antes de pedir, y el local necesita
+   * poder demostrar que lo informó.
+   */
+  allergens: jsonb("allergens").$type<string[]>().default([]).notNull(),
+  /** Etiquetas dietéticas: ["vegetariano","vegano","sin_gluten"]. */
+  dietary_tags: jsonb("dietary_tags").$type<string[]>().default([]).notNull(),
+  /** Nivel de picante 0–3 (null = no aplica). */
+  spice_level: integer("spice_level"),
   deleted_at: timestamp("deleted_at", { withTimezone: true }),
 }, (table) => [
   index("idx_menu_items_branch").on(table.branch_id),

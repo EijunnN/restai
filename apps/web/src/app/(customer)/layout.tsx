@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useCustomerStore } from "@/stores/customer-store";
+import { useCartStore } from "@/stores/cart-store";
 import type { WsMessage } from "@restai/types";
 import { User } from "lucide-react";
 import Link from "next/link";
@@ -25,12 +26,22 @@ export default function CustomerLayout({
   const token = useCustomerStore((s) => s.token);
   const sessionId = useCustomerStore((s) => s.sessionId);
   const clearSession = useCustomerStore((s) => s.clear);
+  const bindCartToTable = useCartStore((s) => s.bindToTable);
   const router = useRouter();
   const hasHandledSessionEndRef = useRef(false);
 
   useEffect(() => {
     hasHandledSessionEndRef.current = false;
   }, [sessionId]);
+
+  // El carrito persiste entre recargas, pero atado a ESTA mesa: si el
+  // dispositivo se usa luego en otra mesa, no debe arrastrar los platos que
+  // eligió el comensal anterior.
+  useEffect(() => {
+    if (branchSlug && tableCode) {
+      bindCartToTable(`${branchSlug}:${tableCode}`);
+    }
+  }, [branchSlug, tableCode, bindCartToTable]);
 
   const handleSessionEnded = useCallback(() => {
     if (!branchSlug || !tableCode || hasHandledSessionEndRef.current) {
@@ -45,7 +56,7 @@ export default function CustomerLayout({
     }
 
     clearSession();
-    toast.info("La sesion de esta mesa termino.");
+    toast.info("La sesión de esta mesa terminó.");
     router.replace(redirectUrl);
   }, [branchSlug, tableCode, clearSession, router]);
 
@@ -70,8 +81,14 @@ export default function CustomerLayout({
       <header className="sticky top-0 z-50 bg-background/95 backdrop-blur-sm border-b border-border shadow-sm pt-4 pb-2 px-4">
         <div className="flex items-center justify-between max-w-lg mx-auto">
           <div className="w-8" />
+          {/*
+            La cabecera lleva la marca DEL RESTAURANTE, no la nuestra. Antes caía
+            en "RestAI" cuando aún no había cargado el nombre de la sede, y el
+            local acababa regalando su marca en la pantalla que ve su cliente.
+            Mientras carga se muestra un hueco, nunca otra marca.
+          */}
           <h1 className="text-lg font-semibold tracking-wide text-foreground truncate">
-            {branchName || "RestAI"}
+            {branchName || <span className="inline-block h-5 w-32 rounded bg-muted animate-pulse" />}
           </h1>
           {token && branchSlug && tableCode ? (
             <Link

@@ -26,9 +26,11 @@ apps/api/src/
 │       ├── argon2.adapter.ts    #   argon2 nativo (contenedor/Node)
 │       └── webcrypto.adapter.ts #   PBKDF2 WebCrypto puro (edge/Workers/Vercel)
 │
-└── runtime/ + index.ts          # ── ENTRYPOINTS (composition roots por runtime) ──
-    ├── index.ts                 #   Bun (contenedor): Bun.serve + inyecta argon2 + bun-redis
-    └── runtime/serverless.ts    #   Edge/serverless: misma app Hono + adaptadores puros por defecto
+└── (raíz de src/)               # ── ENTRYPOINTS (composition roots por runtime) ──
+    ├── index.ts                 #   Bun (contenedor): Bun.serve + inyecta argon2 + Redis
+    ├── server.node.ts           #   Node/Vercel: @hono/node-server + ws en el mismo proceso
+    └── worker.ts                #   Cloudflare Workers: hidrata process.env desde los bindings,
+                                 #   DB Neon por petición (runWithDb) y crons vía `scheduled`
 ```
 
 ## Regla de dependencias
@@ -52,7 +54,8 @@ Cada entrypoint elige los adaptadores al arrancar:
 | Runtime | realtime | hashing | DB driver |
 |---------|----------|---------|-----------|
 | **Bun / contenedor** (`index.ts`) | `createRealtimeProvider()` por `REALTIME_PROVIDER` (websocket/pusher/ably) | `Argon2Hasher` | `postgres-js` |
-| **Edge / serverless** (`runtime/serverless.ts`) | `NoopRealtime` (default) | `WebCryptoHasher` (default) | `neon` |
+| **Node / Vercel** (`server.node.ts`) | `createRealtimeProvider()` (WS nativo in-process con `ws`) | `Argon2Hasher` | `postgres-js` |
+| **Edge / Cloudflare Workers** (`worker.ts`) | `createServerlessRealtimeProvider()` (Pusher/Ably, `NoopRealtime` si falta config) | `WebCryptoHasher` | `neon` |
 
 Los **defaults** del `container.ts` son los adaptadores puros, así que importar el
 core es seguro en cualquier runtime (no arrastra Redis ni binarios nativos). El

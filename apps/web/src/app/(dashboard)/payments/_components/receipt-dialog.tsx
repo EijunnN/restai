@@ -13,14 +13,16 @@ import {
   DialogFooter,
 } from "@restai/ui/components/dialog";
 import { Printer } from "lucide-react";
+import { toast } from "sonner";
 import { useOrgSettings, useBranchSettings } from "@/hooks/use-settings";
 import { usePrintReceipt } from "@/components/print-ticket";
 import { apiFetch } from "@/lib/fetcher";
+import type { Payment } from "@/hooks/use-payments";
 
 interface ReceiptDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  payment: any;
+  payment: Payment | null;
 }
 
 export function ReceiptDialog({ open, onOpenChange, payment }: ReceiptDialogProps) {
@@ -77,6 +79,12 @@ export function ReceiptDialog({ open, onOpenChange, payment }: ReceiptDialogProp
         docHolderName: docType === "factura" ? docHolderName : undefined,
       });
     } catch {
+      // Sin el detalle de la orden el recibo sale sin líneas: se imprime igual
+      // (el cliente está esperando), pero AVISANDO, que hasta ahora salía un
+      // ticket vacío sin que nadie supiera por qué.
+      toast.warning(
+        "No se pudo leer el detalle de la orden: el recibo se imprime solo con el importe cobrado.",
+      );
       const org = orgSettings as any;
       printReceipt({
         businessName: org?.name || "Restaurante",
@@ -101,18 +109,18 @@ export function ReceiptDialog({ open, onOpenChange, payment }: ReceiptDialogProp
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Imprimir Comprobante</DialogTitle>
+          <DialogTitle>Imprimir recibo</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label>Tipo de Documento</Label>
+            <Label htmlFor="receiptDocType">Tipo de documento</Label>
             <Select value={docType} onValueChange={handleDocTypeChange}>
-              <SelectTrigger>
+              <SelectTrigger id="receiptDocType" className="h-10">
                 <SelectValue placeholder="Seleccionar tipo" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="boleta_simple">Boleta Simple</SelectItem>
-                <SelectItem value="boleta_electronica">Boleta Electronica</SelectItem>
+                <SelectItem value="boleta_simple">Boleta simple</SelectItem>
+                <SelectItem value="boleta_electronica">Boleta electrónica</SelectItem>
                 <SelectItem value="factura">Factura</SelectItem>
               </SelectContent>
             </Select>
@@ -122,13 +130,14 @@ export function ReceiptDialog({ open, onOpenChange, payment }: ReceiptDialogProp
               <Label htmlFor="receiptDni">DNI</Label>
               <Input
                 id="receiptDni"
+                className="h-10"
                 placeholder="12345678"
                 maxLength={8}
                 value={docNumber}
                 onChange={(e) => setDocNumber(e.target.value.replace(/\D/g, "").slice(0, 8))}
               />
               {docNumber.length > 0 && docNumber.length !== 8 && (
-                <p className="text-xs text-destructive">El DNI debe tener 8 digitos</p>
+                <p className="text-xs text-destructive">El DNI debe tener 8 dígitos</p>
               )}
             </div>
           )}
@@ -138,19 +147,21 @@ export function ReceiptDialog({ open, onOpenChange, payment }: ReceiptDialogProp
                 <Label htmlFor="receiptRuc">RUC</Label>
                 <Input
                   id="receiptRuc"
+                  className="h-10"
                   placeholder="20123456789"
                   maxLength={11}
                   value={docNumber}
                   onChange={(e) => setDocNumber(e.target.value.replace(/\D/g, "").slice(0, 11))}
                 />
                 {docNumber.length > 0 && docNumber.length !== 11 && (
-                  <p className="text-xs text-destructive">El RUC debe tener 11 digitos</p>
+                  <p className="text-xs text-destructive">El RUC debe tener 11 dígitos</p>
                 )}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="receiptRazonSocial">Razon Social</Label>
+                <Label htmlFor="receiptRazonSocial">Razón social</Label>
                 <Input
                   id="receiptRazonSocial"
+                  className="h-10"
                   placeholder="Nombre de la empresa"
                   value={docHolderName}
                   onChange={(e) => setDocHolderName(e.target.value)}
@@ -160,10 +171,11 @@ export function ReceiptDialog({ open, onOpenChange, payment }: ReceiptDialogProp
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="h-10" onClick={() => onOpenChange(false)}>
             Cancelar
           </Button>
           <Button
+            className="h-10"
             onClick={handlePrint}
             disabled={printing || !isFormValid()}
           >

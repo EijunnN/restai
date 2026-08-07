@@ -1,7 +1,6 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/fetcher";
-import { useAuthStore } from "@/stores/auth-store";
+import { apiFetch, apiFetchWithMeta } from "@/lib/fetcher";
 
 interface OrderFilters {
   status?: string;
@@ -21,19 +20,25 @@ interface OrdersResponse {
   pagination: Pagination;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+/** Respuesta cruda de GET /api/orders: la paginación viaja al nivel raíz. */
+interface OrdersEnvelope {
+  data: any[] | null;
+  pagination?: Pagination;
+}
 
+/**
+ * Listado paginado de órdenes.
+ *
+ * Va por `apiFetchWithMeta` y NO por un `fetch` propio: este listado se
+ * resondea cada 5 segundos y el token de acceso caduca a los 15 minutos, así
+ * que con el fetch a pelo —sin la rama de renovación del 401— la pantalla se
+ * quedaba clavada en "No autenticado" en cuanto la barra pasaba un rato sin
+ * que nadie tocara nada. `apiFetchWithMeta` renueva el token (deduplicando
+ * llamadas concurrentes), reintenta, y además devuelve la envoltura completa,
+ * que es de donde sale la paginación.
+ */
 async function fetchOrdersWithPagination(path: string): Promise<OrdersResponse> {
-  const { accessToken, selectedBranchId } = useAuthStore.getState();
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      ...(selectedBranchId ? { "x-branch-id": selectedBranchId } : {}),
-    },
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error?.message || "Error desconocido");
+  const json = await apiFetchWithMeta<OrdersEnvelope>(path);
   return {
     orders: json.data ?? [],
     pagination: json.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 },
@@ -70,7 +75,15 @@ export function useCreateOrder() {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["orders"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      // Un pedido con mesa OCUPA esa mesa y abre su visita en el servidor. Sin
+      // invalidar aquí, el plano del salón y el selector de mesa del POS seguían
+      // mostrándola libre hasta el siguiente refresco, y el mozo la ofrecía dos
+      // veces.
+      qc.invalidateQueries({ queryKey: ["tables"] });
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+    },
   });
 }
 

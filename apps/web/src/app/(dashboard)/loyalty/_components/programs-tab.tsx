@@ -315,7 +315,7 @@ export function ProgramsTab() {
         open={!!deleteConfirm}
         onOpenChange={(v) => { if (!v) setDeleteConfirm(null); }}
         title="Confirmar eliminacion"
-        description={`Estas seguro de eliminar ${deleteConfirm?.name}? Esta accion no se puede deshacer.`}
+        description={`Estás seguro de eliminar ${deleteConfirm?.name}? Esta accion no se puede deshacer.`}
         onConfirm={handleDelete}
         loading={deleteProgram.isPending || deleteTier.isPending}
       />

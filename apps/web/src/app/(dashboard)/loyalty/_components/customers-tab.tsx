@@ -455,7 +455,7 @@ export function CustomersTab() {
               <thead>
                 <tr className="border-b border-border bg-muted/50">
                   <th className="text-left p-3 text-sm font-medium text-muted-foreground">Cliente</th>
-                  <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden sm:table-cell">Telefono</th>
+                  <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden sm:table-cell">Teléfono</th>
                   <th className="text-center p-3 text-sm font-medium text-muted-foreground">Tier</th>
                   <th className="text-right p-3 text-sm font-medium text-muted-foreground">Puntos</th>
                   <th className="w-32 p-3" />

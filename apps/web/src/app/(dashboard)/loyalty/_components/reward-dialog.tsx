@@ -198,7 +198,7 @@ export function RewardDialog({
             <Input id="rwd-name" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} required />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="rwd-desc">Descripcion</Label>
+            <Label htmlFor="rwd-desc">Descripción</Label>
             <Input id="rwd-desc" value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} />
           </div>
           <div className="space-y-2">

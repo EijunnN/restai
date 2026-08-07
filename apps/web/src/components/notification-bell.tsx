@@ -6,7 +6,9 @@ import { useWebSocket } from "@/hooks/use-websocket";
 import { useAuthStore } from "@/stores/auth-store";
 import { useBranchSettings } from "@/hooks/use-settings";
 import { useMyAssignedTables } from "@/hooks/use-tables";
+import { useServiceRequests, formatElapsed } from "@/hooks/use-service-requests";
 import { cn } from "@/lib/utils";
+import { hasPermission } from "@/lib/permissions";
 import type { WsMessage, WsOrderPayload } from "@restai/types";
 
 interface Notification {
@@ -68,13 +70,18 @@ export function NotificationBell() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const panelRef = useRef<HTMLDivElement>(null);
 
+  // La campana vive en el layout, así que se monta en TODAS las pantallas y con
+  // TODOS los roles. Cocina no tiene `tables:read`: sin estas guardas acumulaba
+  // un 403 cada veinte segundos durante todo el servicio.
+  const canReadTables = hasPermission(user?.role, "tables:read");
+
   // Waiter assignment filtering
   const { data: branchSettings } = useBranchSettings();
   const waiterAssignmentEnabled = (branchSettings as any)?.settings?.waiter_table_assignment_enabled ?? false;
   const isWaiter = user?.role === "waiter";
   const shouldFilter = waiterAssignmentEnabled && isWaiter;
 
-  const { data: myAssignedTables } = useMyAssignedTables();
+  const { data: myAssignedTables } = useMyAssignedTables({ enabled: canReadTables && shouldFilter });
   const assignedTableIds = useRef<Set<string>>(new Set());
 
   // Keep assignedTableIds in sync
@@ -97,6 +104,46 @@ export function NotificationBell() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 5000);
   }, []);
+
+  /*
+   * Avisos pendientes al abrir la pantalla.
+   *
+   * La campana solo escuchaba eventos en vivo: quien recargaba la página, entraba
+   * a media hora del turno o cambiaba de dispositivo, empezaba con la bandeja
+   * vacía aunque hubiera mesas esperando desde hacía diez minutos. Ahora que los
+   * avisos se guardan en la base, se siembran al montar.
+   */
+  const { data: pendingRequests } = useServiceRequests({
+    status: "pending",
+    enabled: canReadTables,
+  });
+  const seededRef = useRef(false);
+
+  useEffect(() => {
+    if (seededRef.current || !pendingRequests) return;
+    seededRef.current = true;
+    if (pendingRequests.length === 0) return;
+
+    const seeded: Notification[] = pendingRequests
+      .filter((r) => !shouldFilter || (r.table_id && assignedTableIds.current.has(r.table_id)))
+      // Más antiguos abajo: la lista se lee de arriba abajo y lo reciente manda.
+      .map((r) => ({
+        id: `sr-${r.id}`,
+        read: false,
+        type: r.type,
+        message:
+          r.type === "call_waiter"
+            ? `Mesa ${r.table_number ?? "?"} llama al mozo (${formatElapsed(r.elapsed_seconds)})`
+            : `Mesa ${r.table_number ?? "?"} pide la cuenta (${formatElapsed(r.elapsed_seconds)})`,
+        timestamp: new Date(r.created_at).getTime(),
+        tableNumber: r.table_number,
+        tableId: r.table_id ?? undefined,
+      }));
+
+    if (seeded.length > 0) {
+      setNotifications((prev) => [...seeded, ...prev].slice(0, 50));
+    }
+  }, [pendingRequests, shouldFilter]);
 
   const handleWsMessage = useCallback(
     (msg: WsMessage) => {
@@ -126,7 +173,7 @@ export function NotificationBell() {
       } else if (msg.type === "session:pending") {
         addNotification({
           type: "session_pending",
-          message: `Mesa ${payload.tableNumber}: Nueva conexion de ${payload.customerName || "cliente"}`,
+          message: `Mesa ${payload.tableNumber}: Nueva conexión de ${payload.customerName || "cliente"}`,
           tableNumber: payload.tableNumber ?? null,
           tableId: payload.tableId,
           timestamp: msg.timestamp,
@@ -135,8 +182,8 @@ export function NotificationBell() {
         addNotification({
           type: "session_approved",
           message: payload.tableNumber
-            ? `Mesa ${payload.tableNumber}: conexion aprobada`
-            : "Una conexion fue aprobada",
+            ? `Mesa ${payload.tableNumber}: conexión aprobada`
+            : "Una conexión fue aprobada",
           tableNumber: payload.tableNumber ?? null,
           tableId: payload.tableId,
           timestamp: msg.timestamp,
@@ -145,8 +192,8 @@ export function NotificationBell() {
         addNotification({
           type: "session_rejected",
           message: payload.tableNumber
-            ? `Mesa ${payload.tableNumber}: conexion rechazada`
-            : "Una conexion fue rechazada",
+            ? `Mesa ${payload.tableNumber}: conexión rechazada`
+            : "Una conexión fue rechazada",
           tableNumber: payload.tableNumber ?? null,
           tableId: payload.tableId,
           timestamp: msg.timestamp,

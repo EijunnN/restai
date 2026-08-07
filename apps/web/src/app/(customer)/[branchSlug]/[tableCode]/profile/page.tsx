@@ -16,12 +16,14 @@ import {
   DialogFooter,
 } from "@restai/ui/components/dialog";
 import {
+  AlertCircle,
   ArrowLeft,
   Star,
   Gift,
   TrendingUp,
   Loader2,
   CheckCircle,
+  RefreshCcw,
   ShoppingBag,
   Ticket,
   User,
@@ -31,9 +33,26 @@ import {
   Check,
   Share2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { describeReward, rewardKindLabel } from "@/components/customer/reward-label";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+interface RewardData {
+  id: string;
+  name: string;
+  description: string | null;
+  points_cost: number;
+  // Sin `reward_type` una recompensa de producto gratis se pintaba como
+  // "S/ 0.00 de descuento" y nadie la canjeaba.
+  reward_type?: string | null;
+  discount_type: string | null;
+  discount_value: number | null;
+  menu_item_id?: string | null;
+  menu_item_name?: string | null;
+  stock_remaining?: number | null;
+}
 
 interface LoyaltyData {
   points_balance: number;
@@ -41,21 +60,17 @@ interface LoyaltyData {
   program_name: string;
   tier_name: string | null;
   next_tier: { name: string; min_points: number } | null;
-  rewards: Array<{
-    id: string;
-    name: string;
-    description: string | null;
-    points_cost: number;
-    discount_type: string;
-    discount_value: number;
-  }>;
+  rewards: RewardData[];
 }
 
 interface RedemptionData {
   id: string;
   reward_name: string;
-  discount_type: string;
-  discount_value: number;
+  reward_type?: string | null;
+  discount_type: string | null;
+  discount_value: number | null;
+  menu_item_id?: string | null;
+  points_spent?: number | null;
   redeemed_at: string;
 }
 
@@ -128,8 +143,11 @@ export default function ProfilePage({
 
   const storeToken = useCustomerStore((s) => s.token);
   const storeCustomerName = useCustomerStore((s) => s.customerName);
+  // Nombre del local para personalizar la invitación que se comparte.
+  const branchName = useCustomerStore((s) => s.branchName);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loyalty, setLoyalty] = useState<LoyaltyData | null>(null);
   const [redemptions, setRedemptions] = useState<RedemptionData[]>([]);
   const [coupons, setCoupons] = useState<CouponData[]>([]);
@@ -137,13 +155,20 @@ export default function ProfilePage({
   const [transactions, setTransactions] = useState<TransactionData[]>([]);
   const [referralCode, setReferralCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Nombres de la carta para poder decir "Postre Tres Leches gratis" en un canje
+  // ya hecho: /my-redemptions devuelve el id del plato, no su nombre.
+  const [menuItemNames, setMenuItemNames] = useState<Record<string, string>>({});
+  // NÚMERO de mesa: el segmento `tableCode` de la URL es el qr_code interno
+  // ("mi-sede-T7-lx8k2a") y se estaba pintando literal bajo el nombre del
+  // cliente. Viaja en la misma respuesta de la carta que ya se pedía.
+  const [tableNumber, setTableNumber] = useState<number | null>(null);
 
   // Redeem dialog
   const [redeemDialogOpen, setRedeemDialogOpen] = useState(false);
-  const [selectedReward, setSelectedReward] = useState<LoyaltyData["rewards"][0] | null>(null);
+  const [selectedReward, setSelectedReward] = useState<RewardData | null>(null);
   const [redeeming, setRedeeming] = useState(false);
   const [successDialogOpen, setSuccessDialogOpen] = useState(false);
-  const [redeemResult, setRedeemResult] = useState<{ discount: { type: string; value: number }; newBalance: number } | null>(null);
+  const [redeemResult, setRedeemResult] = useState<{ reward: RewardData; newBalance: number } | null>(null);
 
   const customerName = storeCustomerName || (typeof window !== "undefined" ? sessionStorage.getItem("customer_name") : null);
 
@@ -153,9 +178,30 @@ export default function ProfilePage({
     return null;
   }, [storeToken]);
 
+  // La carta pública sirve para traducir menu_item_id → nombre del plato.
+  const loadMenuNames = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`);
+      const result = await res.json();
+      if (!result?.success) return;
+      if (typeof result.data?.table?.number === "number") {
+        setTableNumber(result.data.table.number);
+      }
+      if (!Array.isArray(result.data?.items)) return;
+      const names: Record<string, string> = {};
+      for (const item of result.data.items as Array<{ id: string; name: string }>) {
+        names[item.id] = item.name;
+      }
+      setMenuItemNames(names);
+    } catch {
+      // Sin nombres se dice "Un producto gratis": suficiente, nunca "S/ 0.00".
+    }
+  }, [branchSlug, tableCode]);
+
   const fetchAll = useCallback(async () => {
     const token = getToken();
     if (!token) {
+      setLoadError("Tu sesión no está activa. Vuelve a escanear el código de la mesa.");
       setLoading(false);
       return;
     }
@@ -181,6 +227,16 @@ export default function ProfilePage({
         referralRes.json().catch(() => ({ success: false })),
       ]);
 
+      // Token caducado o de otra mesa: TODAS las peticiones devuelven 401/403 y
+      // la pantalla pintaba "Aún no tienes actividad", que es mentira y hace
+      // creer al comensal que ha perdido sus puntos.
+      if (loyaltyRes.status === 401 || loyaltyRes.status === 403) {
+        setLoadError(
+          "Tu sesión ha caducado. Vuelve a escanear el código de la mesa para ver tus puntos.",
+        );
+        return;
+      }
+
       if (loyaltyData.success && loyaltyData.data) setLoyalty(loyaltyData.data);
       if (couponsData.success) setCoupons(couponsData.data || []);
       if (ordersData.success) setOrders(ordersData.data || []);
@@ -194,8 +250,11 @@ export default function ProfilePage({
             : referralData.data.code;
         if (code) setReferralCode(code);
       }
+      setLoadError(null);
     } catch {
-      // Silently fail — partial data is fine
+      // El silencio ante un fallo hace concluir "la app no funciona": se explica
+      // y se ofrece reintentar.
+      setLoadError("No pudimos cargar tu perfil. Revisa tu conexión e inténtalo de nuevo.");
     } finally {
       setLoading(false);
     }
@@ -205,7 +264,11 @@ export default function ProfilePage({
     fetchAll();
   }, [fetchAll]);
 
-  const handleRedeemClick = (reward: LoyaltyData["rewards"][0]) => {
+  useEffect(() => {
+    void loadMenuNames();
+  }, [loadMenuNames]);
+
+  const handleRedeemClick = (reward: RewardData) => {
     setSelectedReward(reward);
     setRedeemDialogOpen(true);
   };
@@ -228,10 +291,13 @@ export default function ProfilePage({
       const result = await res.json();
 
       if (!result.success) {
-        throw new Error(result.error?.message || "Error al canjear");
+        throw new Error(result.error?.message || "No pudimos canjear la recompensa");
       }
 
-      setRedeemResult(result.data);
+      setRedeemResult({
+        reward: selectedReward,
+        newBalance: result.data?.newBalance ?? 0,
+      });
       setRedeemDialogOpen(false);
       setSuccessDialogOpen(true);
 
@@ -250,17 +316,38 @@ export default function ProfilePage({
       if (loyaltyData.success && loyaltyData.data) setLoyalty(loyaltyData.data);
       if (redemptionsData.success) setRedemptions(redemptionsData.data || []);
       if (transactionsData.success) setTransactions(transactionsData.data || []);
-    } catch {
-      // Error handled silently
+    } catch (err) {
+      // Un canje que falla en silencio es puntos que el comensal cree perdidos.
+      toast.error(
+        err instanceof Error ? err.message : "No pudimos canjear la recompensa",
+      );
     } finally {
       setRedeeming(false);
     }
   };
 
+  /**
+   * Enlace de invitación completo.
+   *
+   * Se compartía SOLO el código suelto ("Usa mi código ABC123"), y como el
+   * código únicamente entra por el parámetro `?ref=`, quien lo recibía no tenía
+   * forma de canjearlo: el circuito de referidos no cerraba ni con los puntos
+   * bien configurados. Ahora se comparte la URL de la sede con el código puesto.
+   */
+  const referralUrl = referralCode
+    ? `${typeof window !== "undefined" ? window.location.origin : ""}/${branchSlug}/codigo?ref=${encodeURIComponent(referralCode)}`
+    : "";
+
+  const referralMessage = referralCode
+    ? `Te invito a ${branchName || "mi restaurante favorito"}. Usa mi código ${referralCode} y ganamos puntos los dos: ${referralUrl}`
+    : "";
+
   const handleCopyReferral = async () => {
     if (!referralCode) return;
     try {
-      await navigator.clipboard.writeText(referralCode);
+      // Se copia el mensaje ENTERO con el enlace, no el código a secas: es lo
+      // que la persona va a pegar en WhatsApp.
+      await navigator.clipboard.writeText(referralMessage);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -270,10 +357,13 @@ export default function ProfilePage({
 
   const handleShareReferral = async () => {
     if (!referralCode) return;
-    const text = `Usa mi codigo ${referralCode} y ganemos puntos juntos.`;
     if (typeof navigator !== "undefined" && navigator.share) {
       try {
-        await navigator.share({ title: "Invita y gana", text });
+        await navigator.share({
+          title: "Invita y gana",
+          text: referralMessage,
+          url: referralUrl,
+        });
         return;
       } catch {
         // User cancelled or share unsupported — fall back to copy.
@@ -284,9 +374,37 @@ export default function ProfilePage({
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Cargando perfil...</p>
+      <div className="space-y-4 p-4" aria-busy="true">
+        <div className="h-8 w-40 animate-pulse rounded bg-muted" />
+        <div className="h-20 animate-pulse rounded-xl bg-muted" />
+        <div className="h-36 animate-pulse rounded-xl bg-muted" />
+        <div className="h-28 animate-pulse rounded-xl bg-muted" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="space-y-4 p-6 pt-12 text-center">
+        <AlertCircle className="mx-auto h-12 w-12 text-destructive" />
+        <p role="alert" className="font-medium text-destructive">
+          {loadError}
+        </p>
+        <Button
+          className="h-11 w-full"
+          onClick={() => {
+            setLoading(true);
+            void fetchAll();
+          }}
+        >
+          <RefreshCcw className="mr-2 h-4 w-4" />
+          Reintentar
+        </Button>
+        <Link href={`/${branchSlug}/${tableCode}/menu`} className="block">
+          <Button variant="outline" className="h-11 w-full">
+            Volver a la carta
+          </Button>
+        </Link>
       </div>
     );
   }
@@ -294,14 +412,20 @@ export default function ProfilePage({
   return (
     <div className="p-4 space-y-5 pb-8">
       {/* Header */}
-      <div className="flex items-center gap-3 pt-2">
+      <div className="flex items-center gap-2 pt-2">
         <Link href={`/${branchSlug}/${tableCode}/menu`}>
-          <Button variant="ghost" size="sm" className="gap-1.5">
+          <Button variant="ghost" className="h-10 gap-1.5 px-2">
             <ArrowLeft className="h-4 w-4" />
-            Menu
+            Carta
           </Button>
         </Link>
-        <h1 className="text-xl font-bold flex-1">Mi Perfil</h1>
+        <h1 className="min-w-0 flex-1 truncate text-xl font-bold">Mi perfil</h1>
+        <Link href={`/${branchSlug}/${tableCode}/status`}>
+          <Button variant="ghost" className="h-10 gap-1.5 px-2 text-xs">
+            <ShoppingBag className="h-4 w-4" />
+            Mis pedidos
+          </Button>
+        </Link>
       </div>
 
       {/* Customer info */}
@@ -313,7 +437,9 @@ export default function ProfilePage({
             </div>
             <div>
               <p className="font-semibold text-lg">{customerName || "Cliente"}</p>
-              <p className="text-sm text-muted-foreground">Mesa {tableCode}</p>
+              {tableNumber !== null && (
+                <p className="text-sm text-muted-foreground">Mesa {tableNumber}</p>
+              )}
             </div>
           </div>
         </CardContent>
@@ -378,7 +504,7 @@ export default function ProfilePage({
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              Comparte tu codigo. Cuando un amigo lo use y haga su primer pedido, ambos ganan puntos.
+              Comparte tu código. Cuando un amigo lo use y haga su primer pedido, ambos ganan puntos.
             </p>
             <div className="flex items-center gap-2">
               <div className="flex-1 rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2.5 text-center">
@@ -389,8 +515,10 @@ export default function ProfilePage({
               <Button
                 variant="outline"
                 size="icon"
+                className="h-10 w-10 shrink-0"
                 onClick={handleCopyReferral}
-                title="Copiar codigo"
+                title="Copiar código"
+                aria-label="Copiar código de invitación"
               >
                 {copied ? (
                   <Check className="h-4 w-4 text-green-600" />
@@ -399,9 +527,9 @@ export default function ProfilePage({
                 )}
               </Button>
             </div>
-            <Button className="w-full gap-2" onClick={handleShareReferral}>
+            <Button className="h-11 w-full gap-2" onClick={handleShareReferral}>
               <Share2 className="h-4 w-4" />
-              {copied ? "Codigo copiado" : "Compartir codigo"}
+              {copied ? "Código copiado" : "Compartir código"}
             </Button>
           </CardContent>
         </Card>
@@ -472,50 +600,65 @@ export default function ProfilePage({
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <Gift className="h-4 w-4 text-primary" />
-              Recompensas Disponibles
+              Recompensas disponibles
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {loyalty.rewards.map((reward) => {
               const canRedeem = loyalty.points_balance >= reward.points_cost;
+              const soldOut = reward.stock_remaining != null && reward.stock_remaining <= 0;
               return (
                 <div
                   key={reward.id}
                   className={cn(
-                    "flex items-center justify-between p-3 rounded-lg border",
-                    canRedeem
+                    "flex items-center justify-between gap-3 p-3 rounded-lg border",
+                    canRedeem && !soldOut
                       ? "border-primary/30 bg-primary/5"
                       : "border-border bg-muted/30 opacity-60",
                   )}
                 >
                   <div className="min-w-0 flex-1">
-                    <p className="font-medium text-sm truncate">{reward.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-sm truncate">{reward.name}</p>
+                      <Badge variant="outline" className="text-[10px] shrink-0">
+                        {rewardKindLabel(reward)}
+                      </Badge>
+                    </div>
                     <p className="text-xs text-muted-foreground">
-                      {reward.discount_type === "percentage"
-                        ? `${reward.discount_value}% de descuento`
-                        : `${formatCurrency(reward.discount_value)} de descuento`}
+                      {describeReward(reward, menuItemNames)}
                     </p>
+                    {reward.description && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        {reward.description}
+                      </p>
+                    )}
+                    {soldOut && (
+                      <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400 mt-0.5">
+                        Agotada por hoy
+                      </p>
+                    )}
                   </div>
-                  <div className="shrink-0 ml-3 flex flex-col items-end gap-1">
+                  <div className="shrink-0 flex flex-col items-end gap-1.5">
                     <p
                       className={cn(
                         "text-xs font-bold",
-                        canRedeem ? "text-primary" : "text-muted-foreground",
+                        canRedeem && !soldOut ? "text-primary" : "text-muted-foreground",
                       )}
                     >
                       {reward.points_cost.toLocaleString()} pts
                     </p>
-                    {canRedeem ? (
+                    {canRedeem && !soldOut ? (
                       <Button
-                        size="sm"
-                        className="h-7 text-xs px-3"
+                        className="h-10 px-4 text-sm"
                         onClick={() => handleRedeemClick(reward)}
                       >
                         Canjear
                       </Button>
                     ) : (
-                      <p className="text-[10px] text-muted-foreground">
-                        Faltan {(reward.points_cost - loyalty.points_balance).toLocaleString()}
+                      <p className="text-[10px] text-muted-foreground text-right">
+                        {soldOut
+                          ? "No disponible"
+                          : `Faltan ${(reward.points_cost - loyalty.points_balance).toLocaleString()} pts`}
                       </p>
                     )}
                   </div>
@@ -532,7 +675,7 @@ export default function ProfilePage({
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <CheckCircle className="h-4 w-4 text-green-600" />
-              Canjes Pendientes
+              Canjes pendientes
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -544,9 +687,7 @@ export default function ProfilePage({
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-sm">{r.reward_name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {r.discount_type === "percentage"
-                      ? `${r.discount_value}% de descuento`
-                      : `${formatCurrency(r.discount_value)} de descuento`}
+                    {describeReward(r, menuItemNames)}
                   </p>
                 </div>
                 <Badge variant="secondary" className="text-[10px] bg-green-500/15 text-green-700 dark:text-green-400 border-green-500/20 shrink-0">
@@ -554,8 +695,8 @@ export default function ProfilePage({
                 </Badge>
               </div>
             ))}
-            <p className="text-[10px] text-muted-foreground text-center">
-              Se aplicara automaticamente en tu proximo pedido desde el carrito
+            <p className="text-[11px] text-muted-foreground text-center">
+              Aplícala desde el carrito en tu próximo pedido.
             </p>
           </CardContent>
         </Card>
@@ -567,7 +708,7 @@ export default function ProfilePage({
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <Ticket className="h-4 w-4 text-primary" />
-              Mis Cupones
+              Mis cupones
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -604,17 +745,19 @@ export default function ProfilePage({
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <ShoppingBag className="h-4 w-4 text-primary" />
-              Mis Pedidos
+              Mis pedidos
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {orders.map((order) => (
+              // El id viaja en la URL: sin él, pulsar el pedido #1 abría el
+              // último pedido de la mesa y el comensal veía otro estado.
               <Link
                 key={order.id}
-                href={`/${branchSlug}/${tableCode}/status`}
+                href={`/${branchSlug}/${tableCode}/status?orderId=${order.id}`}
                 className="block"
               >
-                <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30 hover:bg-muted/50 transition-colors">
+                <div className="flex min-h-12 items-center justify-between p-3 rounded-lg border border-border bg-muted/30 hover:bg-muted/50 transition-colors">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <p className="font-medium text-sm">#{order.order_number}</p>
@@ -628,7 +771,7 @@ export default function ProfilePage({
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      {order.items.length} item{order.items.length !== 1 ? "s" : ""}
+                      {order.items.length} {order.items.length === 1 ? "producto" : "productos"}
                     </p>
                   </div>
                   {order.total != null && (
@@ -649,7 +792,7 @@ export default function ProfilePage({
           <CardContent className="p-6 text-center">
             <Star className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
             <p className="text-sm text-muted-foreground">
-              Aun no tienes actividad. Realiza un pedido para empezar a acumular puntos.
+              Aún no tienes actividad. Haz tu primer pedido para empezar a acumular puntos.
             </p>
           </CardContent>
         </Card>
@@ -659,14 +802,15 @@ export default function ProfilePage({
       <Dialog open={redeemDialogOpen} onOpenChange={setRedeemDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Canjear Recompensa</DialogTitle>
+            <DialogTitle>Canjear recompensa</DialogTitle>
             <DialogDescription>
               {selectedReward && loyalty && (
                 <>
-                  Canjear <strong>{selectedReward.name}</strong> por{" "}
+                  ¿Canjear <strong>{selectedReward.name}</strong> (
+                  {describeReward(selectedReward, menuItemNames)}) por{" "}
                   <strong>{selectedReward.points_cost.toLocaleString()} pts</strong>?
                   <br />
-                  Tu balance quedara en{" "}
+                  Tu saldo quedará en{" "}
                   <strong>
                     {(loyalty.points_balance - selectedReward.points_cost).toLocaleString()} pts
                   </strong>
@@ -677,19 +821,20 @@ export default function ProfilePage({
           <DialogFooter>
             <Button
               variant="outline"
+              className="h-11"
               onClick={() => setRedeemDialogOpen(false)}
               disabled={redeeming}
             >
               Cancelar
             </Button>
-            <Button onClick={handleConfirmRedeem} disabled={redeeming}>
+            <Button className="h-11" onClick={handleConfirmRedeem} disabled={redeeming}>
               {redeeming ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Canjeando...
                 </>
               ) : (
-                "Confirmar Canje"
+                "Confirmar canje"
               )}
             </Button>
           </DialogFooter>
@@ -702,29 +847,36 @@ export default function ProfilePage({
           <DialogHeader>
             <DialogTitle className="text-center">
               <CheckCircle className="h-12 w-12 text-green-600 mx-auto mb-3" />
-              Recompensa Canjeada
+              Recompensa canjeada
             </DialogTitle>
             <DialogDescription className="text-center">
               {redeemResult && (
                 <>
-                  {redeemResult.discount.type === "percentage"
-                    ? `${redeemResult.discount.value}% de descuento`
-                    : `${formatCurrency(redeemResult.discount.value)} de descuento`}
+                  <strong className="text-foreground">{redeemResult.reward.name}</strong>
+                  <br />
+                  {describeReward(redeemResult.reward, menuItemNames)}
                   <br />
                   <span className="text-xs">
-                    Balance actual: {redeemResult.newBalance.toLocaleString()} pts
+                    Saldo actual: {redeemResult.newBalance.toLocaleString()} pts
                   </span>
                 </>
               )}
               <br />
               <strong className="text-foreground text-sm mt-2 block">
-                Ve al carrito para aplicar el descuento en tu proximo pedido
+                Ve al carrito para aplicarla en tu próximo pedido.
               </strong>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button className="w-full" onClick={() => setSuccessDialogOpen(false)}>
-              Entendido
+            <Link href={`/${branchSlug}/${tableCode}/cart`} className="w-full">
+              <Button className="h-11 w-full">Ir al carrito</Button>
+            </Link>
+            <Button
+              variant="outline"
+              className="h-11 w-full"
+              onClick={() => setSuccessDialogOpen(false)}
+            >
+              Seguir aquí
             </Button>
           </DialogFooter>
         </DialogContent>

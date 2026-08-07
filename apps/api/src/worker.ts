@@ -4,8 +4,9 @@ import { useHasher, useRealtime } from "./infrastructure/container.js";
 import { WebCryptoHasher } from "./infrastructure/security/webcrypto.adapter.js";
 import { createServerlessRealtimeProvider } from "./infrastructure/realtime/factory.serverless.js";
 import { expireStale } from "./services/session.service.js";
-import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.js";
 import { configureR2Bucket } from "./lib/r2.js";
+import { logger } from "./lib/logger.js";
+import { runLoyaltyJobs, isLoyaltyDailyWindow } from "./lib/jobs.js";
 
 /**
  * Entrypoint para Cloudflare Workers (serverless, sin contenedor).
@@ -18,15 +19,16 @@ import { configureR2Bucket } from "./lib/r2.js";
  *  - crons → Cron Triggers (`scheduled`), en vez de setInterval.
  */
 
+// `R2Bucket`, `ExecutionContext` y `ScheduledController` son globales de
+// @cloudflare/workers-types (declarado en apps/api/tsconfig.json). Antes se
+// declaraban a mano interfaces mínimas y `R2Bucket` no existía en absoluto, así
+// que `tsc --noEmit` fallaba y NADA de la parte específica de Workers quedaba
+// comprobada: un cambio que rompiera el contrato de Cloudflare no se veía hasta
+// el despliegue.
 interface Env {
   DATABASE_URL: string;
   R2_IMAGES?: R2Bucket;
   [key: string]: string | R2Bucket | undefined;
-}
-
-interface ExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
-  passThroughOnException?(): void;
 }
 
 let configured = false;
@@ -94,18 +96,40 @@ export default {
     }
   },
 
-  // Cron Trigger: reemplaza el setInterval de expiración de sesiones del contenedor.
-  async scheduled(_event: unknown, env: Env, ctx: ExecutionContext): Promise<void> {
+  /**
+   * Cron Trigger: reemplaza los setInterval del contenedor.
+   *
+   * El cron declarado en wrangler.toml es de grano fino (cada 5 minutos) porque
+   * eso es lo que necesita la expiración de sesiones. Los trabajos de
+   * fidelización, en cambio, son DIARIOS: ejecutarlos en cada disparo suponía
+   * 288 pasadas al día de `awardBirthdayBonuses` (JOIN de customers ×
+   * customer_loyalty × loyalty_programs, más una transacción por candidato) y de
+   * `notifyExpiringPoints`, frente a UNA sola en los entrypoints de Bun y Node.
+   * Son idempotentes, así que no rompían nada visible: solo quemaban base de
+   * datos. Aquí se separan las dos cadencias con la ventana horaria de
+   * lib/jobs.ts, sin depender de que wrangler declare dos crons distintos.
+   */
+  async scheduled(
+    event: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
     configure(env);
+    const now = new Date(event?.scheduledTime ?? Date.now());
+    const runDaily = isLoyaltyDailyWindow(now);
+
     ctx.waitUntil(
       (async () => {
         const { db, close } = await createRequestDb(env.DATABASE_URL);
         try {
+          // En CADA disparo: sesiones de mesa vencidas.
           await runWithDb(db, () => expireStale());
-          // Loyalty daily jobs (idempotent: expiry acts only on due points,
-          // birthday bonus is guarded per customer per year).
-          await runWithDb(db, () => expirePoints());
-          await runWithDb(db, () => awardBirthdayBonuses());
+
+          // Una sola vez al día (madrugada de Lima): fidelización.
+          if (runDaily) {
+            logger.info("Worker cron: running daily loyalty jobs");
+            await runWithDb(db, () => runLoyaltyJobs());
+          }
         } finally {
           await close();
         }

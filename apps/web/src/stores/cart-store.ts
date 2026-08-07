@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 import type { CartItem, CartModifier } from "@restai/types";
 
 /**
@@ -29,10 +30,35 @@ interface CartState {
   getTax: (taxRate: number) => number;
   getTotal: (taxRate: number) => number;
   getItemCount: () => number;
+  /**
+   * Ata el carrito a una mesa concreta. Si la mesa cambia, el carrito guardado
+   * se descarta: los platos que eligió el comensal anterior no deben aparecerle
+   * al siguiente.
+   */
+  bindToTable: (tableKey: string) => void;
+  tableKey: string | null;
 }
 
-export const useCartStore = create<CartState>((set, get) => ({
+/**
+ * El carrito PERSISTE en sessionStorage.
+ *
+ * Antes vivía solo en memoria: bastaba un refresco, un giro de pantalla que
+ * recargara, o que iOS descartara la pestaña en segundo plano, para que el
+ * comensal perdiera un pedido ya armado. Es el punto del embudo donde más caro
+ * sale perder a alguien, porque ya había decidido qué quería.
+ *
+ * sessionStorage y no localStorage a propósito: el carrito no debe sobrevivir al
+ * cierre del navegador ni saltar de un comensal a otro en el mismo dispositivo.
+ */
+export const useCartStore = create<CartState>()(
+  persist(
+    (set, get) => ({
   items: [],
+  tableKey: null,
+  bindToTable: (tableKey) => {
+    if (get().tableKey === tableKey) return;
+    set({ tableKey, items: [] });
+  },
   addItem: (item) => {
     const lineId = lineSignature(item.menuItemId, item.modifiers);
     const items = get().items;
@@ -81,4 +107,13 @@ export const useCartStore = create<CartState>((set, get) => ({
   getItemCount: () => {
     return get().items.reduce((sum, item) => sum + item.quantity, 0);
   },
-}));
+    }),
+    {
+      name: "restai-cart",
+      storage: createJSONStorage(() => sessionStorage),
+      // Solo el contenido del carrito: las funciones no se serializan y
+      // guardarlas rompería la hidratación.
+      partialize: (state) => ({ items: state.items, tableKey: state.tableKey }),
+    },
+  ),
+);

@@ -130,3 +130,15 @@ export const couponStatusEnum = pgEnum("coupon_status", [
   "inactive",
   "expired",
 ]);
+
+export const serviceRequestTypeEnum = pgEnum("service_request_type", [
+  "call_waiter",
+  "request_bill",
+]);
+
+export const serviceRequestStatusEnum = pgEnum("service_request_status", [
+  "pending",
+  "acknowledged",
+  "resolved",
+  "cancelled",
+]);

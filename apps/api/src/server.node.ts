@@ -11,7 +11,14 @@ import { useRealtime, useHasher } from "./infrastructure/container.js";
 import { handleWsMessage } from "./ws/handlers.js";
 import { whenDbReady } from "@restai/db";
 import { expireStale } from "./services/session.service.js";
-import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.js";
+import { registerProcessErrorHandlers } from "./lib/process-handlers.js";
+import {
+  runLoyaltyJobs,
+  SESSION_EXPIRY_INTERVAL_MS,
+  WS_HEARTBEAT_INTERVAL_MS,
+  LOYALTY_BOOT_DELAY_MS,
+  LOYALTY_DAILY_INTERVAL_MS,
+} from "./lib/jobs.js";
 
 // ── Composition root del runtime Node ─────────────────────────────────
 // Entrypoint alternativo al de Bun (index.ts) para correr en Node: un VPS con
@@ -85,39 +92,29 @@ if (wsManager) {
   );
 }
 
-// Session expiry cron (cada 60s).
+// Tareas periódicas. La cadencia y el cuerpo viven en lib/jobs.ts, compartidos
+// con el entrypoint de Bun y con el Worker, para que los tres runtimes hagan
+// exactamente lo mismo y con la misma frecuencia.
 const sessionExpiryInterval = setInterval(() => {
   expireStale().catch((err) => {
     logger.error("Session expiry cron failed", { error: err.message });
   });
-}, 60_000);
+}, SESSION_EXPIRY_INTERVAL_MS);
 
-// WS heartbeat: cierra clientes con JWT expirado (cada 30s).
+// WS heartbeat: cierra clientes con JWT expirado.
 const wsHeartbeatInterval = setInterval(() => {
   if (!wsManager) return;
   const evicted = wsManager.evictExpired();
   if (evicted > 0) {
     logger.info("WS heartbeat: evicted expired clients", { count: evicted });
   }
-}, 30_000);
+}, WS_HEARTBEAT_INTERVAL_MS);
 
-// Daily loyalty jobs: points expiry + birthday bonuses (idempotent, non-blocking).
-async function runLoyaltyJobs() {
-  try {
-    const { expired } = await expirePoints();
-    if (expired > 0) logger.info("Loyalty points expiry job ran", { expired });
-  } catch (err) {
-    logger.error("Loyalty points expiry job failed", { error: err instanceof Error ? err.message : String(err) });
-  }
-  try {
-    const { awarded } = await awardBirthdayBonuses();
-    if (awarded > 0) logger.info("Birthday bonus job ran", { awarded });
-  } catch (err) {
-    logger.error("Birthday bonus job failed", { error: err instanceof Error ? err.message : String(err) });
-  }
-}
-const loyaltyBootTimeout = setTimeout(() => void runLoyaltyJobs(), 10_000);
-const loyaltyDailyInterval = setInterval(() => void runLoyaltyJobs(), 24 * 60 * 60 * 1000);
+const loyaltyBootTimeout = setTimeout(() => void runLoyaltyJobs(), LOYALTY_BOOT_DELAY_MS);
+const loyaltyDailyInterval = setInterval(
+  () => void runLoyaltyJobs(),
+  LOYALTY_DAILY_INTERVAL_MS,
+);
 
 async function shutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`);
@@ -133,6 +130,11 @@ async function shutdown(signal: string) {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Errores no capturados. Sin esto, en Node ≥15 una promesa rechazada sin
+// manejar (un correo fire-and-forget, un publish realtime) tumbaba el proceso
+// entero de la API, mientras el mismo código en Bun solo dejaba un log.
+registerProcessErrorHandlers();
 
 // Export por defecto para hosts que lo esperan (p. ej. Vercel Functions).
 export default server;

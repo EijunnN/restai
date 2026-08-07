@@ -16,6 +16,13 @@ export const organizations = pgTable("organizations", {
   name: varchar("name", { length: 255 }).notNull(),
   slug: varchar("slug", { length: 100 }).unique().notNull(),
   logo_url: text("logo_url"),
+  /**
+   * Datos fiscales del emisor. Sin RUC no se puede imprimir un ticket válido ni
+   * emitir un comprobante electrónico: el CHECK de la migración 0012 valida el
+   * formato peruano (10/15/17/20 + 9 dígitos).
+   */
+  ruc: varchar("ruc", { length: 11 }),
+  legal_name: varchar("legal_name", { length: 255 }),
   plan: planEnum("plan").default("free").notNull(),
   is_active: boolean("is_active").default(true).notNull(),
   settings: jsonb("settings").default({}).notNull(),

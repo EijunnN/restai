@@ -13,3 +13,4 @@ export * from "./notifications";
 export * from "./referrals";
 export * from "./campaigns";
 export * from "./sunat";
+export * from "./operations";

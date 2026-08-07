@@ -7,6 +7,14 @@ import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { actorFromContext } from "../lib/audit.js";
+import { logger } from "../lib/logger.js";
+import {
+  resolveSegment,
+  sendCampaignAnnouncement,
+  CampaignError,
+  type SegmentFilter,
+} from "../services/campaign.service.js";
 
 const campaigns = new Hono<AppEnv>();
 
@@ -47,6 +55,69 @@ const updateCampaignSchema = z.object({
   bonusPoints: z.number().int().min(0).optional(),
   tierId: z.string().uuid().nullable().optional(),
 });
+
+// --------------------------------------------------------------------------
+// Segmentación
+// --------------------------------------------------------------------------
+
+// Booleano que llega por query string ("true"/"false"). Ausente = sin filtro.
+const boolQuery = z
+  .enum(["true", "false"])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v === "true"));
+
+// Filtros de audiencia tal como llegan por query string (todo es texto).
+const segmentQuerySchema = z.object({
+  tierId: z.union([z.string().uuid(), z.literal("none")]).optional(),
+  minPoints: z.coerce.number().int().min(0).optional(),
+  maxPoints: z.coerce.number().int().min(0).optional(),
+  lastVisitBeforeDays: z.coerce.number().int().min(1).max(3650).optional(),
+  includeNeverVisited: boolQuery,
+  birthdayMonth: z.coerce.number().int().min(1).max(12).optional(),
+  marketingOptIn: boolQuery,
+  requireEmail: boolQuery,
+  // Cuántos clientes de muestra devolver junto al conteo.
+  sample: z.coerce.number().int().min(0).max(200).optional(),
+});
+
+// Los mismos filtros, pero en JSON (cuerpo del envío): aquí sí hay tipos.
+const segmentBodySchema = z.object({
+  tierId: z.union([z.string().uuid(), z.literal("none")]).optional(),
+  minPoints: z.number().int().min(0).optional(),
+  maxPoints: z.number().int().min(0).optional(),
+  lastVisitBeforeDays: z.number().int().min(1).max(3650).optional(),
+  includeNeverVisited: z.boolean().optional(),
+  birthdayMonth: z.number().int().min(1).max(12).optional(),
+});
+
+const sendCampaignSchema = z.object({
+  subject: z.string().min(1).max(180).optional(),
+  title: z.string().min(1).max(180).optional(),
+  message: z.string().min(1).max(4000).optional(),
+  couponId: z.string().uuid().nullable().optional(),
+  segment: segmentBodySchema.optional(),
+  // Techo de destinatarios de este envío (protege el límite del proveedor).
+  maxRecipients: z.number().int().min(1).max(5000).optional(),
+});
+
+/** Comprueba que la campaña existe y pertenece a la organización. */
+async function findCampaign(organizationId: string, id: string) {
+  const [campaign] = await db
+    .select({
+      id: schema.campaigns.id,
+      name: schema.campaigns.name,
+      status: schema.campaigns.status,
+    })
+    .from(schema.campaigns)
+    .where(
+      and(
+        eq(schema.campaigns.id, id),
+        eq(schema.campaigns.organization_id, organizationId),
+      ),
+    )
+    .limit(1);
+  return campaign ?? null;
+}
 
 // GET / - List campaigns for org
 campaigns.get("/", requirePermission("loyalty:read"), async (c) => {
@@ -188,6 +259,135 @@ campaigns.delete(
       );
 
     return c.json({ success: true, data: { deleted: true } });
+  },
+);
+
+// GET /:id/audience - Previsualiza a cuántos clientes alcanzaría la campaña
+//
+// No envía nada. Devuelve dos números que son los que el dueño necesita antes
+// de pulsar el botón:
+//   - total:     clientes que cumplen el segmento.
+//   - reachable: de esos, a cuántos podemos escribir de verdad (tienen correo y
+//                aceptaron recibir promociones — Ley 29733).
+// La diferencia entre ambos es, además, el argumento para pedir consentimiento
+// en la próxima visita.
+campaigns.get(
+  "/:id/audience",
+  requirePermission("loyalty:read"),
+  // La muestra devuelve nombre y CORREO de clientes reales: eso es el padrón de
+  // clientes, no una estadística de fidelización. Se exige además el mismo verbo
+  // que protege GET /loyalty/customers, para que ningún rol futuro que reciba
+  // "loyalty:read" se lleve de regalo la lista de correos.
+  requirePermission("customers:read"),
+  zValidator("param", idParam),
+  zValidator("query", segmentQuerySchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const query = c.req.valid("query");
+    const tenant = c.get("tenant") as any;
+
+    const campaign = await findCampaign(tenant.organizationId, id);
+    if (!campaign) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Campaña no encontrada" } },
+        404,
+      );
+    }
+
+    const { sample, ...rest } = query;
+    const filter: SegmentFilter = rest;
+    const sampleSize = sample ?? 25;
+
+    // Conteo del segmento tal cual lo pidió el usuario (sin muestra).
+    const { total } = await resolveSegment({
+      organizationId: tenant.organizationId,
+      filter,
+      limit: 0,
+    });
+
+    // Alcance real: mismo segmento + correo + consentimiento de marketing.
+    const reach = await resolveSegment({
+      organizationId: tenant.organizationId,
+      filter: { ...filter, marketingOptIn: true, requireEmail: true },
+      limit: sampleSize,
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        campaign: { id: campaign.id, name: campaign.name, status: campaign.status },
+        filter,
+        total,
+        reachable: reach.total,
+        unreachable: Math.max(total - reach.total, 0),
+        sample: reach.recipients,
+      },
+    });
+  },
+);
+
+// POST /:id/send - Anuncia la campaña por correo al segmento indicado
+//
+// Encola el envío en lotes (nunca todo de golpe) y deja cada intento en
+// notification_log. El consentimiento se fuerza en el servicio: aunque el
+// segmento pida lo contrario, solo se escribe a quien lo aceptó.
+campaigns.post(
+  "/:id/send",
+  requirePermission("loyalty:create"),
+  zValidator("param", idParam),
+  zValidator("json", sendCampaignSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+    const user = c.get("user") as any;
+
+    try {
+      const result = await sendCampaignAnnouncement({
+        organizationId: tenant.organizationId,
+        campaignId: id,
+        subject: body.subject ?? null,
+        title: body.title ?? null,
+        message: body.message ?? null,
+        couponId: body.couponId ?? null,
+        segment: body.segment,
+        maxRecipients: body.maxRecipients,
+        // Quién dispara el anuncio: queda en audit_logs y es lo que impide el
+        // segundo envío accidental dentro de la ventana de enfriamiento.
+        actor: actorFromContext(c),
+      });
+
+      logger.info("Envío de campaña solicitado", {
+        campaignId: id,
+        organizationId: tenant.organizationId,
+        userId: user?.sub ?? null,
+        audience: result.audience,
+        queued: result.queued,
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          ...result,
+          message:
+            result.queued > 0
+              ? `Anuncio encolado para ${result.queued} cliente(s)`
+              : "Ningún cliente del segmento tiene correo y consentimiento de marketing",
+        },
+      });
+    } catch (err) {
+      if (err instanceof CampaignError) {
+        // 404 = no existe; 409 = existe pero su estado impide el envío
+        // (terminada, cupón no disponible, o anunciada hace un momento).
+        const status =
+          err.code === "NOT_FOUND" || err.code === "COUPON_NOT_FOUND" ? 404 : 409;
+        return c.json(
+          { success: false, error: { code: err.code, message: err.message } },
+          status,
+        );
+      }
+      throw err;
+    }
   },
 );
 

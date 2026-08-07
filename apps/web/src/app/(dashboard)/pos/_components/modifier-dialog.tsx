@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Input } from "@restai/ui/components/input";
 import { Button } from "@restai/ui/components/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -13,7 +15,7 @@ import {
 import { Badge } from "@restai/ui/components/badge";
 import { Check, ChevronDown, Plus, Minus, Loader2, UtensilsCrossed } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
-import { useItemModifierGroups } from "@/hooks/use-menu";
+import { apiFetch } from "@/lib/fetcher";
 import type { PosMenuItem } from "../page";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +43,15 @@ export function ModifierDialog({
   onClose: () => void;
   onAdd: (item: PosMenuItem, qty: number, mods: CartModifier[], notes: string) => void;
 }) {
-  const { data: groups, isLoading } = useItemModifierGroups(item?.id ?? "");
+  // Misma clave de caché que usa el POS al tocar el producto: cuando el diálogo
+  // se abre los grupos ya están cargados, así que no hay ni parpadeo ni una
+  // segunda petición por cada toque.
+  const { data: groups, isLoading } = useQuery({
+    queryKey: ["menu", "items", item?.id ?? "", "modifier-groups"],
+    queryFn: () => apiFetch<any[]>(`/api/menu/items/${item?.id}/modifier-groups`),
+    enabled: !!item?.id && open,
+    staleTime: 5 * 60 * 1000,
+  });
   const modifierGroups: any[] = groups ?? [];
 
   const [selected, setSelected] = useState<Record<string, string[]>>({});
@@ -59,17 +69,11 @@ export function ModifierDialog({
     }
   }, [open]);
 
-  // Auto-add if no modifier groups
-  useEffect(() => {
-    if (!isLoading && modifierGroups.length === 0 && open && item) {
-      onAdd(item, 1, [], "");
-      onClose();
-    }
-  }, [isLoading, modifierGroups.length, open, item]);
-
   if (!item) return null;
 
-  // If no modifier groups, the useEffect above handles auto-add
+  // El POS solo abre este diálogo cuando el plato TIENE grupos: si llegara vacío
+  // (carta editada a la vez desde otra pantalla) no se añade nada a espaldas del
+  // cajero, simplemente no hay nada que elegir.
   if (!isLoading && modifierGroups.length === 0) return null;
 
   const toggleModifier = (groupId: string, modId: string, maxSelections: number, isSingle: boolean) => {
@@ -134,6 +138,9 @@ export function ModifierDialog({
               <p className="text-sm font-normal text-primary">{formatCurrency(item.price)}</p>
             </div>
           </DialogTitle>
+          <DialogDescription>
+            Elige las opciones del plato y la cantidad antes de añadirlo al pedido.
+          </DialogDescription>
         </DialogHeader>
 
         {isLoading ? (
@@ -156,7 +163,8 @@ export function ModifierDialog({
                     onClick={() =>
                       setOpenGroups((prev) => ({ ...prev, [group.id]: !isOpen }))
                     }
-                    className="flex items-center justify-between w-full mb-2"
+                    aria-expanded={isOpen}
+                    className="mb-2 flex min-h-11 w-full items-center justify-between"
                   >
                     <p className="text-sm font-semibold">
                       {group.name}
@@ -194,6 +202,17 @@ export function ModifierDialog({
                   >
                     <div className="overflow-hidden">
                       <div className="space-y-1">
+                        {/*
+                          Si todas las opciones del grupo están agotadas el plato
+                          no se puede añadir: hay que decirlo, o el cajero se queda
+                          mirando un botón deshabilitado sin saber por qué.
+                        */}
+                        {(group.modifiers || []).filter((m: any) => m.is_available !== false).length === 0 && (
+                          <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                            Sin opciones disponibles ahora mismo.
+                            {group.is_required ? " Este plato no se puede pedir hasta reponerlas." : ""}
+                          </p>
+                        )}
                         {(group.modifiers || []).filter((m: any) => m.is_available !== false).map((mod: any) => {
                           const isSelected = sel.includes(mod.id);
                           return (
@@ -201,7 +220,8 @@ export function ModifierDialog({
                               key={mod.id}
                               type="button"
                               onClick={() => toggleModifier(group.id, mod.id, group.max_selections, isSingle)}
-                              className={`w-full flex items-center justify-between rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                              aria-pressed={isSelected}
+                              className={`flex min-h-11 w-full items-center justify-between rounded-lg border px-3 py-2.5 text-sm transition-colors ${
                                 isSelected
                                   ? "border-primary bg-primary/5"
                                   : "border-border hover:border-primary/40"
@@ -240,10 +260,11 @@ export function ModifierDialog({
             <div>
               <p className="text-sm font-semibold mb-1.5">Notas (opcional)</p>
               <Input
-                placeholder="Sin cebolla, extra picante..."
+                placeholder="Sin cebolla, extra picante…"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                className="text-sm"
+                className="h-11 text-sm"
+                aria-label="Notas para la cocina sobre este producto"
               />
             </div>
           </div>
@@ -258,31 +279,36 @@ export function ModifierDialog({
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-8 w-8"
+                  className="h-11 w-11"
                   onClick={() => setQuantity(Math.max(1, quantity - 1))}
                   disabled={quantity <= 1}
+                  aria-label="Quitar una unidad"
                 >
-                  <Minus className="h-3 w-3" />
+                  <Minus className="h-4 w-4" />
                 </Button>
-                <span className="w-6 text-center font-bold">{quantity}</span>
+                <span className="w-8 text-center text-base font-bold tabular-nums">
+                  {quantity}
+                </span>
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-8 w-8"
+                  className="h-11 w-11"
                   onClick={() => setQuantity(quantity + 1)}
+                  aria-label="Añadir una unidad"
                 >
-                  <Plus className="h-3 w-3" />
+                  <Plus className="h-4 w-4" />
                 </Button>
               </div>
             </div>
-            <Button
-              className="w-full h-11"
-              disabled={hasRequiredErrors}
-              onClick={handleConfirm}
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Agregar · {formatCurrency(lineTotal)}
+            <Button className="h-12 w-full" disabled={hasRequiredErrors} onClick={handleConfirm}>
+              <Plus className="mr-2 h-4 w-4" />
+              Añadir · {formatCurrency(lineTotal)}
             </Button>
+            {hasRequiredErrors && (
+              <p role="alert" className="w-full text-center text-xs font-medium text-destructive">
+                Falta elegir las opciones obligatorias.
+              </p>
+            )}
           </DialogFooter>
         )}
       </DialogContent>

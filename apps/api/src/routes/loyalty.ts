@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, desc, sql, like, or } from "drizzle-orm";
+import { eq, and, desc, sql, like, ilike, or } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createLoyaltyProgramSchema,
@@ -172,13 +172,26 @@ loyalty.get("/customers", requirePermission("customers:read"), zValidator("query
 
   if (search) {
     const pattern = `%${search}%`;
-    conditions.push(
-      or(
-        like(schema.customers.name, pattern),
-        like(schema.customers.email, pattern),
-        like(schema.customers.phone, pattern),
-      )!,
-    );
+    const matchers = [
+      // `ilike` y no `like`: buscar "juan" tiene que encontrar a "Juan". Con
+      // `like`, en Postgres, no lo encontraba, y en caja eso significa dar de
+      // alta otra vez a un cliente que ya existe y partirle sus puntos en dos.
+      ilike(schema.customers.name, pattern),
+      ilike(schema.customers.email, pattern),
+      ilike(schema.customers.phone, pattern),
+    ];
+
+    // Teléfono tecleado con separadores: "987 654 321" o "987-654-321" no
+    // encontraba al cliente guardado como "987654321". Se comparan solo los
+    // dígitos de ambos lados.
+    const digits = search.replace(/\D/g, "");
+    if (digits.length >= 6) {
+      matchers.push(
+        sql`regexp_replace(COALESCE(${schema.customers.phone}, ''), '\\D', '', 'g') LIKE ${`%${digits}%`}`,
+      );
+    }
+
+    conditions.push(or(...matchers)!);
   }
 
   const [customers, [{ count: total }]] = await Promise.all([

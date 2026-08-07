@@ -111,7 +111,7 @@ export function ProductsPanel({
     try {
       if (confirmDelete.type === "category") {
         await deleteCat.mutateAsync(confirmDelete.id);
-        toast.success("Categoria eliminada");
+        toast.success("Categoría eliminada");
         if (selectedCategoryId === confirmDelete.id) {
           setSelectedCategoryId("all");
         }
@@ -481,7 +481,7 @@ export function ProductsPanel({
             if (!v) setConfirmDelete(null);
           }}
           title={`Eliminar ${confirmDelete.type === "category" ? "categoria" : "producto"}`}
-          description={`Estas seguro que deseas eliminar "${confirmDelete.name}"? Esta accion no se puede deshacer.`}
+          description={`Estás seguro que deseas eliminar "${confirmDelete.name}"? Esta accion no se puede deshacer.`}
           onConfirm={handleConfirmDelete}
           loading={deleteCat.isPending || deleteItem.isPending}
         />

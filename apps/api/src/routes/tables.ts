@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, isNull, desc, inArray, notInArray, sql } from "drizzle-orm";
+import { eq, and, isNull, desc, ne, inArray, notInArray, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createTableSchema,
@@ -10,21 +10,60 @@ import {
   idParamSchema,
 } from "@restai/validators";
 import { z } from "zod";
-import { TABLE_STATUS_TRANSITIONS } from "@restai/config";
+import { TABLE_STATUS_TRANSITIONS, PERMISSIONS } from "@restai/config";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
-import { generateQrCode } from "../lib/id.js";
+import { generateQrCode, generateShortCode } from "../lib/id.js";
 import { signCustomerToken } from "../lib/jwt.js";
+import { auditFromContext, auditMoney } from "../lib/audit.js";
 import { realtime } from "../infrastructure/container.js";
 import * as sessionService from "../services/session.service.js";
 import { handleOrderCompletion } from "../services/order.service.js";
+import type { Context } from "hono";
 
 const tables = new Hono<AppEnv>();
 
 tables.use("*", authMiddleware);
 tables.use("*", tenantMiddleware);
 tables.use("*", requireBranch);
+
+// ── Esquemas propios de este módulo ─────────────────────────────────
+// Definidos aquí a propósito: son contratos que solo usa esta ruta.
+
+const moveSessionSchema = z.object({
+  targetTableId: z.string().uuid(),
+});
+
+const mergeSessionsSchema = z.object({
+  sourceTableIds: z.array(z.string().uuid()).min(1).max(20),
+});
+
+/** Traducción de los errores de mover/juntar a HTTP. */
+const TRANSFER_ERROR_STATUS = {
+  TABLE_NOT_FOUND: 404,
+  TARGET_TABLE_NOT_FOUND: 404,
+  SOURCE_TABLE_NOT_FOUND: 404,
+  SAME_TABLE: 400,
+  NO_ACTIVE_SESSION: 409,
+  TARGET_NOT_AVAILABLE: 409,
+  TARGET_HAS_SESSION: 409,
+  SOURCE_WITHOUT_SESSION: 409,
+} as const satisfies Record<string, 400 | 404 | 409>;
+
+/**
+ * Comprobación de permiso dentro del handler, para las decisiones que dependen
+ * del cuerpo/query y no del endpoint (liberar una mesa con saldo pendiente).
+ * Replica la resolución de comodines de `requirePermission`.
+ */
+function callerHasPermission(c: Context, permission: string): boolean {
+  const user = c.get("user") as any;
+  const perms =
+    (PERMISSIONS[user?.role as keyof typeof PERMISSIONS] as readonly string[] | undefined) ?? [];
+  if (perms.includes("*")) return true;
+  const [resource] = permission.split(":");
+  return perms.includes(permission) || perms.includes(`${resource}:*`);
+}
 
 // GET / - List tables for branch (optional spaceId filter)
 tables.get("/", requirePermission("tables:read"), async (c) => {
@@ -42,8 +81,25 @@ tables.get("/", requirePermission("tables:read"), async (c) => {
     conditions.push(eq(schema.tables.space_id, spaceId));
   }
 
+  // Lista explícita de columnas: `short_code` es parte del contrato con la UI
+  // (va impreso en el cartel de la mesa, junto al QR, como plan B para el
+  // comensal que no puede escanear), así que no puede depender de un `select()`
+  // implícito que un cambio de esquema podría alterar sin avisar.
   const result = await db
-    .select()
+    .select({
+      id: schema.tables.id,
+      branch_id: schema.tables.branch_id,
+      organization_id: schema.tables.organization_id,
+      space_id: schema.tables.space_id,
+      number: schema.tables.number,
+      capacity: schema.tables.capacity,
+      qr_code: schema.tables.qr_code,
+      short_code: schema.tables.short_code,
+      status: schema.tables.status,
+      position_x: schema.tables.position_x,
+      position_y: schema.tables.position_y,
+      created_at: schema.tables.created_at,
+    })
     .from(schema.tables)
     .where(and(...conditions));
 
@@ -96,17 +152,31 @@ tables.post(
 
     const qrCode = generateQrCode(branch?.slug || "branch", body.number);
 
-    const [table] = await db
-      .insert(schema.tables)
-      .values({
-        branch_id: tenant.branchId,
-        organization_id: tenant.organizationId,
-        space_id: body.spaceId || null,
-        number: body.number,
-        capacity: body.capacity,
-        qr_code: qrCode,
-      })
-      .returning();
+    // El código corto es único por sede. La colisión es improbable (30^5) pero
+    // posible, y la garantiza el índice único: se reintenta ante 23505 en vez de
+    // confiar en un SELECT previo, que sería vulnerable a carrera.
+    let table;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        [table] = await db
+          .insert(schema.tables)
+          .values({
+            branch_id: tenant.branchId,
+            organization_id: tenant.organizationId,
+            space_id: body.spaceId || null,
+            number: body.number,
+            capacity: body.capacity,
+            qr_code: qrCode,
+            short_code: generateShortCode(),
+          })
+          .returning();
+        break;
+      } catch (err: any) {
+        const isShortCodeCollision =
+          err?.code === "23505" && String(err?.constraint_name ?? err?.constraint ?? "").includes("short_code");
+        if (!isShortCodeCollision || attempt === 4) throw err;
+      }
+    }
 
     return c.json({ success: true, data: table }, 201);
   },
@@ -175,10 +245,13 @@ tables.patch(
   },
 );
 
-// PATCH /:id/position - Update table position
+// PATCH /:id/position - Persiste la posición de la mesa en el plano del local.
+// Exige `tables:layout` y no `tables:update`: mover el plano es configurar el
+// local, no operar una mesa. El mozo arrastra mesas en su pantalla, pero no
+// puede rehacer la distribución del salón para todos.
 tables.patch(
   "/:id/position",
-  requirePermission("tables:update"),
+  requirePermission("tables:layout"),
   zValidator("param", idParamSchema),
   zValidator("json", z.object({ x: z.number(), y: z.number() })),
   async (c) => {
@@ -209,10 +282,12 @@ tables.patch(
   },
 );
 
-// DELETE /:id - Delete table
+// DELETE /:id - Borra una mesa. Exige `tables:delete` (no el genérico
+// `tables:update`): borrar mesas es destruir la configuración del local y no
+// puede quedar al alcance de quien solo atiende el salón.
 tables.delete(
   "/:id",
-  requirePermission("tables:update"),
+  requirePermission("tables:delete"),
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
@@ -220,7 +295,7 @@ tables.delete(
 
     // Verify the table belongs to this tenant/branch before any destructive action
     const [table] = await db
-      .select({ id: schema.tables.id })
+      .select({ id: schema.tables.id, number: schema.tables.number, short_code: schema.tables.short_code })
       .from(schema.tables)
       .where(
         and(
@@ -341,6 +416,14 @@ tables.delete(
         404,
       );
     }
+
+    await auditFromContext(c, {
+      action: "table.delete",
+      entityType: "table",
+      entityId: id,
+      summary: `Mesa ${deleted.number} eliminada`,
+      before: { number: deleted.number, short_code: deleted.short_code, capacity: deleted.capacity },
+    });
 
     return c.json({ success: true, data: deleted });
   },
@@ -473,9 +556,16 @@ tables.post(
       );
     }
 
-    // Generate customer token
+    // El id de la fila se genera ANTES de firmar el token y se fija de forma
+    // explícita en el insert. `requireActiveSession` busca la sesión por
+    // `tableSessions.id == token.sub`: si dejáramos que la BD generase otro id
+    // (defaultRandom), el token firmado apuntaría a una sesión inexistente y
+    // cualquier pedido moriría con SESSION_ENDED. La alta asistida —el mozo
+    // sienta a un comensal sin QR— dependía de esto y estaba rota.
+    const sessionId = crypto.randomUUID();
+
     const customerToken = await signCustomerToken({
-      sub: crypto.randomUUID(),
+      sub: sessionId,
       org: tenant.organizationId,
       branch: tenant.branchId,
       table: table.id,
@@ -483,9 +573,6 @@ tables.post(
 
     // Create the active session and occupy the table atomically. The table flip is
     // conditional on its current status so a concurrent seating yields a 409.
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + sessionService.ACTIVE_TTL_HOURS * 3_600_000);
-
     let session;
     try {
       session = await db.transaction(async (tx) => {
@@ -506,21 +593,41 @@ tables.post(
           throw new Error("TABLE_STATUS_CONFLICT");
         }
 
-        const [created] = await tx
-          .insert(schema.tableSessions)
-          .values({
-            table_id: table.id,
-            branch_id: tenant.branchId,
-            organization_id: tenant.organizationId,
-            customer_name: body.customerName,
-            customer_phone: body.customerPhone,
+        // La mesa figura libre, pero puede arrastrar una sesión viva huérfana
+        // (el bug de "Liberar no libera" dejaba filas activas sin mesa ocupada).
+        // Sentar encima crearía DOS sesiones activas en la misma mesa: la cuenta
+        // vieja quedaría invisible y sus pedidos sin cobrar. El UPDATE anterior
+        // ya tiene el candado de la fila, así que esta lectura no tiene carrera.
+        const [orphan] = await tx
+          .select({ id: schema.tableSessions.id })
+          .from(schema.tableSessions)
+          .where(
+            and(
+              eq(schema.tableSessions.table_id, table.id),
+              eq(schema.tableSessions.branch_id, tenant.branchId),
+              eq(schema.tableSessions.organization_id, tenant.organizationId),
+              inArray(schema.tableSessions.status, ["active", "pending"]),
+            ),
+          )
+          .limit(1);
+
+        if (orphan) {
+          throw new Error("TABLE_HAS_OPEN_SESSION");
+        }
+
+        return await sessionService.createSession(
+          {
+            id: sessionId,
+            tableId: table.id,
+            branchId: tenant.branchId,
+            organizationId: tenant.organizationId,
+            customerName: body.customerName,
+            customerPhone: body.customerPhone,
             token: customerToken,
             status: "active",
-            expires_at: expiresAt,
-          })
-          .returning();
-
-        return created;
+          },
+          tx,
+        );
       });
     } catch (e: any) {
       if (e.message === "TABLE_STATUS_CONFLICT") {
@@ -528,6 +635,19 @@ tables.post(
           {
             success: false,
             error: { code: "CONFLICT", message: "La mesa no esta disponible" },
+          },
+          409,
+        );
+      }
+      if (e.message === "TABLE_HAS_OPEN_SESSION") {
+        return c.json(
+          {
+            success: false,
+            error: {
+              code: "TABLE_HAS_OPEN_SESSION",
+              message:
+                "La mesa arrastra una cuenta abierta. Libérala antes de sentar a otro cliente.",
+            },
           },
           409,
         );
@@ -629,15 +749,32 @@ tables.get("/sessions/pending", requirePermission("tables:read"), async (c) => {
 });
 
 // GET /sessions/:id
+//
+// Exige `tables:read` y devuelve columnas explícitas. Antes iba sin permiso y
+// con `select()`: eso servía la columna `token` —el JWT de comensal— a cualquier
+// usuario autenticado de la organización, incluida la cocina. Con ese token se
+// puede pedir en nombre de la mesa, así que no puede salir nunca por la API.
 tables.get(
   "/sessions/:id",
+  requirePermission("tables:read"),
   zValidator("param", idParamSchema),
   async (c) => {
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
     const [session] = await db
-      .select()
+      .select({
+        id: schema.tableSessions.id,
+        table_id: schema.tableSessions.table_id,
+        branch_id: schema.tableSessions.branch_id,
+        organization_id: schema.tableSessions.organization_id,
+        customer_name: schema.tableSessions.customer_name,
+        customer_phone: schema.tableSessions.customer_phone,
+        status: schema.tableSessions.status,
+        started_at: schema.tableSessions.started_at,
+        ended_at: schema.tableSessions.ended_at,
+        expires_at: schema.tableSessions.expires_at,
+      })
       .from(schema.tableSessions)
       .where(
         and(
@@ -672,6 +809,7 @@ tables.patch(
       const result = await sessionService.approveSession({
         sessionId: id,
         branchId: tenant.branchId,
+        organizationId: tenant.organizationId,
       });
       const [table] = await db
         .select({ number: schema.tables.number })
@@ -699,6 +837,27 @@ tables.patch(
 
       return c.json({ success: true, data: result.session });
     } catch (e: any) {
+      if (e instanceof sessionService.TableAlreadyActiveError) {
+        return c.json(
+          {
+            success: false,
+            error: {
+              code: "TABLE_ALREADY_ACTIVE",
+              // El mensaje tiene que ser accionable SIN destruir la cuenta en
+              // curso: lo normal es que la cuenta abierta sea la del propio
+              // comensal (el mozo ya le tomó nota y eso abrió la visita), así
+              // que decirle al operador "cierra esa cuenta" sería pedirle que
+              // borre una comanda con comida en marcha. Se le ofrecen las dos
+              // salidas reales: seguir tomando nota desde el POS, o liberar la
+              // mesa solo si la cuenta anterior ya terminó.
+              message:
+                "La mesa ya tiene una cuenta abierta, así que aceptar este ingreso partiría el saldo en dos. Rechaza la solicitud y sigue tomando los pedidos desde el POS; si la cuenta anterior ya terminó, libera la mesa y pide al comensal que vuelva a escanear.",
+              details: { activeSessionId: e.activeSessionId },
+            },
+          },
+          409,
+        );
+      }
       if (e.message === "PENDING_SESSION_NOT_FOUND") {
         return c.json(
           { success: false, error: { code: "NOT_FOUND", message: "Sesion pendiente no encontrada" } },
@@ -770,11 +929,37 @@ tables.patch(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
+    // Perdonar el saldo es una decisión de caja, no de sala: exige el mismo
+    // permiso que anular un cobro y queda auditado. Idéntico a POST /:id/free.
+    const force = c.req.query("force") === "true";
+    if (force && !callerHasPermission(c, "payments:void")) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "FORBIDDEN",
+            message: "No tienes permiso para cerrar una mesa con saldo pendiente",
+          },
+        },
+        403,
+      );
+    }
+
     try {
       const result = await sessionService.endSession({
         sessionId: id,
         branchId: tenant.branchId,
+        force,
       });
+
+      if (force) {
+        await auditFromContext(c, {
+          action: "session.force_end",
+          entityType: "table_session",
+          entityId: id,
+          summary: "Cierre de sesión forzado con saldo pendiente",
+        });
+      }
       const [table] = await db
         .select({ number: schema.tables.number })
         .from(schema.tables)
@@ -803,8 +988,33 @@ tables.patch(
     } catch (e: any) {
       if (e.message === "ACTIVE_SESSION_NOT_FOUND") {
         return c.json(
-          { success: false, error: { code: "NOT_FOUND", message: "Sesion activa no encontrada" } },
+          { success: false, error: { code: "NOT_FOUND", message: "Sesión activa no encontrada" } },
           404,
+        );
+      }
+      if (e instanceof sessionService.TableHasBalanceError) {
+        return c.json(
+          {
+            success: false,
+            error: {
+              code: "TABLE_HAS_BALANCE",
+              message: "La mesa tiene una cuenta pendiente de cobro",
+              details: { pendingAmount: e.pendingAmount },
+            },
+          },
+          409,
+        );
+      }
+      if (e.message === "SESSION_HAS_OPEN_ORDERS") {
+        return c.json(
+          {
+            success: false,
+            error: {
+              code: "SESSION_HAS_OPEN_ORDERS",
+              message: "La mesa tiene pedidos en curso",
+            },
+          },
+          409,
         );
       }
       throw e;
@@ -854,33 +1064,32 @@ tables.get(
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
 
-    // Prefer an active session; fall back to a pending one (no orders yet).
-    const [session] = await db
-      .select({
-        id: schema.tableSessions.id,
-        customer_name: schema.tableSessions.customer_name,
-        customer_phone: schema.tableSessions.customer_phone,
-        status: schema.tableSessions.status,
-        started_at: schema.tableSessions.started_at,
-      })
-      .from(schema.tableSessions)
-      .where(
-        and(
-          eq(schema.tableSessions.table_id, id),
-          eq(schema.tableSessions.branch_id, tenant.branchId),
-          eq(schema.tableSessions.organization_id, tenant.organizationId),
-          inArray(schema.tableSessions.status, ["active", "pending"]),
-        ),
-      )
-      .orderBy(desc(schema.tableSessions.started_at))
-      .limit(1);
+    // TODAS las visitas vivas de la mesa, no solo la más reciente.
+    //
+    // Aquí estaba el desencuentro que dejaba al mozo con la razón contra la
+    // pantalla: este endpoint cogía UNA sesión (la de `started_at` más alto,
+    // que muchas veces es una solicitud de ingreso pendiente y sin pedidos)
+    // mientras que el guard de «Liberar» suma las órdenes de TODAS las
+    // sesiones vivas de la mesa. Resultado: la pantalla decía "no debe nada" y
+    // liberar respondía 409 con un saldo salido de la nada. Ahora ambos parten
+    // del mismo conjunto de filas, por construcción.
+    const sessions = await sessionService.getLiveTableSessions(db, {
+      tableId: id,
+      branchId: tenant.branchId,
+      organizationId: tenant.organizationId,
+    });
 
-    if (!session) {
+    if (sessions.length === 0) {
       return c.json({
         success: true,
         data: { session: null, orders: [], totals: { total: 0, total_paid: 0, remaining: 0 } },
       });
     }
+
+    // La visita principal (activa antes que pendiente) es la que se muestra en
+    // la cabecera del diálogo; el dinero, en cambio, es el de todas.
+    const session = sessions[0];
+    const sessionIds = sessions.map((s) => s.id);
 
     const orders = await db
       .select({
@@ -890,14 +1099,31 @@ tables.get(
         total: schema.orders.total,
         subtotal: schema.orders.subtotal,
         created_at: schema.orders.created_at,
-        total_paid: sql<number>`COALESCE((SELECT SUM(amount)::bigint FROM payments WHERE payments.order_id = ${schema.orders.id} AND payments.status = 'completed'), 0)::int`,
+        // Predicado canónico de "cobro real": completado Y no anulado. Sin el
+        // `voided_at IS NULL` un cobro anulado seguía dando la orden por
+        // pagada aquí, mientras el arqueo y «Liberar» veían la deuda viva.
+        //
+        // OJO con la correlación: la subconsulta va con alias explícito (`p`) y
+        // `orders.id` cualificado. La versión anterior interpolaba la columna
+        // con `${schema.orders.id}`, que drizzle renderiza SIN cualificar
+        // (`"id"` a secas); dentro del subselect eso resolvía a `payments.id`,
+        // así que la condición nunca se cumplía y `total_paid` salía SIEMPRE 0.
+        // Efecto en sala: el diálogo daba por impagada una mesa ya cobrada y el
+        // cierre automático al llegar el saldo a cero no ocurría jamás.
+        total_paid: sql<number>`COALESCE((
+          SELECT SUM(p.amount)::bigint
+          FROM payments p
+          WHERE p.order_id = orders.id
+            AND p.status = 'completed'
+            AND p.voided_at IS NULL
+        ), 0)::int`,
       })
       .from(schema.orders)
       .where(
         and(
-          eq(schema.orders.table_session_id, session.id),
+          inArray(schema.orders.table_session_id, sessionIds),
           eq(schema.orders.branch_id, tenant.branchId),
-          sql`${schema.orders.status} != 'cancelled'`,
+          ne(schema.orders.status, "cancelled"),
         ),
       )
       .orderBy(desc(schema.orders.created_at));
@@ -912,6 +1138,12 @@ tables.get(
             quantity: schema.orderItems.quantity,
             total: schema.orderItems.total,
             paid_at: schema.orderItems.paid_at,
+            // Sin el estado, el diálogo de cobro por ítems ofrecía seleccionar
+            // una línea ya anulada ("86" de cocina) y el cobro moría con un 400
+            // incomprensible con el cliente delante. Ahora la UI puede tacharla
+            // y excluirla del total.
+            status: schema.orderItems.status,
+            cancel_reason: schema.orderItems.cancel_reason,
           })
           .from(schema.orderItems)
           .where(inArray(schema.orderItems.order_id, orderIds))
@@ -941,14 +1173,17 @@ tables.get(
       };
     });
 
-    const totals = ordersWithDetail.reduce(
-      (acc, o) => ({
-        total: acc.total + o.total,
-        total_paid: acc.total_paid + o.total_paid,
-        remaining: acc.remaining + o.remaining,
-      }),
-      { total: 0, total_paid: 0, remaining: 0 },
-    );
+    // `remaining` se calcula igual que en `computeOutstanding` (facturado menos
+    // cobrado, con suelo en 0 sobre el TOTAL, no orden a orden): es la misma
+    // cifra que decide si «Liberar» pasa o devuelve 409, así que la pantalla no
+    // puede sacar otra. Todo en céntimos.
+    const billed = ordersWithDetail.reduce((sum, o) => sum + o.total, 0);
+    const paid = ordersWithDetail.reduce((sum, o) => sum + o.total_paid, 0);
+    const totals = {
+      total: billed,
+      total_paid: paid,
+      remaining: Math.max(0, billed - paid),
+    };
 
     return c.json({ success: true, data: { session, orders: ordersWithDetail, totals } });
   },
@@ -957,6 +1192,11 @@ tables.get(
 // POST /:id/free - Free the table for the next customer (the robust "Liberar").
 // Closes any active/pending session (clearing orphans), finalizes open orders,
 // and sets the table available. See sessionService.freeTable for the rationale.
+//
+// Guarda de saldo: si la visita tiene cuenta pendiente devuelve 409
+// TABLE_HAS_BALANCE con el importe. Liberar sin cobrar convierte un impago en
+// venta cerrada (con puntos e inventario ya descontados), así que perdonar el
+// saldo exige `?force=true` + permiso `payments:void` y deja traza de auditoría.
 tables.post(
   "/:id/free",
   requirePermission("tables:update"),
@@ -964,6 +1204,7 @@ tables.post(
   async (c) => {
     const { id } = c.req.valid("param");
     const tenant = c.get("tenant") as any;
+    const force = c.req.query("force") === "true";
 
     const [table] = await db
       .select({ id: schema.tables.id, number: schema.tables.number })
@@ -984,11 +1225,71 @@ tables.post(
       );
     }
 
-    const { completedOrders } = await sessionService.freeTable({
-      tableId: id,
-      branchId: tenant.branchId,
-      organizationId: tenant.organizationId,
-    });
+    // Perdonar deuda es, en la práctica, anular un cobro: se pide el mismo permiso.
+    if (force && !callerHasPermission(c, "payments:void")) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "FORBIDDEN",
+            message: "Necesitas permiso para liberar una mesa con saldo pendiente",
+          },
+        },
+        403,
+      );
+    }
+
+    let result;
+    try {
+      result = await sessionService.freeTable({
+        tableId: id,
+        branchId: tenant.branchId,
+        organizationId: tenant.organizationId,
+        force,
+      });
+    } catch (e: any) {
+      if (e instanceof sessionService.TableHasBalanceError) {
+        return c.json(
+          {
+            success: false,
+            error: {
+              code: "TABLE_HAS_BALANCE",
+              message: `La mesa ${table.number} tiene un saldo pendiente de S/ ${(e.pendingAmount / 100).toFixed(2)}`,
+              // En céntimos, como todo el dinero de la API.
+              pendingAmount: e.pendingAmount,
+            },
+          },
+          409,
+        );
+      }
+      if (e?.message === "TABLE_NOT_FOUND") {
+        return c.json(
+          { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+          404,
+        );
+      }
+      throw e;
+    }
+
+    const { completedOrders } = result;
+
+    if (force) {
+      await auditFromContext(c, {
+        action: "table.free",
+        entityType: "table",
+        entityId: id,
+        summary:
+          result.pendingAmount > 0
+            ? `Mesa ${table.number} liberada perdonando ${auditMoney(result.pendingAmount)} sin cobrar`
+            : `Mesa ${table.number} liberada de forma forzada (no quedaba nada por cobrar)`,
+        after: {
+          forgiven_amount: result.pendingAmount,
+          billed: result.billed,
+          paid: result.paid,
+          completed_orders: completedOrders.length,
+        },
+      });
+    }
 
     // Run completion side effects (loyalty + inventory) outside the tx. Each is
     // idempotent and best-effort, so this never blocks freeing the table.
@@ -1014,11 +1315,210 @@ tables.post(
       payload: { tableId: id, tableNumber: table.number },
       timestamp: Date.now(),
     });
+    // Cada comensal que siguiera conectado a una de las sesiones cerradas tiene
+    // que enterarse: si no, su teléfono se queda mostrando una cuenta viva que
+    // ya no existe y su siguiente pedido muere con SESSION_ENDED sin explicación.
+    for (const sessionId of result.closedSessionIds) {
+      await realtime.publish(`session:${sessionId}`, {
+        type: "session:ended",
+        payload: { sessionId, tableId: id, tableNumber: table.number },
+        timestamp: Date.now(),
+      });
+    }
 
     return c.json({
       success: true,
-      data: { tableId: id, completedOrders: completedOrders.length },
+      data: {
+        tableId: id,
+        completedOrders: completedOrders.length,
+        forgivenAmount: result.pendingAmount,
+      },
     });
+  },
+);
+
+// POST /:id/session/move - Mueve la cuenta abierta a otra mesa libre.
+// "Los de la 5 se pasan a la 8": el servicio continúa con la misma sesión, el
+// mismo token de comensal y los mismos importes, solo cambia dónde están
+// sentados. Sin esto, la única salida era cerrar y volver a levantar la cuenta.
+tables.post(
+  "/:id/session/move",
+  requirePermission("tables:update"),
+  zValidator("param", idParamSchema),
+  zValidator("json", moveSessionSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { targetTableId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    let result;
+    try {
+      result = await sessionService.moveSession({
+        tableId: id,
+        targetTableId,
+        branchId: tenant.branchId,
+        organizationId: tenant.organizationId,
+      });
+    } catch (e: any) {
+      if (e instanceof sessionService.SessionTransferError) {
+        return c.json(
+          { success: false, error: { code: e.code, message: e.message } },
+          TRANSFER_ERROR_STATUS[e.code],
+        );
+      }
+      throw e;
+    }
+
+    await auditFromContext(c, {
+      action: "table.move",
+      entityType: "table_session",
+      entityId: result.sessionId,
+      summary: `Cuenta movida de la mesa ${result.source.number} a la mesa ${result.target.number} (${result.movedOrders} pedidos)`,
+      before: { tableId: result.source.id, tableNumber: result.source.number },
+      after: {
+        tableId: result.target.id,
+        tableNumber: result.target.number,
+        orders: result.movedOrders,
+      },
+    });
+
+    const payload = {
+      sessionId: result.sessionId,
+      fromTableId: result.source.id,
+      fromTableNumber: result.source.number,
+      toTableId: result.target.id,
+      toTableNumber: result.target.number,
+      movedOrders: result.movedOrders,
+    };
+
+    // OJO: `payload` NO lleva el token renovado. Al canal de la sede lo escucha
+    // todo el staff; el token de comensal solo viaja por el canal privado de la
+    // propia sesión, al que únicamente entra el dispositivo de ese comensal.
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "session:moved",
+      payload,
+      timestamp: Date.now(),
+    });
+    // La mesa origen queda libre y la destino ocupada: el plano tiene que
+    // reflejarlo sin esperar a un refresco manual.
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "table:status",
+      payload: { tableId: result.source.id, number: result.source.number, status: "available" },
+      timestamp: Date.now(),
+    });
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "table:status",
+      payload: { tableId: result.target.id, number: result.target.number, status: "occupied" },
+      timestamp: Date.now(),
+    });
+    // El dispositivo del comensal sigue conectado a su sesión: se le avisa del
+    // cambio de mesa para que su pantalla no siga diciendo "Mesa 5" y, sobre
+    // todo, para entregarle el token renovado. El JWT anterior iba atado a la
+    // mesa vieja y deja de validar en el instante del movimiento.
+    await realtime.publish(`session:${result.sessionId}`, {
+      type: "session:moved",
+      payload: { ...payload, token: result.token },
+      timestamp: Date.now(),
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        session: result.session,
+        sessionId: result.sessionId,
+        // El mozo puede regenerar el enlace del comensal con este token si su
+        // teléfono no estaba conectado por realtime cuando se movió la cuenta.
+        token: result.token,
+        movedOrders: result.movedOrders,
+        source: result.source,
+        target: result.target,
+      },
+    });
+  },
+);
+
+// POST /:id/session/merge - Junta las cuentas de varias mesas en esta.
+// El grupo que llegó en tres mesas separadas pide "una sola cuenta": se
+// reasignan los pedidos a la sesión de esta mesa, se cierran las sesiones
+// origen y esas mesas quedan libres. Ningún importe se recalcula.
+tables.post(
+  "/:id/session/merge",
+  requirePermission("tables:update"),
+  zValidator("param", idParamSchema),
+  zValidator("json", mergeSessionsSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { sourceTableIds } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    let result;
+    try {
+      result = await sessionService.mergeSessions({
+        tableId: id,
+        sourceTableIds,
+        branchId: tenant.branchId,
+        organizationId: tenant.organizationId,
+      });
+    } catch (e: any) {
+      if (e instanceof sessionService.SessionTransferError) {
+        return c.json(
+          { success: false, error: { code: e.code, message: e.message } },
+          TRANSFER_ERROR_STATUS[e.code],
+        );
+      }
+      throw e;
+    }
+
+    const mergedNumbers = result.merged.map((m) => m.tableNumber).join(", ");
+
+    await auditFromContext(c, {
+      action: "table.merge",
+      entityType: "table_session",
+      entityId: result.targetSessionId,
+      summary: `Cuentas de las mesas ${mergedNumbers} juntadas en la mesa ${result.target.number}`,
+      before: { sources: result.merged },
+      after: {
+        tableId: result.target.id,
+        tableNumber: result.target.number,
+        sessionId: result.targetSessionId,
+        totalOrders: result.totalOrders,
+      },
+    });
+
+    const payload = {
+      targetSessionId: result.targetSessionId,
+      targetTableId: result.target.id,
+      targetTableNumber: result.target.number,
+      merged: result.merged,
+      totalOrders: result.totalOrders,
+    };
+
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "session:merged",
+      payload,
+      timestamp: Date.now(),
+    });
+    for (const source of result.merged) {
+      await realtime.publish(`branch:${tenant.branchId}`, {
+        type: "table:status",
+        payload: { tableId: source.tableId, number: source.tableNumber, status: "available" },
+        timestamp: Date.now(),
+      });
+      // Las sesiones origen quedan cerradas: sus comensales deben saber que su
+      // cuenta ya no vive en su mesa.
+      await realtime.publish(`session:${source.sessionId}`, {
+        type: "session:merged",
+        payload,
+        timestamp: Date.now(),
+      });
+    }
+    await realtime.publish(`branch:${tenant.branchId}`, {
+      type: "table:status",
+      payload: { tableId: result.target.id, number: result.target.number, status: "occupied" },
+      timestamp: Date.now(),
+    });
+
+    return c.json({ success: true, data: result });
   },
 );
 
@@ -1198,6 +1698,62 @@ tables.delete(
     }
 
     return c.json({ success: true, data: deleted });
+  },
+);
+
+// GET /:id - Detalle de una mesa (incluye `short_code` y el slug de la sede, que
+// es lo que la UI necesita para imprimir el cartel: QR + código dictable).
+//
+// Se registra AL FINAL a propósito: Hono resuelve por orden de registro y este
+// patrón comodín taparía a `/sessions`, `/sessions/pending` y `/my-assignments`
+// si estuviera antes.
+tables.get(
+  "/:id",
+  requirePermission("tables:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    const [table] = await db
+      .select({
+        id: schema.tables.id,
+        branch_id: schema.tables.branch_id,
+        organization_id: schema.tables.organization_id,
+        space_id: schema.tables.space_id,
+        number: schema.tables.number,
+        capacity: schema.tables.capacity,
+        qr_code: schema.tables.qr_code,
+        short_code: schema.tables.short_code,
+        status: schema.tables.status,
+        position_x: schema.tables.position_x,
+        position_y: schema.tables.position_y,
+        created_at: schema.tables.created_at,
+      })
+      .from(schema.tables)
+      .where(
+        and(
+          eq(schema.tables.id, id),
+          eq(schema.tables.branch_id, tenant.branchId),
+          eq(schema.tables.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!table) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Mesa no encontrada" } },
+        404,
+      );
+    }
+
+    const [branch] = await db
+      .select({ slug: schema.branches.slug })
+      .from(schema.branches)
+      .where(eq(schema.branches.id, tenant.branchId))
+      .limit(1);
+
+    return c.json({ success: true, data: { ...table, branch_slug: branch?.slug || "" } });
   },
 );
 

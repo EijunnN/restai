@@ -32,6 +32,12 @@ import { uploads } from "./routes/uploads.js";
 import { coupons } from "./routes/coupons.js";
 import { campaigns } from "./routes/campaigns.js";
 import { referrals } from "./routes/referrals.js";
+import { cash } from "./routes/cash.js";
+import { serviceRequests } from "./routes/service-requests.js";
+import { voice } from "./routes/voice.js";
+// `audit` es también el nombre del helper de escritura (lib/audit.ts); se
+// renombra al importar la RUTA para que no se confundan al leer el montaje.
+import { audit as auditRoute } from "./routes/audit.js";
 
 const CORS_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",")
@@ -60,9 +66,26 @@ app.use(
 app.use("*", secureHeaders());
 app.use("*", logger());
 app.onError(errorHandler);
-app.use("*", rateLimiter(100, 60_000, "global"));
+// Topes de peticiones.
+//
+// Estos números son los ANÓNIMOS, que se cuentan POR IP — y un restaurante
+// entero (personal y comensales) sale por una sola IP pública. Los de antes
+// (100 global / 30 comensal) se agotaban solos: la pantalla de espera del
+// comensal sondea su estado cada 5 s SIN token, así que tres personas
+// esperando aprobación consumían el cubo de comensal y ocho el global. En hora
+// punta, que es cuando no puede fallar, el local se bloqueaba a sí mismo.
+//
+// Las peticiones AUTENTICADAS no usan la IP: el middleware las cuenta por
+// identidad (usuario o sesión de comensal), con un tope mayor. Ver
+// `rateLimiter` y las variables RATE_LIMIT_<PREFIJO>_ANON_MAX /
+// RATE_LIMIT_<PREFIJO>_USER_MAX / RATE_LIMIT_USER_FACTOR para ajustarlo sin
+// tocar código.
+//
+// `auth` se queda deliberadamente bajo: ahí sí importa frenar la fuerza bruta
+// contra el login, y su volumen legítimo es mínimo.
+app.use("*", rateLimiter(200, 60_000, "global"));
 app.use("/api/auth/*", rateLimiter(20, 60_000, "auth"));
-app.use("/api/customer/*", rateLimiter(30, 60_000, "customer"));
+app.use("/api/customer/*", rateLimiter(150, 60_000, "customer"));
 
 // Root: índice informativo de la API (evita el 404 "pelado" en /).
 app.get("/", (c) =>
@@ -78,6 +101,9 @@ app.get("/", (c) =>
 app.route("/health", health);
 app.route("/api/auth", auth);
 app.route("/api/customer", customer);
+// El mesero por voz: `/config` es público (dice si la función existe) y
+// `/session` exige token de comensal con sesión de mesa activa.
+app.route("/api/voice", voice);
 
 // Protected routes (auth middleware applied within each route module)
 app.route("/api/orgs", orgs);
@@ -100,6 +126,9 @@ app.route("/api/uploads", uploads);
 app.route("/api/coupons", coupons);
 app.route("/api/campaigns", campaigns);
 app.route("/api/referrals", referrals);
+app.route("/api/cash", cash);
+app.route("/api/service-requests", serviceRequests);
+app.route("/api/audit", auditRoute);
 
 // 404 en JSON consistente con el resto de la API.
 app.notFound((c) =>

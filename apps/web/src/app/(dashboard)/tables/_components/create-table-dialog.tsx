@@ -55,7 +55,7 @@ export function CreateTableDialog({ open, onOpenChange, spaces }: CreateTableDia
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="space-y-2">
-            <Label htmlFor="table-number">Numero de mesa</Label>
+            <Label htmlFor="table-number">Número de mesa</Label>
             <Input
               id="table-number"
               type="number"

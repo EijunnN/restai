@@ -25,16 +25,16 @@ export function PasswordDialog({ open, onOpenChange, member }: PasswordDialogPro
 
   const handleChange = async () => {
     if (!member || newPassword.length < 8) {
-      toast.error("La contrasena debe tener al menos 8 caracteres");
+      toast.error("La contraseña debe tener al menos 8 caracteres");
       return;
     }
     try {
       await changePassword.mutateAsync({ id: member.id, password: newPassword });
-      toast.success(`Contrasena de ${member.name} actualizada`);
+      toast.success(`Contraseña de ${member.name} actualizada`);
       onOpenChange(false);
       setNewPassword("");
     } catch (err: any) {
-      toast.error(err.message || "Error al cambiar contrasena");
+      toast.error(err.message || "Error al cambiar contraseña");
     }
   };
 
@@ -42,16 +42,16 @@ export function PasswordDialog({ open, onOpenChange, member }: PasswordDialogPro
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Cambiar Contrasena</DialogTitle>
+          <DialogTitle>Cambiar Contraseña</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           {member && (
             <p className="text-sm text-muted-foreground">
-              Cambiar contrasena de <span className="font-medium text-foreground">{member.name}</span>
+              Cambiar contraseña de <span className="font-medium text-foreground">{member.name}</span>
             </p>
           )}
           <div className="space-y-2">
-            <Label>Nueva Contrasena</Label>
+            <Label>Nueva Contraseña</Label>
             <Input
               type="password"
               value={newPassword}
@@ -67,7 +67,7 @@ export function PasswordDialog({ open, onOpenChange, member }: PasswordDialogPro
             onClick={handleChange}
             disabled={changePassword.isPending || newPassword.length < 8}
           >
-            {changePassword.isPending ? "Cambiando..." : "Cambiar Contrasena"}
+            {changePassword.isPending ? "Cambiando..." : "Cambiar Contraseña"}
           </Button>
         </div>
       </DialogContent>

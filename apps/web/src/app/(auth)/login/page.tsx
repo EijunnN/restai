@@ -30,7 +30,7 @@ export default function LoginPage() {
       setLoading(true);
       await login(data.email, data.password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error al iniciar sesion");
+      setError(err instanceof Error ? err.message : "Error al iniciar sesión");
     } finally {
       setLoading(false);
     }
@@ -43,7 +43,7 @@ export default function LoginPage() {
           <span className="text-2xl font-bold text-primary-foreground">R</span>
         </div>
         <CardTitle className="text-2xl">RestAI</CardTitle>
-        <CardDescription>Inicia sesion en tu cuenta</CardDescription>
+        <CardDescription>Inicia sesión en tu cuenta</CardDescription>
       </CardHeader>
       <form onSubmit={handleSubmit(onSubmit)}>
         <CardContent className="space-y-4">
@@ -65,7 +65,7 @@ export default function LoginPage() {
             )}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="password">Contrasena</Label>
+            <Label htmlFor="password">Contraseña</Label>
             <Input
               id="password"
               type="password"
@@ -81,12 +81,12 @@ export default function LoginPage() {
         </CardContent>
         <CardFooter className="flex flex-col gap-4">
           <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Ingresando..." : "Iniciar Sesion"}
+            {loading ? "Ingresando..." : "Iniciar sesión"}
           </Button>
           <p className="text-sm text-muted-foreground">
-            No tienes cuenta?{" "}
+            ¿No tienes cuenta?{" "}
             <Link href="/register" className="text-primary hover:underline">
-              Registrate
+              Regístrate
             </Link>
           </p>
         </CardFooter>

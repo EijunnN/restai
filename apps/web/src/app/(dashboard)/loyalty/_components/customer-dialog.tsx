@@ -116,7 +116,7 @@ export function CustomerDialog({
             <Input id="cust-name" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} required />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="cust-phone">Telefono</Label>
+            <Label htmlFor="cust-phone">Teléfono</Label>
             <Input id="cust-phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} />
           </div>
           <div className="space-y-2">

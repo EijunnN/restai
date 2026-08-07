@@ -454,7 +454,7 @@ export default function CustomerDetailPage({
                     Puntos
                   </th>
                   <th className="text-left p-3 text-sm font-medium text-muted-foreground hidden sm:table-cell">
-                    Descripcion
+                    Descripción
                   </th>
                 </tr>
               </thead>

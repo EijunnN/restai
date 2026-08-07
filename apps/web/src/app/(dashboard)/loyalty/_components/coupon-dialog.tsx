@@ -257,7 +257,7 @@ export function CreateCouponDialog({
         <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
           {/* Code */}
           <div className="space-y-2">
-            <Label htmlFor="cpn-code">Codigo del cupon</Label>
+            <Label htmlFor="cpn-code">Código del cupon</Label>
             {isEdit ? (
               <Input id="cpn-code" value={form.code} disabled readOnly />
             ) : (
@@ -281,8 +281,8 @@ export function CreateCouponDialog({
 
           {/* Description */}
           <div className="space-y-2">
-            <Label htmlFor="cpn-desc">Descripcion</Label>
-            <Input id="cpn-desc" value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} placeholder="Descripcion opcional" />
+            <Label htmlFor="cpn-desc">Descripción</Label>
+            <Input id="cpn-desc" value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} placeholder="Descripción opcional" />
           </div>
 
           {/* Type */}
@@ -387,7 +387,7 @@ export function CreateCouponDialog({
           {form.type === "category_discount" && (
             <>
               <div className="space-y-2">
-                <Label>Categoria *</Label>
+                <Label>Categoría *</Label>
                 <Select value={form.categoryId || "none"} onValueChange={(v) => setForm((p) => ({ ...p, categoryId: v === "none" ? "" : v }))}>
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccionar categoria..." />

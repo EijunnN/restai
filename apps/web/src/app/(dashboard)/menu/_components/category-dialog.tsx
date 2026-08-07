@@ -48,14 +48,14 @@ export function CategoryDialog({
           description: description.trim() || undefined,
           imageUrl: imageUrl || undefined,
         });
-        toast.success("Categoria actualizada");
+        toast.success("Categoría actualizada");
       } else {
         await createCat.mutateAsync({
           name: name.trim(),
           description: description.trim() || undefined,
           imageUrl: imageUrl || undefined,
         });
-        toast.success("Categoria creada");
+        toast.success("Categoría creada");
       }
       onOpenChange(false);
     } catch (err: any) {
@@ -68,7 +68,7 @@ export function CategoryDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {isEdit ? "Editar Categoria" : "Nueva Categoria"}
+            {isEdit ? "Editar Categoría" : "Nueva Categoría"}
           </DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -83,12 +83,12 @@ export function CategoryDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="cat-desc">Descripcion</Label>
+            <Label htmlFor="cat-desc">Descripción</Label>
             <Input
               id="cat-desc"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Descripcion opcional"
+              placeholder="Descripción opcional"
             />
           </div>
           <div className="space-y-2">

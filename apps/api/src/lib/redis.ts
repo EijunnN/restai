@@ -9,10 +9,24 @@ const isWorkers =
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
+/**
+ * Reconexión SIN tope de intentos.
+ *
+ * Antes se devolvía `null` a partir del intento 21, que en ioredis significa
+ * "no reintentes nunca más": una caída de Redis de poco más de un minuto (la
+ * suma de los 20 backoffs) dejaba el proceso desconectado PARA SIEMPRE aunque
+ * Redis volviese. El daño no era el rate limiter —que degrada solo a memoria—
+ * sino el pub/sub del WebSocket: con varias réplicas, los pedidos publicados en
+ * la instancia A dejaban de llegar a la pantalla de cocina conectada a la B, en
+ * silencio y sin que nada lo delatara.
+ *
+ * El backoff acotado (máx. 5 s) ya evita el martilleo; no hace falta rendirse.
+ * El log se emite de forma espaciada para no inundar la salida durante una
+ * caída larga.
+ */
 const retryStrategy = (times: number) => {
-  if (times > 20) {
-    logger.error("Redis max retry attempts reached");
-    return null;
+  if (times === 1 || times % 20 === 0) {
+    logger.warn("Redis reconnecting", { attempts: times });
   }
   return Math.min(times * 200, 5000);
 };
@@ -72,12 +86,33 @@ export const createSubscriber = (): Redis => {
   return sub;
 };
 
-export async function getRedisStatus(): Promise<"ok" | "error"> {
+/** ¿Este runtime puede hablar con Redis? (Workers no: no hay sockets TCP). */
+export const redisSupported = !isWorkers;
+
+/**
+ * Sonda activa de Redis para /health.
+ *
+ * Acotada en el tiempo a propósito: /health tiene que responder aunque Redis
+ * esté caído y la conexión siga en su ciclo de reconexión, porque con
+ * `lazyConnect` el PING encolado esperaría al próximo intento con éxito.
+ */
+export async function getRedisStatus(timeoutMs = 1500): Promise<"ok" | "error"> {
   if (isWorkers) return "error";
+  // El temporizador se limpia siempre: /health se sondea cada 10 s desde el
+  // healthcheck del contenedor y no tiene sentido dejar timers colgando cuando
+  // el PING responde de inmediato (que es el caso normal).
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const pong = await _redis.ping();
+    const pong = await Promise.race([
+      _redis.ping(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Redis ping timeout")), timeoutMs);
+      }),
+    ]);
     return pong === "PONG" ? "ok" : "error";
   } catch {
     return "error";
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

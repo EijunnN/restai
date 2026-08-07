@@ -9,6 +9,37 @@ import { completeReferralForFirstOrder } from "./referral.service.js";
 // one place (and the idempotency guard below references the same constant).
 const BIRTHDAY_BONUS_POINTS = 50;
 
+/**
+ * Nombre del índice único parcial que respalda la idempotencia de los puntos
+ * (migración 0015): un solo movimiento 'earned' por pedido.
+ */
+const EARNED_UNIQUE_INDEX = "uq_loyalty_tx_order_earned";
+
+/**
+ * ¿Es una violación de unicidad (SQLSTATE 23505) del índice de puntos otorgados?
+ *
+ * postgres-js expone el SQLSTATE en `.code` y drizzle a veces lo envuelve bajo
+ * `.cause`. El nombre de la restricción llega como `constraint_name` o
+ * `constraint` según el driver; si no llega ninguno se acepta igual, porque el
+ * único insert con restricción única dentro de esa transacción es el de
+ * `loyalty_transactions`.
+ */
+function isEarnedUniqueViolation(err: unknown): boolean {
+  const e = err as Record<string, any> | null;
+  const code = e?.code ?? e?.cause?.code;
+  if (code !== "23505") return false;
+
+  const constraint = String(
+    e?.constraint_name ??
+      e?.constraint ??
+      e?.cause?.constraint_name ??
+      e?.cause?.constraint ??
+      "",
+  );
+
+  return constraint === "" || constraint.includes(EARNED_UNIQUE_INDEX);
+}
+
 // ---------------------------------------------------------------------------
 // enrollCustomer
 // ---------------------------------------------------------------------------
@@ -82,154 +113,200 @@ export async function awardPoints(params: {
 }) {
   const { customerId, orderId, orderTotal, orderNumber, organizationId } = params;
 
-  const result = await db.transaction(async (tx) => {
-    // Idempotency: check if points were already awarded for this order
-    const [existingTx] = await tx
-      .select({ id: schema.loyaltyTransactions.id })
-      .from(schema.loyaltyTransactions)
-      .where(
-        and(
-          eq(schema.loyaltyTransactions.order_id, orderId),
-          eq(schema.loyaltyTransactions.type, "earned"),
-        ),
-      )
-      .limit(1);
+  type AwardOutcome = {
+    result: { pointsEarned: number; newBalance: number; newTotal: number };
+    customerLoyaltyId: string;
+    unlockedReward: { name: string; points_cost: number } | null;
+  } | null;
 
-    if (existingTx) return null;
+  // La idempotencia se apoya en DOS capas, porque un SELECT-y-luego-INSERT sin
+  // candado no la garantiza: dos cobros simultáneos del mismo pedido pasaban los
+  // dos la guarda y otorgaban los puntos dos veces.
+  //
+  //  1. Cerrojo sobre la fila del pedido (`.for("update")`), que serializa
+  //     cualquier otorgamiento concurrente para ese mismo pedido — el mismo
+  //     patrón que usa inventory.service para no descontar el stock dos veces.
+  //  2. El índice único parcial `uq_loyalty_tx_order_earned` (migración 0015),
+  //     que cierra el hueco incluso entre procesos que no compartan cerrojo:
+  //     el segundo INSERT revienta con 23505 y aquí se traduce a "ya otorgados".
+  let result: AwardOutcome;
+  try {
+    result = await db.transaction(async (tx): Promise<AwardOutcome> => {
+      // Cerrojo de serialización. Acotado a la organización del token, para que
+      // ningún camino pueda otorgar puntos contra un pedido de otro tenant.
+      const [lockedOrder] = await tx
+        .select({ id: schema.orders.id })
+        .from(schema.orders)
+        .where(
+          and(
+            eq(schema.orders.id, orderId),
+            eq(schema.orders.organization_id, organizationId),
+          ),
+        )
+        .limit(1)
+        .for("update");
 
-    // Find customer's loyalty enrollment with program info + tier multiplier (inside tx).
-    // Joins gate on the ACTIVE program for this organization, so points always
-    // target the customer's enrollment in the org's active program.
-    const [enrollment] = await tx
-      .select({
-        id: schema.customerLoyalty.id,
-        points_balance: schema.customerLoyalty.points_balance,
-        total_points_earned: schema.customerLoyalty.total_points_earned,
-        tier_id: schema.customerLoyalty.tier_id,
-        program_id: schema.customerLoyalty.program_id,
-        points_per_currency_unit: schema.loyaltyPrograms.points_per_currency_unit,
-        points_expire_after_days: schema.loyaltyPrograms.points_expire_after_days,
-        multiplier: schema.loyaltyTiers.multiplier,
-      })
-      .from(schema.customerLoyalty)
-      .innerJoin(
-        schema.loyaltyPrograms,
-        and(
-          eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
-          eq(schema.loyaltyPrograms.organization_id, organizationId),
-          eq(schema.loyaltyPrograms.is_active, true),
-        ),
-      )
-      .leftJoin(
-        schema.loyaltyTiers,
-        eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
-      )
-      .where(eq(schema.customerLoyalty.customer_id, customerId))
-      .limit(1);
+      if (!lockedOrder) return null;
 
-    if (!enrollment) return null;
+      // Guarda rápida: con el cerrojo tomado esta lectura ya es autoritativa.
+      const [existingTx] = await tx
+        .select({ id: schema.loyaltyTransactions.id })
+        .from(schema.loyaltyTransactions)
+        .where(
+          and(
+            eq(schema.loyaltyTransactions.order_id, orderId),
+            eq(schema.loyaltyTransactions.type, "earned"),
+          ),
+        )
+        .limit(1);
 
-    // Calculate base points with tier multiplier
-    const multiplier = enrollment.multiplier ?? 100;
-    const basePoints = Math.floor(
-      Math.floor(orderTotal / 100) * enrollment.points_per_currency_unit * multiplier / 100,
-    );
+      if (existingTx) return null;
 
-    // Apply any active earning campaign (extra multiplier + flat bonus) matching
-    // now, the customer's tier, and the day/time window.
-    const boost = await getActiveCampaignBoost({
-      organizationId,
-      tierId: enrollment.tier_id,
-      at: new Date(),
-    });
-    const pointsEarned = Math.floor((basePoints * boost.multiplier) / 100) + boost.bonusPoints;
+      // Find customer's loyalty enrollment with program info + tier multiplier (inside tx).
+      // Joins gate on the ACTIVE program for this organization, so points always
+      // target the customer's enrollment in the org's active program.
+      const [enrollment] = await tx
+        .select({
+          id: schema.customerLoyalty.id,
+          points_balance: schema.customerLoyalty.points_balance,
+          total_points_earned: schema.customerLoyalty.total_points_earned,
+          tier_id: schema.customerLoyalty.tier_id,
+          program_id: schema.customerLoyalty.program_id,
+          points_per_currency_unit: schema.loyaltyPrograms.points_per_currency_unit,
+          points_expire_after_days: schema.loyaltyPrograms.points_expire_after_days,
+          multiplier: schema.loyaltyTiers.multiplier,
+        })
+        .from(schema.customerLoyalty)
+        .innerJoin(
+          schema.loyaltyPrograms,
+          and(
+            eq(schema.customerLoyalty.program_id, schema.loyaltyPrograms.id),
+            eq(schema.loyaltyPrograms.organization_id, organizationId),
+            eq(schema.loyaltyPrograms.is_active, true),
+          ),
+        )
+        .leftJoin(
+          schema.loyaltyTiers,
+          eq(schema.customerLoyalty.tier_id, schema.loyaltyTiers.id),
+        )
+        .where(eq(schema.customerLoyalty.customer_id, customerId))
+        .limit(1);
 
-    if (pointsEarned <= 0) return null;
+      if (!enrollment) return null;
 
-    // Compute expiry stamp for the earned row: now + N days when the program has
-    // an expiry policy; null = never expires.
-    let expiresAt: Date | null = null;
-    if (
-      enrollment.points_expire_after_days != null &&
-      enrollment.points_expire_after_days > 0
-    ) {
-      expiresAt = new Date(
-        Date.now() + enrollment.points_expire_after_days * 24 * 60 * 60 * 1000,
+      // Calculate base points with tier multiplier
+      const multiplier = enrollment.multiplier ?? 100;
+      const basePoints = Math.floor(
+        Math.floor(orderTotal / 100) * enrollment.points_per_currency_unit * multiplier / 100,
       );
-    }
 
-    // Atomic balance update
-    await tx
-      .update(schema.customerLoyalty)
-      .set({
-        points_balance: sql`${schema.customerLoyalty.points_balance} + ${pointsEarned}`,
-        total_points_earned: sql`${schema.customerLoyalty.total_points_earned} + ${pointsEarned}`,
-      })
-      .where(eq(schema.customerLoyalty.id, enrollment.id));
+      // Apply any active earning campaign (extra multiplier + flat bonus) matching
+      // now, the customer's tier, and the day/time window.
+      const boost = await getActiveCampaignBoost({
+        organizationId,
+        tierId: enrollment.tier_id,
+        at: new Date(),
+      });
+      const pointsEarned = Math.floor((basePoints * boost.multiplier) / 100) + boost.bonusPoints;
 
-    await tx.insert(schema.loyaltyTransactions).values({
-      customer_loyalty_id: enrollment.id,
-      order_id: orderId,
-      points: pointsEarned,
-      type: "earned",
-      description: `Orden #${orderNumber} completada`,
-      expires_at: expiresAt,
-    });
+      if (pointsEarned <= 0) return null;
 
-    // Re-read totals for tier check
-    const newTotal = enrollment.total_points_earned + pointsEarned;
-    const newBalance = enrollment.points_balance + pointsEarned;
-    const previousBalance = enrollment.points_balance;
+      // Compute expiry stamp for the earned row: now + N days when the program has
+      // an expiry policy; null = never expires.
+      let expiresAt: Date | null = null;
+      if (
+        enrollment.points_expire_after_days != null &&
+        enrollment.points_expire_after_days > 0
+      ) {
+        expiresAt = new Date(
+          Date.now() + enrollment.points_expire_after_days * 24 * 60 * 60 * 1000,
+        );
+      }
 
-    // Check tier upgrade: find the highest tier the customer qualifies for
-    const [nextTier] = await tx
-      .select()
-      .from(schema.loyaltyTiers)
-      .where(
-        and(
-          eq(schema.loyaltyTiers.program_id, enrollment.program_id),
-          gte(sql`${newTotal}`, schema.loyaltyTiers.min_points),
-        ),
-      )
-      .orderBy(desc(schema.loyaltyTiers.min_points))
-      .limit(1);
-
-    if (nextTier && nextTier.id !== enrollment.tier_id) {
+      // Atomic balance update
       await tx
         .update(schema.customerLoyalty)
-        .set({ tier_id: nextTier.id })
+        .set({
+          points_balance: sql`${schema.customerLoyalty.points_balance} + ${pointsEarned}`,
+          total_points_earned: sql`${schema.customerLoyalty.total_points_earned} + ${pointsEarned}`,
+        })
         .where(eq(schema.customerLoyalty.id, enrollment.id));
-    }
 
-    // Find a reward this award newly made affordable (balance crossed its cost):
-    // previousBalance < cost <= newBalance. Cheapest such reward, active + in window.
-    const now = new Date();
-    const [unlockedReward] = await tx
-      .select({
-        name: schema.rewards.name,
-        points_cost: schema.rewards.points_cost,
-      })
-      .from(schema.rewards)
-      .where(
-        and(
-          eq(schema.rewards.program_id, enrollment.program_id),
-          eq(schema.rewards.is_active, true),
-          gte(schema.rewards.points_cost, previousBalance + 1),
-          lte(schema.rewards.points_cost, newBalance),
-          or(isNull(schema.rewards.starts_at), lte(schema.rewards.starts_at, now)),
-          or(isNull(schema.rewards.expires_at), gte(schema.rewards.expires_at, now)),
-          or(isNull(schema.rewards.stock_remaining), gte(schema.rewards.stock_remaining, 1)),
-        ),
-      )
-      .orderBy(schema.rewards.points_cost)
-      .limit(1);
+      await tx.insert(schema.loyaltyTransactions).values({
+        customer_loyalty_id: enrollment.id,
+        order_id: orderId,
+        points: pointsEarned,
+        type: "earned",
+        description: `Orden #${orderNumber} completada`,
+        expires_at: expiresAt,
+      });
 
-    return {
-      result: { pointsEarned, newBalance, newTotal },
-      customerLoyaltyId: enrollment.id,
-      unlockedReward: unlockedReward ?? null,
-    };
-  });
+      // Re-read totals for tier check
+      const newTotal = enrollment.total_points_earned + pointsEarned;
+      const newBalance = enrollment.points_balance + pointsEarned;
+      const previousBalance = enrollment.points_balance;
+
+      // Check tier upgrade: find the highest tier the customer qualifies for
+      const [nextTier] = await tx
+        .select()
+        .from(schema.loyaltyTiers)
+        .where(
+          and(
+            eq(schema.loyaltyTiers.program_id, enrollment.program_id),
+            gte(sql`${newTotal}`, schema.loyaltyTiers.min_points),
+          ),
+        )
+        .orderBy(desc(schema.loyaltyTiers.min_points))
+        .limit(1);
+
+      if (nextTier && nextTier.id !== enrollment.tier_id) {
+        await tx
+          .update(schema.customerLoyalty)
+          .set({ tier_id: nextTier.id })
+          .where(eq(schema.customerLoyalty.id, enrollment.id));
+      }
+
+      // Find a reward this award newly made affordable (balance crossed its cost):
+      // previousBalance < cost <= newBalance. Cheapest such reward, active + in window.
+      const now = new Date();
+      const [unlockedReward] = await tx
+        .select({
+          name: schema.rewards.name,
+          points_cost: schema.rewards.points_cost,
+        })
+        .from(schema.rewards)
+        .where(
+          and(
+            eq(schema.rewards.program_id, enrollment.program_id),
+            eq(schema.rewards.is_active, true),
+            gte(schema.rewards.points_cost, previousBalance + 1),
+            lte(schema.rewards.points_cost, newBalance),
+            or(isNull(schema.rewards.starts_at), lte(schema.rewards.starts_at, now)),
+            or(isNull(schema.rewards.expires_at), gte(schema.rewards.expires_at, now)),
+            or(isNull(schema.rewards.stock_remaining), gte(schema.rewards.stock_remaining, 1)),
+          ),
+        )
+        .orderBy(schema.rewards.points_cost)
+        .limit(1);
+
+      return {
+        result: { pointsEarned, newBalance, newTotal },
+        customerLoyaltyId: enrollment.id,
+        unlockedReward: unlockedReward ?? null,
+      };
+    });
+  } catch (err) {
+    // 23505 sobre `uq_loyalty_tx_order_earned`: otro proceso otorgó los puntos de
+    // este pedido a la vez. La transacción entera queda deshecha (incluido el
+    // UPDATE del saldo), así que el resultado es exactamente el mismo que si la
+    // guarda lo hubiera visto: no se otorga nada y se devuelve null.
+    if (!isEarnedUniqueViolation(err)) throw err;
+    logger.info("Puntos ya otorgados para este pedido (carrera resuelta por el índice único)", {
+      orderId,
+      customerId,
+    });
+    result = null;
+  }
 
   // Complete a pending referral for this customer on their qualifying order.
   // Runs outside the award tx (uses its own), idempotent via the service's

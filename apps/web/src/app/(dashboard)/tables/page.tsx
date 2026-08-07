@@ -1,16 +1,11 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { Button } from "@restai/ui/components/button";
+import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
+import { Button, buttonVariants } from "@restai/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
-import { Badge } from "@restai/ui/components/badge";
 import { Tabs, TabsList, TabsTrigger } from "@restai/ui/components/tabs";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@restai/ui/components/dialog";
 import {
   Plus,
   RefreshCw,
@@ -19,6 +14,7 @@ import {
   Bell,
   LayoutGrid,
   Map as MapIcon,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWebSocket } from "@/hooks/use-websocket";
@@ -28,15 +24,18 @@ import { toast } from "sonner";
 import {
   useTables,
   useUpdateTableStatus,
-  useFreeTable,
   useDeleteTable,
   useSpaces,
   useDeleteSpace,
   usePendingSessions,
   useApproveSession,
   useRejectSession,
+  useMyAssignedTables,
+  type TableRow,
 } from "@/hooks/use-tables";
+import { useServiceRequests } from "@/hooks/use-service-requests";
 import { useBranchSettings } from "@/hooks/use-settings";
+import { hasPermission } from "@/lib/permissions";
 import { PageHeader } from "@/components/page-header";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { FloorPlannerView } from "./_components/floor-planner-view";
@@ -47,16 +46,10 @@ import { CreateSpaceDialog, EditSpaceDialog, SpaceInfoCard } from "./_components
 import { HistoryDialog } from "./_components/history-dialog";
 import { AssignmentDialog } from "./_components/assignment-dialog";
 import { CobrarDialog } from "./_components/cobrar-dialog";
-
-interface TableServiceRequest {
-  id: string;
-  type: "request_bill" | "call_waiter";
-  tableId: string;
-  tableNumber: number;
-  tableSessionId: string;
-  customerName: string;
-  timestamp: number;
-}
+import { FreeTableDialog } from "./_components/free-table-dialog";
+import { SeatCustomerDialog } from "./_components/seat-customer-dialog";
+import { MoveSessionDialog } from "./_components/move-session-dialog";
+import { MergeTablesDialog } from "./_components/merge-tables-dialog";
 
 interface TableServiceRequestIndicator {
   type: "request_bill" | "call_waiter";
@@ -72,103 +65,123 @@ interface PendingSessionRequest {
   table_number: number;
 }
 
+/** Avisos que siguen sin resolverse: son los que pintan la mesa. */
+const OPEN_REQUEST_STATUSES = new Set(["pending", "acknowledged"]);
+
 export default function TablesPage() {
   const [activeTab, setActiveTab] = useState("all");
   const [viewMode, setViewMode] = useState<"grid" | "planner">("grid");
-  const [qrDialog, setQrDialog] = useState<any>(null);
+  const [onlyMine, setOnlyMine] = useState(false);
+  const [qrDialog, setQrDialog] = useState<TableRow | null>(null);
   const [createTableDialog, setCreateTableDialog] = useState(false);
   const [createSpaceDialog, setCreateSpaceDialog] = useState(false);
   const [editSpaceDialog, setEditSpaceDialog] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "table" | "space"; id: string; name: string } | null>(null);
-  const [historyDialog, setHistoryDialog] = useState<any>(null);
-  const [assignDialog, setAssignDialog] = useState<any>(null);
-  const [chargeTable, setChargeTable] = useState<any>(null);
-  const [freeConfirm, setFreeConfirm] = useState<{ id: string; number: number } | null>(null);
+  const [historyDialog, setHistoryDialog] = useState<TableRow | null>(null);
+  const [assignDialog, setAssignDialog] = useState<TableRow | null>(null);
+  const [chargeTable, setChargeTable] = useState<TableRow | null>(null);
+  const [freeTarget, setFreeTarget] = useState<TableRow | null>(null);
+  const [seatTarget, setSeatTarget] = useState<TableRow | null>(null);
+  const [moveTarget, setMoveTarget] = useState<TableRow | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<TableRow | null>(null);
   const [pendingSessions, setPendingSessions] = useState<PendingSessionRequest[]>([]);
-  const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
-  const [requestsDialogOpen, setRequestsDialogOpen] = useState(false);
-  const { accessToken, selectedBranchId } = useAuthStore();
+  const [mutatingSessionId, setMutatingSessionId] = useState<string | null>(null);
+  const { accessToken, selectedBranchId, user } = useAuthStore();
+  const queryClient = useQueryClient();
+
+  // Crear mesas y espacios es configurar el local (`tables:create`): el mozo y
+  // el cajero entran aquí a trabajar la sala, no a montarla. Enseñarles los
+  // botones solo servía para que la API les respondiera 403.
+  const canCreateLayout = hasPermission(user?.role, "tables:create");
+  /** Aprobar o rechazar una solicitud de ingreso exige `tables:update`. */
+  const canOperateTables = hasPermission(user?.role, "tables:update");
 
   // Data hooks
   const { data: spacesData, isLoading: spacesLoading } = useSpaces();
   const { data: tablesData, isLoading: tablesLoading, error, refetch } = useTables();
   const updateTableStatus = useUpdateTableStatus();
-  const freeTable = useFreeTable();
   const deleteTable = useDeleteTable();
   const deleteSpace = useDeleteSpace();
   const { data: pendingData, refetch: refetchPendingSessions } = usePendingSessions();
   const approveSession = useApproveSession();
   const rejectSession = useRejectSession();
   const { data: branchSettingsData } = useBranchSettings();
+  // Los avisos ahora persisten: la mesa sigue marcada aunque el mozo entre a la
+  // pantalla media hora después de que el comensal levantara la mano.
+  const { data: serviceRequestsData } = useServiceRequests();
 
   const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
+  const { data: myAssignedTables } = useMyAssignedTables({ enabled: waiterAssignmentEnabled });
   const spaces: any[] = spacesData ?? [];
-  const allTables: any[] = tablesData?.tables ?? [];
+  const allTables: TableRow[] = tablesData?.tables ?? [];
   const branchSlug: string = tablesData?.branchSlug ?? "";
   const isLoading = spacesLoading || tablesLoading;
   const currentTableIds = useMemo(
-    () => new Set(allTables.map((table: any) => String(table.id))),
+    () => new Set(allTables.map((table) => String(table.id))),
     [allTables]
   );
+
+  const assignedTableIds = useMemo(
+    () => new Set((myAssignedTables ?? []).map((a) => a.table_id)),
+    [myAssignedTables]
+  );
+
+  // El interruptor solo tiene sentido si la sede usa asignación de mozos y este
+  // usuario tiene mesas asignadas; si no, filtraría la sala hasta dejarla vacía.
+  const canFilterMine = waiterAssignmentEnabled && assignedTableIds.size > 0;
+
+  useEffect(() => {
+    if (!canFilterMine && onlyMine) setOnlyMine(false);
+  }, [canFilterMine, onlyMine]);
 
   useEffect(() => {
     setPendingSessions((pendingData ?? []) as PendingSessionRequest[]);
   }, [pendingData]);
 
   const filteredTables = useMemo(() => {
-    if (activeTab === "all") return allTables;
-    if (activeTab === "unassigned") return allTables.filter((t: any) => !t.space_id);
-    return allTables.filter((t: any) => t.space_id === activeTab);
-  }, [allTables, activeTab]);
+    let list = allTables;
+    if (activeTab === "unassigned") list = list.filter((t) => !t.space_id);
+    else if (activeTab !== "all") list = list.filter((t) => t.space_id === activeTab);
+    if (onlyMine && canFilterMine) list = list.filter((t) => assignedTableIds.has(t.id));
+    return list;
+  }, [allTables, activeTab, onlyMine, canFilterMine, assignedTableIds]);
 
   const counts = {
     total: allTables.length,
-    available: allTables.filter((t: any) => t.status === "available").length,
-    occupied: allTables.filter((t: any) => t.status === "occupied").length,
-    reserved: allTables.filter((t: any) => t.status === "reserved").length,
+    available: allTables.filter((t) => t.status === "available").length,
+    occupied: allTables.filter((t) => t.status === "occupied").length,
+    reserved: allTables.filter((t) => t.status === "reserved").length,
   };
 
   const requestByTableId = useMemo<Record<string, TableServiceRequestIndicator>>(() => {
-    const latestByTable = new Map<string, TableServiceRequest>();
-    for (const request of serviceRequests) {
-      const current = latestByTable.get(request.tableId);
-      if (!current || request.timestamp > current.timestamp) {
-        latestByTable.set(request.tableId, request);
-      }
-    }
-
     const result: Record<string, TableServiceRequestIndicator> = {};
-    for (const [tableId, request] of latestByTable.entries()) {
-      result[tableId] = {
+    for (const request of serviceRequestsData ?? []) {
+      if (!request.table_id || !OPEN_REQUEST_STATUSES.has(request.status)) continue;
+      // La lista llega ordenada con los más antiguos primero dentro de cada
+      // grupo: nos quedamos con el primero que veamos, que es el que más espera.
+      if (result[request.table_id]) continue;
+      result[request.table_id] = {
         type: request.type,
-        customerName: request.customerName,
+        customerName:
+          (request as { customer_name?: string | null }).customer_name || "Cliente",
       };
     }
-
     return result;
-  }, [serviceRequests]);
+  }, [serviceRequestsData]);
 
-  const requestSummary = useMemo(() => {
-    const requestBillCount = serviceRequests.filter(
-      (request) => request.type === "request_bill"
-    ).length;
-    const callWaiterCount = serviceRequests.filter(
-      (request) => request.type === "call_waiter"
-    ).length;
-    return {
-      total: serviceRequests.length,
-      requestBillCount,
-      callWaiterCount,
-    };
-  }, [serviceRequests]);
+  const openRequestCount = Object.keys(requestByTableId).length;
 
   const handleWsMessage = useCallback((msg: WsMessage) => {
-    if (msg.type === "auth:success") {
+    // El tipado de WsMessageType aún no incluye los eventos nuevos de sala.
+    const type = msg.type as string;
+
+    if (type === "auth:success") {
       void refetchPendingSessions();
+      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
       return;
     }
 
-    if (msg.type === "session:pending") {
+    if (type === "session:pending") {
       const payload = msg.payload as {
         sessionId: string;
         tableId: string;
@@ -199,53 +212,55 @@ export default function TablesPage() {
       return;
     }
 
-    if (msg.type === "session:approved" || msg.type === "session:rejected") {
+    if (type === "session:approved" || type === "session:rejected") {
       const payload = msg.payload as { sessionId: string };
       setPendingSessions((prev) =>
         prev.filter((session) => session.id !== payload.sessionId)
       );
+      void queryClient.invalidateQueries({ queryKey: ["tables"] });
       return;
     }
 
-    if (msg.type !== "table:request_bill" && msg.type !== "table:call_waiter") {
+    // Mover, juntar, liberar o cambiar el estado de una mesa reordena el plano
+    // entero: se relee en vez de intentar parchear el caché a mano.
+    if (
+      type === "table:status" ||
+      type === "session:started" ||
+      type === "session:ended" ||
+      type === "session:moved" ||
+      type === "session:merged"
+    ) {
+      void queryClient.invalidateQueries({ queryKey: ["tables"] });
+      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
+      return;
+    }
+
+    if (
+      type === "service_request:acknowledged" ||
+      type === "service_request:resolved"
+    ) {
+      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
+      return;
+    }
+
+    if (type !== "table:request_bill" && type !== "table:call_waiter") {
       return;
     }
 
     const payload = msg.payload as {
       tableId: string;
       tableNumber: number;
-      tableSessionId: string;
       customerName?: string;
     };
 
-    const requestType: TableServiceRequest["type"] =
-      msg.type === "table:request_bill" ? "request_bill" : "call_waiter";
-    const requestId = `${payload.tableSessionId}:${requestType}`;
-
-    setServiceRequests((prev) => {
-      if (prev.some((request) => request.id === requestId)) {
-        return prev;
-      }
-      return [
-        {
-          id: requestId,
-          type: requestType,
-          tableId: payload.tableId,
-          tableNumber: payload.tableNumber,
-          tableSessionId: payload.tableSessionId,
-          customerName: payload.customerName || "Cliente",
-          timestamp: msg.timestamp,
-        },
-        ...prev,
-      ].slice(0, 25);
-    });
+    void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
 
     toast.info(
-      requestType === "request_bill"
+      type === "table:request_bill"
         ? `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita la cuenta`
         : `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita mozo`
     );
-  }, [currentTableIds, refetchPendingSessions]);
+  }, [currentTableIds, queryClient, refetchPendingSessions]);
 
   useWebSocket(
     selectedBranchId ? [`branch:${selectedBranchId}`] : [],
@@ -253,55 +268,71 @@ export default function TablesPage() {
     accessToken || undefined
   );
 
-  const dismissServiceRequest = (id: string) => {
-    setServiceRequests((prev) => prev.filter((request) => request.id !== id));
-  };
-
-  const clearServiceRequests = () => {
-    setServiceRequests([]);
-  };
-
   const handleStatusChange = (tableId: string, newStatus: string) => {
-    // Freeing a table must go through the robust free endpoint (closes the
-    // session + finalizes open orders), NOT a bare tables.status flip — the
-    // latter left an orphan session and the table stayed "ocupada" for the next
-    // customer. Confirm first since it closes out the visit.
+    const table = allTables.find((t) => t.id === tableId);
+    if (!table) return;
+
+    // Liberar cierra la visita y finaliza pedidos: pasa por su propio diálogo,
+    // que además enseña el saldo pendiente si lo hay.
     if (newStatus === "available") {
-      const table = allTables.find((t: any) => t.id === tableId);
-      setFreeConfirm({ id: tableId, number: table?.number ?? 0 });
+      if (table.status === "available") return;
+      setFreeTarget(table);
       return;
     }
-    updateTableStatus.mutate({ id: tableId, status: newStatus });
-  };
 
-  const handleConfirmFree = () => {
-    if (!freeConfirm) return;
-    freeTable.mutate(freeConfirm.id, {
-      onSuccess: () => {
-        setFreeConfirm(null);
-        toast.success(`Mesa ${freeConfirm.number} liberada`);
-      },
-      onError: (err) => {
-        toast.error(err instanceof Error ? err.message : "No se pudo liberar la mesa");
-      },
-    });
+    // "Ocupar" sin abrir cuenta dejaba la mesa sin sesión: no se le podía cobrar
+    // y su QR seguía libre para cualquiera. Se sienta al cliente de verdad.
+    if (newStatus === "occupied") {
+      if (table.status === "occupied") return;
+      setSeatTarget(table);
+      return;
+    }
+
+    updateTableStatus.mutate(
+      { id: tableId, status: newStatus },
+      {
+        onError: (err) =>
+          toast.error(
+            err instanceof Error ? err.message : "No se pudo cambiar el estado de la mesa"
+          ),
+      }
+    );
   };
 
   const handleDelete = () => {
     if (!deleteConfirm) return;
     if (deleteConfirm.type === "table") {
       deleteTable.mutate(deleteConfirm.id, {
-        onSuccess: () => setDeleteConfirm(null),
+        onSuccess: () => {
+          toast.success(`${deleteConfirm.name} eliminada`);
+          setDeleteConfirm(null);
+        },
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : "No se pudo eliminar la mesa"),
       });
     } else {
       deleteSpace.mutate(deleteConfirm.id, {
         onSuccess: () => {
+          toast.success(`Espacio "${deleteConfirm.name}" eliminado`);
           setDeleteConfirm(null);
           if (activeTab === deleteConfirm.id) setActiveTab("all");
         },
+        onError: (err) =>
+          toast.error(
+            err instanceof Error ? err.message : "No se pudo eliminar el espacio"
+          ),
       });
     }
   };
+
+  const emptyMessage =
+    onlyMine && canFilterMine
+      ? "No tienes mesas asignadas en esta vista. Desactiva «Solo mis mesas» para ver toda la sala."
+      : activeTab === "unassigned"
+        ? "Todas las mesas están asignadas a un espacio."
+        : canCreateLayout
+          ? "No hay mesas aquí todavía. Crea la primera con «Nueva Mesa»."
+          : "No hay mesas aquí todavía. Pídele a un responsable que dé de alta las mesas del salón.";
 
   if (error) {
     return (
@@ -309,12 +340,15 @@ export default function TablesPage() {
         <div>
           <h1 className="text-2xl font-bold">Mesas</h1>
         </div>
-        <div className="p-4 rounded-lg border border-destructive/50 bg-destructive/5 flex items-center justify-between">
+        <div
+          className="p-4 rounded-lg border border-destructive/50 bg-destructive/5 flex flex-wrap items-center justify-between gap-3"
+          role="alert"
+        >
           <p className="text-sm text-destructive">
-            Error al cargar mesas: {(error as Error).message}
+            No se pudieron cargar las mesas: {(error as Error).message}
           </p>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
+          <Button variant="outline" className="h-10" onClick={() => refetch()}>
+            <RefreshCw className="h-4 w-4 mr-2" aria-hidden="true" />
             Reintentar
           </Button>
         </div>
@@ -324,7 +358,7 @@ export default function TablesPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Cabecera */}
       <PageHeader
         title="Mesas y Espacios"
         description={
@@ -337,34 +371,40 @@ export default function TablesPage() {
             <div className="flex border rounded-md">
               <Button
                 variant={viewMode === "grid" ? "default" : "ghost"}
-                size="sm"
-                className="rounded-r-none"
+                className="h-10 rounded-r-none"
+                aria-label="Ver las mesas en cuadrícula"
+                aria-pressed={viewMode === "grid"}
                 onClick={() => setViewMode("grid")}
               >
-                <LayoutGrid className="h-4 w-4" />
+                <LayoutGrid className="h-4 w-4" aria-hidden="true" />
               </Button>
               <Button
                 variant={viewMode === "planner" ? "default" : "ghost"}
-                size="sm"
-                className="rounded-l-none"
+                className="h-10 rounded-l-none"
+                aria-label="Ver el plano del local"
+                aria-pressed={viewMode === "planner"}
                 onClick={() => setViewMode("planner")}
               >
-                <MapIcon className="h-4 w-4" />
+                <MapIcon className="h-4 w-4" aria-hidden="true" />
               </Button>
             </div>
-            <Button variant="outline" onClick={() => setCreateSpaceDialog(true)}>
-              <LayoutGrid className="h-4 w-4 mr-2" />
-              Nuevo Espacio
-            </Button>
-            <Button onClick={() => setCreateTableDialog(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Nueva Mesa
-            </Button>
+            {canCreateLayout && (
+              <>
+                <Button variant="outline" className="h-10" onClick={() => setCreateSpaceDialog(true)}>
+                  <LayoutGrid className="h-4 w-4 mr-2" aria-hidden="true" />
+                  Nuevo Espacio
+                </Button>
+                <Button className="h-10" onClick={() => setCreateTableDialog(true)}>
+                  <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                  Nueva Mesa
+                </Button>
+              </>
+            )}
           </>
         }
       />
 
-      {/* Summary Cards */}
+      {/* Resumen */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
           { label: "Total", value: counts.total, color: "text-foreground" },
@@ -383,89 +423,146 @@ export default function TablesPage() {
         ))}
       </div>
 
-      {/* Pending Session Requests */}
-      {pendingSessions.length > 0 && (
+      {/* Solicitudes de ingreso pendientes de aprobar */}
+      {pendingSessions.length > 0 && canOperateTables && (
         <Card className="border-2 border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/20">
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
-              <Bell className="h-4 w-4 text-amber-600" />
-              Solicitudes pendientes ({pendingSessions.length})
+              <Bell className="h-4 w-4 text-amber-600" aria-hidden="true" />
+              Solicitudes de ingreso ({pendingSessions.length})
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {pendingSessions.map((session: any) => (
-                <div
-                  key={session.id}
-                  className="flex items-center justify-between p-3 rounded-lg bg-background border"
-                >
-                  <div>
-                    <p className="font-medium">{session.customer_name}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Mesa {session.table_number}
-                      {session.customer_phone && ` · ${session.customer_phone}`}
-                    </p>
+              {pendingSessions.map((session) => {
+                const busy = mutatingSessionId === session.id;
+                return (
+                  <div
+                    key={session.id}
+                    className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-background border"
+                  >
+                    <div>
+                      <p className="font-medium">{session.customer_name}</p>
+                      <p className="text-sm text-muted-foreground">
+                        Mesa {session.table_number}
+                        {session.customer_phone && ` · ${session.customer_phone}`}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        className="h-10 text-destructive hover:text-destructive"
+                        aria-label={`Rechazar el ingreso de ${session.customer_name} en la mesa ${session.table_number}`}
+                        disabled={busy}
+                        onClick={() => {
+                          setMutatingSessionId(session.id);
+                          rejectSession.mutate(session.id, {
+                            onSuccess: () => toast.success("Solicitud rechazada"),
+                            onError: (err) =>
+                              toast.error(
+                                err instanceof Error
+                                  ? err.message
+                                  : "No se pudo rechazar la solicitud"
+                              ),
+                            onSettled: () => setMutatingSessionId(null),
+                          });
+                        }}
+                      >
+                        {busy && rejectSession.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <X className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </Button>
+                      <Button
+                        className="h-10"
+                        disabled={busy}
+                        onClick={() => {
+                          setMutatingSessionId(session.id);
+                          approveSession.mutate(session.id, {
+                            onSuccess: () =>
+                              toast.success(
+                                `${session.customer_name} ya puede pedir en la mesa ${session.table_number}`
+                              ),
+                            onError: (err) =>
+                              toast.error(
+                                err instanceof Error
+                                  ? err.message
+                                  : "No se pudo aceptar la solicitud"
+                              ),
+                            onSettled: () => setMutatingSessionId(null),
+                          });
+                        }}
+                      >
+                        {busy && approveSession.isPending ? (
+                          <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Check className="h-4 w-4 mr-1" aria-hidden="true" />
+                        )}
+                        Aceptar
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="text-destructive hover:text-destructive"
-                      disabled={rejectSession.isPending}
-                      onClick={() => rejectSession.mutate(session.id)}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={approveSession.isPending}
-                      onClick={() => approveSession.mutate(session.id)}
-                    >
-                      <Check className="h-4 w-4 mr-1" />
-                      Aceptar
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Table service requests summary */}
-      {serviceRequests.length > 0 && (
+      {/* Avisos de mesa sin resolver: el detalle vive en la bandeja */}
+      {openRequestCount > 0 && (
         <Card className="border-2 border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-950/20">
-          <CardContent className="p-3 flex items-center justify-between gap-3">
+          <CardContent className="p-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <Bell className="h-4 w-4 text-blue-600" />
+              <Bell className="h-4 w-4 text-blue-600" aria-hidden="true" />
               <p className="text-sm font-medium">
-                Solicitudes activas: {requestSummary.total}
+                {openRequestCount === 1
+                  ? "1 mesa está esperando atención"
+                  : `${openRequestCount} mesas están esperando atención`}
               </p>
-              <Badge variant="outline">Cuenta: {requestSummary.requestBillCount}</Badge>
-              <Badge variant="outline">Mozo: {requestSummary.callWaiterCount}</Badge>
             </div>
-            <Button size="sm" onClick={() => setRequestsDialogOpen(true)}>
-              Ver solicitudes
-            </Button>
+            <Link
+              href="/connections"
+              className={cn(
+                buttonVariants({ variant: "default" }),
+                "h-10 px-4"
+              )}
+            >
+              Ver bandeja de avisos
+            </Link>
           </CardContent>
         </Card>
       )}
 
-      {/* Tabs: All / Per Space / Unassigned */}
+      {/* Espacios */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <div className="flex items-center gap-2 overflow-x-auto">
-          <TabsList>
-            <TabsTrigger value="all">Todas</TabsTrigger>
-            {spaces.map((space: any) => (
-              <TabsTrigger key={space.id} value={space.id}>
-                {space.name}
-              </TabsTrigger>
-            ))}
-            <TabsTrigger value="unassigned">Sin espacio</TabsTrigger>
-          </TabsList>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="overflow-x-auto">
+            <TabsList>
+              <TabsTrigger value="all">Todas</TabsTrigger>
+              {spaces.map((space: any) => (
+                <TabsTrigger key={space.id} value={space.id}>
+                  {space.name}
+                </TabsTrigger>
+              ))}
+              <TabsTrigger value="unassigned">Sin espacio</TabsTrigger>
+            </TabsList>
+          </div>
+
+          {canFilterMine && (
+            <Button
+              variant={onlyMine ? "default" : "outline"}
+              className="h-10 ml-auto"
+              aria-pressed={onlyMine}
+              onClick={() => setOnlyMine((v) => !v)}
+            >
+              {onlyMine ? "Solo mis mesas" : "Ver solo mis mesas"}
+            </Button>
+          )}
         </div>
 
-        {/* Space info card */}
+        {/* Ficha del espacio activo */}
         {activeTab !== "all" && activeTab !== "unassigned" && (() => {
           const currentSpace = spaces.find((s: any) => s.id === activeTab);
           if (!currentSpace) return null;
@@ -485,7 +582,7 @@ export default function TablesPage() {
           );
         })()}
 
-        {/* View: Grid or Floor Planner */}
+        {/* Vista: cuadrícula o plano */}
         {viewMode === "planner" ? (
           <div className="mt-4">
             <FloorPlannerView
@@ -500,6 +597,7 @@ export default function TablesPage() {
             waiterAssignmentEnabled={waiterAssignmentEnabled}
             statusChangePending={updateTableStatus.isPending}
             requestByTableId={requestByTableId}
+            emptyMessage={emptyMessage}
             onQr={setQrDialog}
             onHistory={setHistoryDialog}
             onAssign={setAssignDialog}
@@ -508,62 +606,14 @@ export default function TablesPage() {
             }
             onStatusChange={handleStatusChange}
             onCharge={setChargeTable}
+            onSeat={setSeatTarget}
+            onMove={setMoveTarget}
+            onMerge={setMergeTarget}
           />
         )}
       </Tabs>
 
-      {/* Dialogs */}
-      <Dialog open={requestsDialogOpen} onOpenChange={setRequestsDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              Solicitudes de mesa ({serviceRequests.length})
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-            {serviceRequests.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-6">
-                No hay solicitudes activas.
-              </p>
-            ) : (
-              serviceRequests.map((request) => (
-                <div
-                  key={request.id}
-                  className="flex items-center justify-between p-3 rounded-lg bg-background border"
-                >
-                  <div>
-                    <p className="font-medium">Mesa {request.tableNumber}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {request.customerName} ·{" "}
-                      {request.type === "request_bill"
-                        ? "Solicita la cuenta"
-                        : "Solicita mozo"}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline">
-                      {new Date(request.timestamp).toLocaleTimeString("es-PE", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Badge>
-                    <Button size="sm" onClick={() => dismissServiceRequest(request.id)}>
-                      Atendido
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          {serviceRequests.length > 0 && (
-            <div className="flex justify-end">
-              <Button variant="outline" size="sm" onClick={clearServiceRequests}>
-                Limpiar todo
-              </Button>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* Diálogos */}
       <QrDialog table={qrDialog} branchSlug={branchSlug} onClose={() => setQrDialog(null)} />
       <CreateTableDialog open={createTableDialog} onOpenChange={setCreateTableDialog} spaces={spaces} />
       <CreateSpaceDialog open={createSpaceDialog} onOpenChange={setCreateSpaceDialog} />
@@ -571,11 +621,11 @@ export default function TablesPage() {
       <ConfirmDialog
         open={!!deleteConfirm}
         onOpenChange={(open) => !open && setDeleteConfirm(null)}
-        title="Confirmar Eliminacion"
+        title="Confirmar eliminación"
         description={
           deleteConfirm?.type === "space"
-            ? `Estas seguro de eliminar el espacio "${deleteConfirm.name}"? Solo se puede eliminar si no tiene mesas asignadas.`
-            : `Estas seguro de eliminar "${deleteConfirm?.name}"? Esta accion no se puede deshacer.`
+            ? `¿Seguro que quieres eliminar el espacio "${deleteConfirm.name}"? Solo se puede eliminar si no tiene mesas asignadas.`
+            : `¿Seguro que quieres eliminar "${deleteConfirm?.name}"? Esta acción no se puede deshacer.`
         }
         onConfirm={handleDelete}
         loading={deleteTable.isPending || deleteSpace.isPending}
@@ -583,15 +633,21 @@ export default function TablesPage() {
       <HistoryDialog table={historyDialog} onClose={() => setHistoryDialog(null)} />
       <AssignmentDialog table={assignDialog} onClose={() => setAssignDialog(null)} />
       <CobrarDialog table={chargeTable} onClose={() => setChargeTable(null)} />
-      <ConfirmDialog
-        open={!!freeConfirm}
-        onOpenChange={(open) => !open && setFreeConfirm(null)}
-        title={`Liberar Mesa ${freeConfirm?.number ?? ""}`}
-        description="Se cerrará la sesión de la mesa y se finalizarán los pedidos pendientes. Asegúrate de haber cobrado antes de liberar."
-        variant="default"
-        confirmLabel="Liberar mesa"
-        onConfirm={handleConfirmFree}
-        loading={freeTable.isPending}
+      <FreeTableDialog
+        table={freeTarget}
+        onClose={() => setFreeTarget(null)}
+        onGoCharge={(table) => setChargeTable(table)}
+      />
+      <SeatCustomerDialog table={seatTarget} onClose={() => setSeatTarget(null)} />
+      <MoveSessionDialog
+        table={moveTarget}
+        tables={allTables}
+        onClose={() => setMoveTarget(null)}
+      />
+      <MergeTablesDialog
+        table={mergeTarget}
+        tables={allTables}
+        onClose={() => setMergeTarget(null)}
       />
     </div>
   );

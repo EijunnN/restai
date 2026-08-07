@@ -1,4 +1,4 @@
-import { eq, and, inArray, sql, isNull } from "drizzle-orm";
+import { eq, and, ne, inArray, sql, isNull } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import { generateOrderNumber } from "../lib/id.js";
 import { logger } from "../lib/logger.js";
@@ -34,6 +34,13 @@ interface CreateOrderParams {
 interface CreateOrderResult {
   order: typeof schema.orders.$inferSelect;
   items: (typeof schema.orderItems.$inferSelect)[];
+  /**
+   * Motivo por el que el cupón enviado NO llegó a aplicarse (no produce ningún
+   * descuento sobre este carrito). El pedido se registra igualmente y el cupón
+   * NO se consume: un cupón que no encaja no puede impedir que el comensal pida.
+   * `null` cuando no se envió cupón o cuando sí se aplicó.
+   */
+  couponIgnored: string | null;
 }
 
 /**
@@ -247,7 +254,12 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   return await db.transaction(async (tx) => {
     // Calculate coupon discount inside tx (atomic usage claim happens here)
     let discount = 0;
+    // Parte del descuento que aporta EL CUPÓN. Se guarda aparte del canje para
+    // poder registrarla tal cual en coupon_redemptions.discount_applied: mezclar
+    // ambas cifras inflaba el descuento atribuido al cupón en los informes.
+    let couponDiscount = 0;
     let couponId: string | null = null;
+    let couponIgnored: string | null = null;
 
     if (couponCode) {
       const couponResult = await applyCoupon({
@@ -257,8 +269,17 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         subtotal,
         customerId: customerId || null,
       }, tx);
-      discount = couponResult.discount;
+      couponDiscount = couponResult.discount;
+      discount = couponDiscount;
       couponId = couponResult.couponId;
+      couponIgnored = couponResult.ignoredReason;
+      if (couponIgnored) {
+        logger.info("Cupón no aplicado: el pedido continúa sin consumirlo", {
+          couponCode,
+          organizationId,
+          reason: couponIgnored,
+        });
+      }
     }
 
     // Validate the reward redemption (ownership + org scope) and compute its
@@ -363,7 +384,9 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         coupon_id: couponId,
         customer_id: customerId || null,
         order_id: order.id,
-        discount_applied: discount,
+        // Solo la parte del cupón: el canje de fidelización tiene su propio
+        // registro en reward_redemptions.
+        discount_applied: couponDiscount,
       });
 
       // Update couponAssignment used_at if customer is known
@@ -380,7 +403,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       }
     }
 
-    return { order, items: createdItems };
+    return { order, items: createdItems, couponIgnored };
   });
 }
 
@@ -410,7 +433,147 @@ function effectiveUnitPrice(item: { unit_price: number; quantity: number; total:
   return item.unit_price;
 }
 
-async function applyCoupon(params: ApplyCouponParams, tx: TxOrDb): Promise<{ discount: number; couponId: string }> {
+/** Línea de pedido, con lo justo para calcular descuentos. Todo en céntimos. */
+interface PricedLine {
+  menu_item_id: string;
+  unit_price: number;
+  quantity: number;
+  total: number;
+}
+
+/**
+ * Reglas de un cupón que intervienen en el importe del descuento. Se declara
+ * aparte de la fila de `coupons` para poder calcular con ella tanto al crear el
+ * pedido como al re-tarifarlo después de anular una línea.
+ */
+interface CouponRules {
+  type: string;
+  discount_value: number | null;
+  menu_item_id: string | null;
+  category_id: string | null;
+  buy_quantity: number | null;
+  get_quantity: number | null;
+  max_discount_amount: number | null;
+}
+
+/** Platos de una categoría, para el cupón de tipo `category_discount`. */
+async function loadCategoryItemIds(
+  tx: TxOrDb,
+  categoryId: string,
+  organizationId: string,
+): Promise<Set<string>> {
+  const rows = await tx
+    .select({ id: schema.menuItems.id })
+    .from(schema.menuItems)
+    .where(and(
+      eq(schema.menuItems.category_id, categoryId),
+      eq(schema.menuItems.organization_id, organizationId),
+    ));
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Descuento EN CÉNTIMOS que produce un cupón sobre un conjunto de líneas.
+ *
+ * Es la ÚNICA definición del cálculo: la usa `applyCoupon` al crear el pedido y
+ * `repriceOrderAfterCancel` al re-tarifarlo tras anular un plato. Que dos
+ * caminos calculen el mismo descuento de formas distintas es exactamente lo que
+ * convertía un 20 % en un 40 % al hacer un "86".
+ *
+ * No consulta la base de datos ni valida vigencia/usos: solo aritmética.
+ */
+function computeCouponDiscountCents(
+  coupon: CouponRules,
+  orderItems: PricedLine[],
+  subtotal: number,
+  categoryItemIds: ReadonlySet<string> | null,
+): number {
+  let discount = 0;
+
+  switch (coupon.type) {
+    case "percentage": {
+      discount = Math.round(subtotal * ((coupon.discount_value || 0) / 100));
+      break;
+    }
+    case "fixed": {
+      // Importe fijo: se recorta al subtotal para que un descuento nunca supere
+      // lo que se está comprando.
+      discount = Math.min(coupon.discount_value || 0, subtotal);
+      break;
+    }
+    case "item_free": {
+      // Make one unit of a qualifying item free. Use the EFFECTIVE per-unit
+      // price (includes modifiers): total / quantity.
+      if (coupon.menu_item_id) {
+        // Specific item must be free
+        const match = orderItems.find((i) => i.menu_item_id === coupon.menu_item_id);
+        if (match) {
+          discount = effectiveUnitPrice(match); // 1 unit free
+        }
+      } else {
+        // No specific item — cheapest item is free
+        const cheapest = orderItems.reduce<PricedLine | undefined>(
+          (min, i) => (!min || effectiveUnitPrice(i) < effectiveUnitPrice(min) ? i : min),
+          undefined,
+        );
+        if (cheapest) {
+          discount = effectiveUnitPrice(cheapest);
+        }
+      }
+      break;
+    }
+    case "item_discount": {
+      // Discount on a specific item
+      if (coupon.menu_item_id) {
+        const match = orderItems.find((i) => i.menu_item_id === coupon.menu_item_id);
+        if (match) {
+          discount = Math.round(match.total * ((coupon.discount_value || 0) / 100));
+        }
+      }
+      break;
+    }
+    case "category_discount": {
+      // Discount on items in a category — need to check category
+      if (coupon.category_id && categoryItemIds) {
+        const matchingTotal = orderItems
+          .filter((i) => categoryItemIds.has(i.menu_item_id))
+          .reduce((sum, i) => sum + i.total, 0);
+        discount = Math.round(matchingTotal * ((coupon.discount_value || 0) / 100));
+      }
+      break;
+    }
+    case "buy_x_get_y": {
+      // Buy X items, get Y free (cheapest ones). Use the EFFECTIVE per-unit
+      // price (includes modifiers) for each free unit.
+      const totalQty = orderItems.reduce((sum, i) => sum + i.quantity, 0);
+      const buyQty = coupon.buy_quantity || 0;
+      const getQty = coupon.get_quantity || 0;
+      if (totalQty >= buyQty + getQty) {
+        // Sort units by effective unit price ascending, make the cheapest
+        // getQty units free.
+        const expanded = orderItems.flatMap((i) =>
+          Array.from({ length: i.quantity }, () => effectiveUnitPrice(i)),
+        );
+        expanded.sort((a, b) => a - b);
+        discount = expanded.slice(0, getQty).reduce((sum, p) => sum + p, 0);
+      }
+      break;
+    }
+  }
+
+  // Apply max discount cap
+  if (coupon.max_discount_amount && discount > coupon.max_discount_amount) {
+    discount = coupon.max_discount_amount;
+  }
+
+  // Ensure discount doesn't exceed subtotal
+  return Math.max(0, Math.min(discount, subtotal));
+}
+
+async function applyCoupon(
+  params: ApplyCouponParams,
+  tx: TxOrDb,
+): Promise<{ discount: number; couponId: string | null; ignoredReason: string | null }> {
   const { couponCode, organizationId, orderItems, subtotal, customerId } = params;
 
   const [coupon] = await tx
@@ -477,99 +640,25 @@ async function applyCoupon(params: ApplyCouponParams, tx: TxOrDb): Promise<{ dis
     );
   }
 
-  let discount = 0;
+  const categoryItemIds =
+    coupon.type === "category_discount" && coupon.category_id
+      ? await loadCategoryItemIds(tx, coupon.category_id, organizationId)
+      : null;
 
-  switch (coupon.type) {
-    case "percentage": {
-      discount = Math.round(subtotal * ((coupon.discount_value || 0) / 100));
-      break;
-    }
-    case "fixed": {
-      discount = Math.min(coupon.discount_value || 0, subtotal);
-      break;
-    }
-    case "item_free": {
-      // Make one unit of a qualifying item free. Use the EFFECTIVE per-unit
-      // price (includes modifiers): total / quantity.
-      if (coupon.menu_item_id) {
-        // Specific item must be free
-        const match = orderItems.find((i) => i.menu_item_id === coupon.menu_item_id);
-        if (match) {
-          discount = effectiveUnitPrice(match); // 1 unit free
-        }
-      } else {
-        // No specific item — cheapest item is free
-        const cheapest = orderItems.reduce(
-          (min, i) => (effectiveUnitPrice(i) < effectiveUnitPrice(min) ? i : min),
-          orderItems[0],
-        );
-        if (cheapest) {
-          discount = effectiveUnitPrice(cheapest);
-        }
-      }
-      break;
-    }
-    case "item_discount": {
-      // Discount on a specific item
-      if (coupon.menu_item_id) {
-        const match = orderItems.find((i) => i.menu_item_id === coupon.menu_item_id);
-        if (match) {
-          discount = Math.round(match.total * ((coupon.discount_value || 0) / 100));
-        }
-      }
-      break;
-    }
-    case "category_discount": {
-      // Discount on items in a category — need to check category
-      if (coupon.category_id) {
-        const categoryItemIds = await tx
-          .select({ id: schema.menuItems.id })
-          .from(schema.menuItems)
-          .where(and(
-            eq(schema.menuItems.category_id, coupon.category_id),
-            eq(schema.menuItems.organization_id, organizationId),
-          ));
-        const catIds = new Set(categoryItemIds.map((c) => c.id));
-        const matchingTotal = orderItems
-          .filter((i) => catIds.has(i.menu_item_id))
-          .reduce((sum, i) => sum + i.total, 0);
-        discount = Math.round(matchingTotal * ((coupon.discount_value || 0) / 100));
-      }
-      break;
-    }
-    case "buy_x_get_y": {
-      // Buy X items, get Y free (cheapest ones). Use the EFFECTIVE per-unit
-      // price (includes modifiers) for each free unit.
-      const totalQty = orderItems.reduce((sum, i) => sum + i.quantity, 0);
-      const buyQty = coupon.buy_quantity || 0;
-      const getQty = coupon.get_quantity || 0;
-      if (totalQty >= buyQty + getQty) {
-        // Sort units by effective unit price ascending, make the cheapest
-        // getQty units free.
-        const expanded = orderItems.flatMap((i) =>
-          Array.from({ length: i.quantity }, () => effectiveUnitPrice(i)),
-        );
-        expanded.sort((a, b) => a - b);
-        discount = expanded.slice(0, getQty).reduce((sum, p) => sum + p, 0);
-      }
-      break;
-    }
-  }
+  const discount = computeCouponDiscountCents(coupon, orderItems, subtotal, categoryItemIds);
 
-  // Apply max discount cap
-  if (coupon.max_discount_amount && discount > coupon.max_discount_amount) {
-    discount = coupon.max_discount_amount;
-  }
-
-  // Ensure discount doesn't exceed subtotal
-  discount = Math.min(discount, subtotal);
-
-  // Reject zero-benefit coupons BEFORE claiming a use. If the computed discount
-  // is <= 0 (no qualifying item in the cart, threshold unmet, buy-x-get-y not
-  // reached, etc.) the coupon would be consumed for nothing — so abort instead
-  // of incrementing current_uses / recording a redemption.
+  // Cupón que no produce ningún descuento sobre ESTE carrito (el plato de la
+  // promoción no está, el 2x1 no llega a la cantidad mínima, la categoría no
+  // aparece...). Antes se lanzaba un error y el comensal se quedaba SIN PODER
+  // PEDIR hasta adivinar cuál de sus cupones sobraba. Ahora el pedido pasa, el
+  // cupón NO se consume (no se incrementa current_uses ni se registra canje) y
+  // el motivo vuelve al llamador para que la pantalla lo cuente.
   if (discount <= 0) {
-    throw new OrderValidationError("Este cupón no aplica a tu pedido");
+    return {
+      discount: 0,
+      couponId: null,
+      ignoredReason: "El cupón no aplica a los productos de este pedido",
+    };
   }
 
   // Atomically claim a use of this coupon, enforcing the total cap in the same
@@ -592,7 +681,7 @@ async function applyCoupon(params: ApplyCouponParams, tx: TxOrDb): Promise<{ dis
     throw new OrderValidationError("El cupón ha alcanzado el límite de usos");
   }
 
-  return { discount, couponId: coupon.id };
+  return { discount, couponId: coupon.id, ignoredReason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +769,35 @@ async function applyRedemption(params: ApplyRedemptionParams, tx: TxOrDb): Promi
 
   // Calculate discount on the remaining amount after coupon, using the
   // snapshot value columns captured at redeem time.
-  const remainingSubtotal = subtotal - couponDiscount;
+  const discount = computeRedemptionDiscountCents(
+    redemption,
+    orderItems,
+    subtotal - couponDiscount,
+  );
+
+  return { discount };
+}
+
+/** Valores congelados del canje en el momento de canjear. */
+interface RedemptionSnapshot {
+  reward_type: string;
+  discount_type: string | null;
+  discount_value: number | null;
+  menu_item_id: string | null;
+}
+
+/**
+ * Descuento EN CÉNTIMOS que produce un canje de fidelización sobre la base que
+ * queda tras el cupón. Única definición del cálculo: la usan `applyRedemption`
+ * (al crear el pedido) y `repriceOrderAfterCancel` (al anular un plato).
+ */
+function computeRedemptionDiscountCents(
+  redemption: RedemptionSnapshot,
+  orderItems: PricedLine[],
+  remainingSubtotal: number,
+): number {
+  if (remainingSubtotal <= 0) return 0;
+
   let discount = 0;
 
   if (redemption.reward_type === "free_item") {
@@ -700,9 +817,277 @@ async function applyRedemption(params: ApplyRedemptionParams, tx: TxOrDb): Promi
     discount = Math.min(redemption.discount_value || 0, remainingSubtotal);
   }
 
-  discount = Math.max(0, Math.min(discount, remainingSubtotal));
+  return Math.max(0, Math.min(discount, remainingSubtotal));
+}
 
-  return { discount };
+// ---------------------------------------------------------------------------
+// Re-tarifado tras anular una línea ("86" de cocina)
+// ---------------------------------------------------------------------------
+
+/** Importes de la orden ya recalculados. Todo en céntimos enteros. */
+export interface RepricedOrderTotals {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  delivery_fee: number;
+  total: number;
+  /** true cuando no queda ninguna línea viva: la orden entera se anula. */
+  allCancelled: boolean;
+  /**
+   * Fila de `coupon_redemptions` cuyo `discount_applied` queda desfasado con el
+   * nuevo cálculo. NO se escribe aquí: el re-tarifado es de solo lectura para
+   * que el llamador pueda validar antes de tocar nada (devolver un error desde
+   * el callback de una transacción de Drizzle NO la aborta). Se persiste con
+   * `persistRepricedDiscount` ya en la fase de escritura.
+   */
+  couponRedemptionUpdate: { id: string; discount_applied: number } | null;
+}
+
+/**
+ * Escribe los efectos colaterales del re-tarifado que caen FUERA de la fila
+ * `orders` (hoy, el importe registrado del canje de cupón). Se llama en la fase
+ * de escritura, junto al UPDATE de la orden y dentro de la misma transacción.
+ */
+export async function persistRepricedDiscount(
+  totals: RepricedOrderTotals,
+  tx: TxOrDb,
+): Promise<void> {
+  const pendiente = totals.couponRedemptionUpdate;
+  if (!pendiente) return;
+  await tx
+    .update(schema.couponRedemptions)
+    .set({ discount_applied: pendiente.discount_applied })
+    .where(eq(schema.couponRedemptions.id, pendiente.id));
+}
+
+/**
+ * Recalcula los importes de una orden cuando desaparecen líneas.
+ *
+ * Es la ÚNICA implementación del recálculo: la anulación de cocina y cualquier
+ * otro camino que anule una línea deben llamarla, porque dos caminos que
+ * calculen el mismo total con reglas distintas son una bomba contable.
+ *
+ * La clave es que el descuento NO se arrastra como importe absoluto: se vuelve
+ * a calcular con las mismas funciones que lo calcularon al crear el pedido, a
+ * partir del cupón y del canje realmente aplicados. Arrastrarlo convertía un
+ * cupón del 20 % en un 40 % en cuanto se anulaba la mitad de la comanda.
+ *
+ * Debe llamarse DENTRO de la transacción que ya bloqueó la fila de la orden
+ * (`SELECT ... FOR UPDATE`): esa es la que serializa cobros y anulaciones.
+ *
+ * @param params.excludeItemIds líneas que van a anularse pero que todavía no se
+ *   han escrito, para poder validar los importes ANTES de tocar nada.
+ */
+export async function repriceOrderAfterCancel(
+  params: {
+    orderId: string;
+    organizationId: string;
+    branchId: string;
+    /** Descuento guardado hoy en la orden: techo del recalculado. */
+    previousDiscount: number;
+    deliveryFee: number;
+    excludeItemIds?: string[];
+  },
+  tx: TxOrDb,
+): Promise<RepricedOrderTotals> {
+  const { orderId, organizationId, branchId, previousDiscount, deliveryFee } = params;
+  const excluded = new Set(params.excludeItemIds ?? []);
+
+  // `order_items.total` YA incluye el precio de los modificadores de la línea,
+  // de modo que sumar las líneas que sobreviven descuenta la línea anulada Y
+  // sus modificadores.
+  const allLines = await tx
+    .select({
+      id: schema.orderItems.id,
+      menu_item_id: schema.orderItems.menu_item_id,
+      unit_price: schema.orderItems.unit_price,
+      quantity: schema.orderItems.quantity,
+      total: schema.orderItems.total,
+    })
+    .from(schema.orderItems)
+    .where(and(
+      eq(schema.orderItems.order_id, orderId),
+      ne(schema.orderItems.status, "cancelled"),
+    ));
+
+  const survivors: PricedLine[] = allLines.filter((l) => !excluded.has(l.id));
+  const allCancelled = survivors.length === 0;
+  const subtotal = survivors.reduce((acc, l) => acc + l.total, 0);
+
+  // Si no queda nada que servir no se cobra nada: ni impuesto, ni reparto.
+  if (allCancelled) {
+    // El importe registrado del cupón también baja a cero. Si no, el caso MÁS
+    // frecuente del "86" —comanda de un solo plato que se agota— dejaba en
+    // `coupon_redemptions` un descuento de S/ 20 atribuido a una comanda que se
+    // anuló entera, y el informe de cupones contaba dinero que nunca se regaló.
+    const couponRow =
+      previousDiscount > 0
+        ? await loadOrderCouponRedemption(orderId, organizationId, tx)
+        : null;
+    return {
+      subtotal: 0,
+      discount: 0,
+      tax: 0,
+      delivery_fee: 0,
+      total: 0,
+      allCancelled: true,
+      couponRedemptionUpdate: couponRow
+        ? { id: couponRow.redemption_id, discount_applied: 0 }
+        : null,
+    };
+  }
+
+  // Tasa de impuesto de la SEDE (no 18 % cableado: hay locales exonerados y la
+  // tasa puede cambiar por norma).
+  const [branch] = await tx
+    .select({ tax_rate: schema.branches.tax_rate })
+    .from(schema.branches)
+    .where(and(
+      eq(schema.branches.id, branchId),
+      eq(schema.branches.organization_id, organizationId),
+    ))
+    .limit(1);
+  const taxRate = branch?.tax_rate ?? 1800;
+
+  const { discount, couponRedemptionUpdate } = await recomputeOrderDiscount(
+    { orderId, organizationId, survivors, subtotal, previousDiscount },
+    tx,
+  );
+
+  const taxableBase = subtotal - discount;
+  const tax = Math.round((taxableBase * taxRate) / 10000);
+  const total = taxableBase + tax + deliveryFee;
+
+  return {
+    subtotal,
+    discount,
+    tax,
+    delivery_fee: deliveryFee,
+    total,
+    allCancelled: false,
+    couponRedemptionUpdate,
+  };
+}
+
+/**
+ * Vuelve a calcular el descuento de una orden sobre las líneas que sobreviven.
+ *
+ * Relee el cupón y el canje que se aplicaron de verdad (coupon_redemptions y
+ * reward_redemptions) y repite su aritmética sobre el nuevo subtotal: un
+ * porcentaje se recalcula, un importe fijo se recorta. Si la orden tiene un
+ * descuento cuyo origen no consta (carga manual, migración antigua) se conserva
+ * el comportamiento anterior: recortarlo al nuevo subtotal.
+ *
+ * El resultado nunca supera el descuento que ya tenía la orden: así una edición
+ * del cupón posterior al pedido no puede inflar retroactivamente lo que se
+ * regala.
+ *
+ * Solo lee: el ajuste pendiente de `coupon_redemptions.discount_applied` vuelve
+ * como dato para que el llamador lo escriba cuando ya no pueda echarse atrás.
+ */
+async function recomputeOrderDiscount(
+  params: {
+    orderId: string;
+    organizationId: string;
+    survivors: PricedLine[];
+    subtotal: number;
+    previousDiscount: number;
+  },
+  tx: TxOrDb,
+): Promise<{
+  discount: number;
+  couponRedemptionUpdate: { id: string; discount_applied: number } | null;
+}> {
+  const { orderId, organizationId, survivors, subtotal, previousDiscount } = params;
+
+  if (previousDiscount <= 0) return { discount: 0, couponRedemptionUpdate: null };
+
+  // ── Cupón ────────────────────────────────────────────────────────────────
+  const couponRow = await loadOrderCouponRedemption(orderId, organizationId, tx);
+
+  let couponDiscount = 0;
+  let couponRedemptionUpdate: { id: string; discount_applied: number } | null = null;
+  if (couponRow) {
+    const categoryItemIds =
+      couponRow.type === "category_discount" && couponRow.category_id
+        ? await loadCategoryItemIds(tx, couponRow.category_id, organizationId)
+        : null;
+    couponDiscount = computeCouponDiscountCents(couponRow, survivors, subtotal, categoryItemIds);
+
+    // El canje registrado debe reflejar lo que de verdad se descontó, o los
+    // informes de cupones seguirán contando el importe viejo.
+    couponRedemptionUpdate = {
+      id: couponRow.redemption_id,
+      discount_applied: couponDiscount,
+    };
+  }
+
+  // ── Canje de fidelización ────────────────────────────────────────────────
+  const [redemptionRow] = await tx
+    .select({
+      reward_type: schema.rewardRedemptions.reward_type,
+      discount_type: schema.rewardRedemptions.discount_type,
+      discount_value: schema.rewardRedemptions.discount_value,
+      menu_item_id: schema.rewardRedemptions.menu_item_id,
+    })
+    .from(schema.rewardRedemptions)
+    .where(eq(schema.rewardRedemptions.order_id, orderId))
+    .limit(1);
+
+  const redemptionDiscount = redemptionRow
+    ? computeRedemptionDiscountCents(redemptionRow, survivors, subtotal - couponDiscount)
+    : 0;
+
+  // Descuento de origen desconocido: no hay regla que reaplicar, así que se
+  // mantiene la única garantía posible (no superar lo que se está comprando).
+  if (!couponRow && !redemptionRow) {
+    return { discount: Math.min(previousDiscount, subtotal), couponRedemptionUpdate: null };
+  }
+
+  const recomputed = couponDiscount + redemptionDiscount;
+  const discount = Math.max(0, Math.min(recomputed, subtotal, previousDiscount));
+
+  // Lo registrado en `coupon_redemptions` no puede superar el descuento que de
+  // verdad se aplicó a la orden: el tope de `previousDiscount` puede haber
+  // recortado el recálculo, y sin este ajuste el informe de cupones diría que se
+  // regaló más de lo que se restó del total.
+  if (couponRedemptionUpdate && couponRedemptionUpdate.discount_applied > discount) {
+    couponRedemptionUpdate.discount_applied = discount;
+  }
+
+  return { discount, couponRedemptionUpdate };
+}
+
+/**
+ * Cupón realmente aplicado a una orden, con las reglas necesarias para volver a
+ * calcular su descuento. Acotado por organización: un canje solo cuenta si su
+ * cupón pertenece al mismo local.
+ */
+async function loadOrderCouponRedemption(
+  orderId: string,
+  organizationId: string,
+  tx: TxOrDb,
+): Promise<(CouponRules & { redemption_id: string }) | null> {
+  const [row] = await tx
+    .select({
+      redemption_id: schema.couponRedemptions.id,
+      type: schema.coupons.type,
+      discount_value: schema.coupons.discount_value,
+      menu_item_id: schema.coupons.menu_item_id,
+      category_id: schema.coupons.category_id,
+      buy_quantity: schema.coupons.buy_quantity,
+      get_quantity: schema.coupons.get_quantity,
+      max_discount_amount: schema.coupons.max_discount_amount,
+    })
+    .from(schema.couponRedemptions)
+    .innerJoin(schema.coupons, eq(schema.couponRedemptions.coupon_id, schema.coupons.id))
+    .where(and(
+      eq(schema.couponRedemptions.order_id, orderId),
+      eq(schema.coupons.organization_id, organizationId),
+    ))
+    .limit(1);
+
+  return row ?? null;
 }
 
 /**

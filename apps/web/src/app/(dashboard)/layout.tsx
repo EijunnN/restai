@@ -28,10 +28,15 @@ import {
   Smartphone,
   Megaphone,
   Share2,
+  Wallet,
+  Receipt,
+  ScrollText,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@restai/ui/components/button";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
 import { cn } from "@/lib/utils";
+import { canAccessRoute, landingRouteForRole, roleLabel } from "@/lib/permissions";
 import { useOrgSettings, useBranches } from "@/hooks/use-settings";
 import { NotificationBell } from "@/components/notification-bell";
 
@@ -58,50 +63,55 @@ const navGroups: NavGroup[] = [
     label: "Operaciones",
     items: [
       { href: "/pos", label: "POS", icon: Smartphone },
-      { href: "/orders", label: "Ordenes", icon: ClipboardList },
+      { href: "/orders", label: "Órdenes", icon: ClipboardList },
       { href: "/tables", label: "Mesas", icon: Grid3X3 },
       { href: "/kitchen", label: "Cocina", icon: ChefHat },
       { href: "/connections", label: "Conexiones", icon: Wifi },
-      { href: "/menu", label: "Menu", icon: UtensilsCrossed },
+      { href: "/menu", label: "Menú", icon: UtensilsCrossed },
     ],
   },
   {
-    label: "Gestion",
+    label: "Caja",
+    items: [
+      { href: "/payments", label: "Pagos", icon: CreditCard },
+      { href: "/caja", label: "Arqueo", icon: Wallet },
+      { href: "/invoices", label: "Comprobantes", icon: Receipt },
+    ],
+  },
+  {
+    label: "Gestión",
     items: [
       { href: "/inventory", label: "Inventario", icon: Package },
       { href: "/staff", label: "Personal", icon: Users },
-      { href: "/payments", label: "Pagos", icon: CreditCard },
     ],
   },
   {
     label: "Negocio",
     items: [
-      { href: "/loyalty", label: "Fidelizacion", icon: Heart },
+      { href: "/loyalty", label: "Fidelización", icon: Heart },
       { href: "/campaigns", label: "Campañas", icon: Megaphone },
       { href: "/referrals", label: "Referidos", icon: Share2 },
       { href: "/reports", label: "Reportes", icon: BarChart3 },
-      { href: "/settings", label: "Configuracion", icon: Settings },
+      { href: "/audit", label: "Auditoría", icon: ScrollText },
+      { href: "/settings", label: "Configuración", icon: Settings },
     ],
   },
 ];
 
-// Role-based nav access map
-const roleNavAccess: Record<string, Set<string>> = {
-  org_admin: new Set(navGroups.flatMap((g) => g.items.map((i) => i.href))),
-  branch_manager: new Set(
-    navGroups.flatMap((g) => g.items.filter((i) => i.href !== "/settings").map((i) => i.href))
-  ),
-  cashier: new Set(["/", "/pos", "/orders", "/payments"]),
-  waiter: new Set(["/", "/pos", "/orders", "/tables", "/connections", "/kitchen"]),
-  kitchen: new Set(["/", "/kitchen"]),
-};
-
+/**
+ * La navegación se deriva de la MISMA matriz de permisos que aplica la API.
+ * Antes había una lista paralela por rol que se desincronizó: el cocinero
+ * aterrizaba en "/" (que exige reports:read, permiso que no tiene) y recibía dos
+ * bandas rojas de error nada más fichar.
+ *
+ * Un rol desconocido ahora no ve NADA, en vez de heredar el menú completo de
+ * administrador como ocurría con el antiguo `|| roleNavAccess.org_admin`.
+ */
 function getFilteredNavGroups(role: string | undefined): NavGroup[] {
-  const allowed = roleNavAccess[role || ""] || roleNavAccess.org_admin;
   return navGroups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => allowed.has(item.href)),
+      items: group.items.filter((item) => canAccessRoute(role, item.href)),
     }))
     .filter((group) => group.items.length > 0);
 }
@@ -161,6 +171,19 @@ export default function DashboardLayout({
     }
   }, [isAuthenticated, router]);
 
+  // Guard de ruta real. Ocultar el enlace en el menú no impedía escribir la URL:
+  // /settings estaba oculto para el gerente pero seguía siendo accesible, y sus
+  // GET tampoco exigían permiso, así que podía bajar el IGV del 18 % al 0 %.
+  // Rutas anidadas (p. ej. /loyalty/<id>) heredan el permiso de su raíz.
+  const routeRoot = pathname === "/" ? "/" : `/${pathname.split("/")[1] ?? ""}`;
+  const routeAllowed = user ? canAccessRoute(user.role, routeRoot) : true;
+
+  useEffect(() => {
+    if (user && !routeAllowed) {
+      router.replace(landingRouteForRole(user.role));
+    }
+  }, [user, routeAllowed, router]);
+
   useEffect(() => {
     if (availableBranches.length === 0) return;
 
@@ -174,10 +197,19 @@ export default function DashboardLayout({
     }
   }, [availableBranches, selectedBranchId, setSelectedBranch, queryClient]);
 
+  // Sin usuario en memoria: o se está restaurando la sesión, o el refresh token
+  // caducó de noche. Antes esto era un "Cargando..." eterno y la tablet de la
+  // cocina amanecía inservible; ahora se ofrece siempre una salida.
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Cargando...</div>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <div className="animate-pulse text-muted-foreground">Cargando tu sesión...</div>
+        <p className="text-sm text-muted-foreground max-w-xs">
+          Si esta pantalla no avanza, tu sesión pudo haber caducado.
+        </p>
+        <Button variant="outline" size="sm" onClick={() => router.push("/login")}>
+          Iniciar sesión de nuevo
+        </Button>
       </div>
     );
   }
@@ -191,7 +223,26 @@ export default function DashboardLayout({
 
   const filteredNavGroups = getFilteredNavGroups(user.role);
   const allFilteredItems = filteredNavGroups.flatMap((g) => g.items);
-  const mobileNavItems = allFilteredItems.slice(0, 5);
+
+  // Barra inferior del móvil: los 5 destinos que ese rol usa de verdad, no los 5
+  // primeros del menú. Con el antiguo slice(0,5) ciego, "Conexiones" —donde el
+  // mesero aprueba a cada comensal que escanea— caía fuera y costaba dos toques
+  // extra cada vez, todo el turno.
+  const MOBILE_PRIORITY: Record<string, string[]> = {
+    waiter: ["/tables", "/connections", "/orders", "/pos", "/kitchen"],
+    cashier: ["/pos", "/orders", "/payments", "/caja", "/invoices"],
+    kitchen: ["/kitchen"],
+    branch_manager: ["/", "/tables", "/orders", "/kitchen", "/reports"],
+    org_admin: ["/", "/tables", "/orders", "/reports", "/settings"],
+  };
+  const priority = MOBILE_PRIORITY[user.role ?? ""] ?? [];
+  const prioritized = priority
+    .map((href) => allFilteredItems.find((i) => i.href === href))
+    .filter((i): i is NavGroup["items"][number] => Boolean(i));
+  const mobileNavItems = [
+    ...prioritized,
+    ...allFilteredItems.filter((i) => !prioritized.some((p) => p.href === i.href)),
+  ].slice(0, 5);
 
   return (
     <div className="h-screen flex overflow-hidden">
@@ -211,7 +262,7 @@ export default function DashboardLayout({
                 {orgName}
               </p>
               <p className="text-[11px] text-muted-foreground truncate leading-tight">
-                Gestion de restaurante
+                Gestión del restaurante
               </p>
             </div>
           )}
@@ -318,12 +369,12 @@ export default function DashboardLayout({
                   {user.name}
                 </p>
                 <p className="text-[11px] text-muted-foreground truncate leading-tight">
-                  {user.role === "owner" ? "Propietario" : user.role === "admin" ? "Administrador" : "Personal"}
+                  {roleLabel(user.role)}
                 </p>
               </div>
               <button
                 onClick={handleLogout}
-                title="Cerrar sesion"
+                title="Cerrar sesión"
                 className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors"
               >
                 <LogOut className="h-4 w-4" />
@@ -336,7 +387,7 @@ export default function DashboardLayout({
               </div>
               <button
                 onClick={handleLogout}
-                title="Cerrar sesion"
+                title="Cerrar sesión"
                 className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors"
               >
                 <LogOut className="h-3.5 w-3.5" />
@@ -520,7 +571,20 @@ export default function DashboardLayout({
         )}
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6">{children}</main>
+        <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6">
+          {routeAllowed ? (
+            children
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+              <ShieldAlert className="h-10 w-10 text-muted-foreground" />
+              <h2 className="text-lg font-semibold">Esta sección no está disponible para tu rol</h2>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                Tu cuenta de {roleLabel(user.role).toLowerCase()} no tiene acceso a esta pantalla.
+                Te llevamos de vuelta a tu zona de trabajo.
+              </p>
+            </div>
+          )}
+        </main>
 
         {/* Mobile bottom nav */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-background border-t z-40">

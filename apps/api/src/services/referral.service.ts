@@ -1,7 +1,19 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, gte, lt, sql } from "drizzle-orm";
 import { db, schema, type DbOrTx } from "@restai/db";
 import { adjustPoints } from "./loyalty.service.js";
 import { logger } from "../lib/logger.js";
+import { peruCivilDate, peruCivilDayStart } from "../lib/timezone.js";
+
+/** Error de negocio del módulo de referidos; la ruta lo traduce a HTTP. */
+export class ReferralError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ReferralError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Referral code generation
@@ -108,6 +120,234 @@ export async function getOrCreateReferralCode(params: {
 function isUniqueViolation(err: unknown): boolean {
   const code = (err as { code?: string } | null)?.code;
   return code === "23505";
+}
+
+// ---------------------------------------------------------------------------
+// Configuración del programa de referidos
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuración efectiva del programa de referidos de una organización.
+ *
+ * Los puntos viven en el programa de fidelización activo
+ * (loyalty_programs.referral_referrer_points / referral_referee_points). El tope
+ * mensual es antifraude y vive en organizations.settings.referrals
+ * (no tiene columna propia): null = sin tope.
+ */
+export interface ReferralConfig {
+  programId: string;
+  programName: string;
+  referrerPoints: number;
+  refereePoints: number;
+  monthlyCapPerReferrer: number | null;
+}
+
+/** Lee el tope mensual del jsonb de settings, tolerando datos sucios. */
+function readMonthlyCap(settings: unknown): number | null {
+  const raw = (settings as Record<string, any> | null)?.referrals
+    ?.monthly_cap_per_referrer;
+  if (raw === null || raw === undefined) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.trunc(n);
+}
+
+/**
+ * Límites del mes civil PERUANO que contiene `at`: [inicio, inicio del mes
+ * siguiente). Se usa el día operativo de Lima y no el UTC, para que el tope
+ * "por mes" cierre a la medianoche del local y no a las 19:00 del día anterior.
+ */
+function peruMonthBounds(at: Date): { start: Date; end: Date } {
+  const civil = peruCivilDate(at); // "YYYY-MM-DD"
+  const year = Number(civil.slice(0, 4));
+  const month = Number(civil.slice(5, 7));
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  return {
+    start: peruCivilDayStart(`${civil.slice(0, 7)}-01`),
+    end: peruCivilDayStart(
+      `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`,
+    ),
+  };
+}
+
+/**
+ * getReferralConfig
+ *
+ * Devuelve la configuración vigente, o null si la organización todavía no tiene
+ * programa de fidelización activo (sin programa no hay referidos que premiar).
+ */
+export async function getReferralConfig(params: {
+  organizationId: string;
+}): Promise<ReferralConfig | null> {
+  const { organizationId } = params;
+
+  const [program] = await db
+    .select({
+      id: schema.loyaltyPrograms.id,
+      name: schema.loyaltyPrograms.name,
+      referrer_points: schema.loyaltyPrograms.referral_referrer_points,
+      referee_points: schema.loyaltyPrograms.referral_referee_points,
+    })
+    .from(schema.loyaltyPrograms)
+    .where(
+      and(
+        eq(schema.loyaltyPrograms.organization_id, organizationId),
+        eq(schema.loyaltyPrograms.is_active, true),
+      ),
+    )
+    .limit(1);
+
+  if (!program) return null;
+
+  const [org] = await db
+    .select({ settings: schema.organizations.settings })
+    .from(schema.organizations)
+    .where(eq(schema.organizations.id, organizationId))
+    .limit(1);
+
+  return {
+    programId: program.id,
+    programName: program.name,
+    referrerPoints: program.referrer_points,
+    refereePoints: program.referee_points,
+    monthlyCapPerReferrer: readMonthlyCap(org?.settings),
+  };
+}
+
+/**
+ * updateReferralConfig
+ *
+ * Escribe los puntos de referidos (quien refiere y referido) y, opcionalmente,
+ * el tope mensual por persona. Hasta ahora esas columnas solo se leían: el
+ * módulo entero pagaba cero porque nadie las escribía nunca.
+ *
+ * - Los puntos son enteros >= 0 (0 = referidos desactivados para esa parte).
+ * - `monthlyCapPerReferrer`: omitido = no se toca; null = quitar el tope.
+ * - Se toma FOR UPDATE sobre la fila del programa para que dos administradores
+ *   guardando a la vez no se pisen (última escritura consistente, no mezclada).
+ * - El tope se guarda con una fusión jsonb (`||`), así no borra otras claves de
+ *   organizations.settings.
+ *
+ * Devuelve el antes y el después para que la ruta lo audite.
+ */
+export async function updateReferralConfig(params: {
+  organizationId: string;
+  referrerPoints: number;
+  refereePoints: number;
+  monthlyCapPerReferrer?: number | null;
+}): Promise<{ before: ReferralConfig; after: ReferralConfig }> {
+  const { organizationId } = params;
+  const referrerPoints = Math.trunc(params.referrerPoints);
+  const refereePoints = Math.trunc(params.refereePoints);
+
+  if (
+    !Number.isFinite(referrerPoints) ||
+    !Number.isFinite(refereePoints) ||
+    referrerPoints < 0 ||
+    refereePoints < 0
+  ) {
+    throw new ReferralError(
+      "INVALID_POINTS",
+      "Los puntos de referido deben ser enteros mayores o iguales a 0",
+    );
+  }
+
+  const cap =
+    params.monthlyCapPerReferrer === undefined
+      ? undefined
+      : params.monthlyCapPerReferrer === null
+        ? null
+        : Math.trunc(params.monthlyCapPerReferrer);
+
+  if (cap !== undefined && cap !== null && (!Number.isFinite(cap) || cap < 1)) {
+    throw new ReferralError(
+      "INVALID_CAP",
+      "El tope mensual debe ser un entero mayor o igual a 1 (o nulo para quitarlo)",
+    );
+  }
+
+  return await db.transaction(async (tx) => {
+    const [program] = await tx
+      .select({
+        id: schema.loyaltyPrograms.id,
+        name: schema.loyaltyPrograms.name,
+        referrer_points: schema.loyaltyPrograms.referral_referrer_points,
+        referee_points: schema.loyaltyPrograms.referral_referee_points,
+      })
+      .from(schema.loyaltyPrograms)
+      .where(
+        and(
+          eq(schema.loyaltyPrograms.organization_id, organizationId),
+          eq(schema.loyaltyPrograms.is_active, true),
+        ),
+      )
+      .limit(1)
+      .for("update");
+
+    if (!program) {
+      throw new ReferralError(
+        "PROGRAM_NOT_FOUND",
+        "No hay un programa de fidelización activo en el que configurar los referidos",
+      );
+    }
+
+    const [org] = await tx
+      .select({ settings: schema.organizations.settings })
+      .from(schema.organizations)
+      .where(eq(schema.organizations.id, organizationId))
+      .limit(1)
+      .for("update");
+
+    const before: ReferralConfig = {
+      programId: program.id,
+      programName: program.name,
+      referrerPoints: program.referrer_points,
+      refereePoints: program.referee_points,
+      monthlyCapPerReferrer: readMonthlyCap(org?.settings),
+    };
+
+    await tx
+      .update(schema.loyaltyPrograms)
+      .set({
+        referral_referrer_points: referrerPoints,
+        referral_referee_points: refereePoints,
+      })
+      .where(eq(schema.loyaltyPrograms.id, program.id));
+
+    let monthlyCapPerReferrer = before.monthlyCapPerReferrer;
+    if (cap !== undefined) {
+      // Fusión jsonb: solo toca settings.referrals.monthly_cap_per_referrer y
+      // conserva el resto de la configuración de la organización. Quitar el tope
+      // BORRA la clave (`#-`) en vez de dejar un null suelto, para que el jsonb
+      // que el frontend lee y reescribe no acumule basura.
+      const settingsExpr =
+        cap === null
+          ? sql`COALESCE(${schema.organizations.settings}, '{}'::jsonb) #- '{referrals,monthly_cap_per_referrer}'::text[]`
+          : sql`COALESCE(${schema.organizations.settings}, '{}'::jsonb) || jsonb_build_object(
+              'referrals',
+              COALESCE(${schema.organizations.settings} -> 'referrals', '{}'::jsonb)
+                || jsonb_build_object('monthly_cap_per_referrer', ${cap}::int)
+            )`;
+
+      await tx
+        .update(schema.organizations)
+        .set({ settings: settingsExpr, updated_at: new Date() })
+        .where(eq(schema.organizations.id, organizationId));
+      monthlyCapPerReferrer = cap;
+    }
+
+    return {
+      before,
+      after: {
+        programId: program.id,
+        programName: program.name,
+        referrerPoints,
+        refereePoints,
+        monthlyCapPerReferrer,
+      },
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +521,62 @@ export async function completeReferralForFirstOrder(params: {
 
   if (claimed.length === 0) return;
 
+  // Tope mensual antifraude (organizations.settings.referrals): cuenta cuántos
+  // referidos de ESTE promotor se completaron dentro del mes civil peruano en
+  // curso —incluido el que se acaba de reclamar— y bloquea su premio a partir
+  // del tope. El referido SIEMPRE cobra: quien abusa es el que reparte códigos,
+  // no el cliente nuevo. Con concurrencia extrema (dos primeras compras del
+  // mismo promotor en el mismo instante) el tope puede excederse en uno; es un
+  // riesgo acotado y preferible a serializar el cierre de pedidos.
+  let referrerAwardBlocked = false;
+  if (pending.referrer_points > 0) {
+    try {
+      const [org] = await runner
+        .select({ settings: schema.organizations.settings })
+        .from(schema.organizations)
+        .where(eq(schema.organizations.id, organizationId))
+        .limit(1);
+
+      const cap = readMonthlyCap(org?.settings);
+      if (cap != null) {
+        const { start, end } = peruMonthBounds(new Date());
+        const [countRow] = await runner
+          .select({ count: sql<number>`count(*)::int` })
+          .from(schema.referrals)
+          .where(
+            and(
+              eq(schema.referrals.organization_id, organizationId),
+              eq(schema.referrals.referrer_customer_id, pending.referrer_customer_id),
+              eq(schema.referrals.status, "completed"),
+              gte(schema.referrals.completed_at, start),
+              lt(schema.referrals.completed_at, end),
+            ),
+          );
+
+        const rewardedThisMonth = countRow?.count ?? 0;
+        if (rewardedThisMonth > cap) {
+          referrerAwardBlocked = true;
+          logger.info("Referido por encima del tope mensual: no se premia al promotor", {
+            referralId: pending.id,
+            referrerCustomerId: pending.referrer_customer_id,
+            cap,
+            rewardedThisMonth,
+          });
+        }
+      }
+    } catch (err) {
+      // Si no se puede leer el tope, se premia igual: cortar la recompensa por
+      // un fallo de lectura castiga al cliente por un problema nuestro.
+      logger.warn("No se pudo evaluar el tope mensual de referidos", {
+        referralId: pending.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Award points to both parties. adjustPoints clamps >= 0 and writes a ledger
   // row; skip zero awards (e.g. when referrals are configured at 0 points).
-  if (pending.referrer_points > 0) {
+  if (pending.referrer_points > 0 && !referrerAwardBlocked) {
     try {
       await adjustPoints({
         organizationId,

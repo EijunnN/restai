@@ -99,7 +99,7 @@ export function CreateSpaceDialog({ open, onOpenChange }: CreateSpaceDialogProps
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="space-description">Descripcion (opcional)</Label>
+            <Label htmlFor="space-description">Descripción (opcional)</Label>
             <Input
               id="space-description"
               value={description}
@@ -191,7 +191,7 @@ export function EditSpaceDialog({ space, onClose }: EditSpaceDialogProps) {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="edit-space-desc">Descripcion</Label>
+            <Label htmlFor="edit-space-desc">Descripción</Label>
             <Input
               id="edit-space-desc"
               value={description}

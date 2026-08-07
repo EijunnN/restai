@@ -9,7 +9,14 @@ import { useRealtime, useHasher } from "./infrastructure/container.js";
 import { handleWsMessage } from "./ws/handlers.js";
 import { whenDbReady } from "@restai/db";
 import { expireStale } from "./services/session.service.js";
-import { expirePoints, awardBirthdayBonuses } from "./services/loyalty.service.js";
+import { registerProcessErrorHandlers } from "./lib/process-handlers.js";
+import {
+  runLoyaltyJobs,
+  SESSION_EXPIRY_INTERVAL_MS,
+  WS_HEARTBEAT_INTERVAL_MS,
+  LOYALTY_BOOT_DELAY_MS,
+  LOYALTY_DAILY_INTERVAL_MS,
+} from "./lib/jobs.js";
 
 // ── Composition root del runtime Bun (contenedor) ─────────────────────
 // Elige el proveedor realtime por entorno (REALTIME_PROVIDER) e inyecta argon2.
@@ -88,14 +95,15 @@ const server = Bun.serve({
 
 logger.info("RestAI API running", { port, url: `http://localhost:${port}` });
 
-// Session expiry cron (every 60 seconds)
+// Session expiry cron. La cadencia y el cuerpo de los trabajos periódicos viven
+// en lib/jobs.ts, compartidos con el entrypoint de Node y con el Worker.
 const sessionExpiryInterval = setInterval(() => {
   expireStale().catch((err) => {
     logger.error("Session expiry cron failed", { error: err.message });
   });
-}, 60_000);
+}, SESSION_EXPIRY_INTERVAL_MS);
 
-// WS heartbeat: evict clients with expired tokens (every 30 seconds).
+// WS heartbeat: evict clients with expired tokens.
 // Solo aplica al servidor WebSocket propio (proveedor websocket).
 const wsHeartbeatInterval = setInterval(() => {
   if (!wsManager) return;
@@ -103,54 +111,15 @@ const wsHeartbeatInterval = setInterval(() => {
   if (evicted > 0) {
     logger.info("WS heartbeat: evicted expired clients", { count: evicted });
   }
-}, 30_000);
+}, WS_HEARTBEAT_INTERVAL_MS);
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-
-// Loyalty points expiry job: expires earned points past their expires_at.
-// Runs once shortly after boot, then every 24h. Non-blocking, set-based.
-async function runExpirePoints() {
-  try {
-    const { expired } = await expirePoints();
-    if (expired > 0) {
-      logger.info("Loyalty points expiry job ran", { expired });
-    }
-  } catch (err) {
-    logger.error("Loyalty points expiry job failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-// Birthday bonus job: awards a birthday bonus to customers whose birthday is
-// today (idempotent per customer per year). Runs once after boot, then every 24h.
-async function runBirthdayBonuses() {
-  try {
-    const { awarded } = await awardBirthdayBonuses();
-    if (awarded > 0) {
-      logger.info("Birthday bonus job ran", { awarded });
-    }
-  } catch (err) {
-    logger.error("Birthday bonus job failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-// Run each once shortly after boot (delayed so startup isn't blocked).
-const loyaltyBootTimeout = setTimeout(() => {
-  void runExpirePoints();
-  void runBirthdayBonuses();
-}, 10_000);
-
-// Daily loyalty jobs (~every 24h)
-const pointsExpiryInterval = setInterval(() => {
-  void runExpirePoints();
-}, ONE_DAY_MS);
-
-const birthdayBonusInterval = setInterval(() => {
-  void runBirthdayBonuses();
-}, ONE_DAY_MS);
+// Trabajos diarios de fidelización: una pasada poco después del arranque
+// (retardada para no bloquear el boot) y luego cada 24 h.
+const loyaltyBootTimeout = setTimeout(() => void runLoyaltyJobs(), LOYALTY_BOOT_DELAY_MS);
+const loyaltyDailyInterval = setInterval(
+  () => void runLoyaltyJobs(),
+  LOYALTY_DAILY_INTERVAL_MS,
+);
 
 // Graceful shutdown
 async function shutdown(signal: string) {
@@ -158,8 +127,7 @@ async function shutdown(signal: string) {
   clearInterval(sessionExpiryInterval);
   clearInterval(wsHeartbeatInterval);
   clearTimeout(loyaltyBootTimeout);
-  clearInterval(pointsExpiryInterval);
-  clearInterval(birthdayBonusInterval);
+  clearInterval(loyaltyDailyInterval);
   server.stop();
   // Cierra el coordinador del WS (subscriber de Redis, si aplica).
   await wsManager?.close().catch(() => {});
@@ -178,12 +146,5 @@ async function shutdown(signal: string) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-// Unhandled error handlers
-process.on("unhandledRejection", (reason) => {
-  logger.error("Unhandled rejection", { error: reason instanceof Error ? reason.message : String(reason) });
-});
-
-process.on("uncaughtException", (err) => {
-  logger.error("Uncaught exception", { error: err.message, stack: err.stack });
-  process.exit(1);
-});
+// Errores no capturados (mismo comportamiento que el entrypoint de Node).
+registerProcessErrorHandlers();

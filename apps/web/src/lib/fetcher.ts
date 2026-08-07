@@ -77,7 +77,89 @@ export async function apiFetch<T = any>(path: string, options?: ApiFetchOptions)
 
   const json = await res.json();
   if (!json.success) {
-    throw new Error(json.error?.message || "Error desconocido");
+    throw new ApiError(
+      json.error?.message || "Error desconocido",
+      json.error?.code,
+      res.status,
+      json.error,
+    );
   }
   return json.data as T;
+}
+
+/**
+ * Error de la API con su código y estado HTTP.
+ *
+ * Antes se lanzaba un `Error` pelado con solo el mensaje, así que la interfaz no
+ * podía distinguir un 409 de concurrencia ("otra pantalla ya movió esta
+ * comanda", que se resuelve refrescando) de un 400 de validación, y todos los
+ * fallos acababan en el mismo aviso genérico.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly status?: number,
+    public readonly detail?: unknown,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/**
+ * Igual que `apiFetch` pero devuelve la respuesta COMPLETA.
+ *
+ * `apiFetch` se queda solo con `data` y descarta el resto, lo que deja fuera la
+ * paginación: las pantallas con listados largos no podían saber cuántas páginas
+ * había ni cuántos registros existían en total.
+ */
+export async function apiFetchWithMeta<T = any>(
+  path: string,
+  options?: ApiFetchOptions,
+): Promise<T> {
+  const { accessToken, selectedBranchId } = useAuthStore.getState();
+  const {
+    includeBranchHeader = true,
+    headers: customHeaders,
+    ...requestOptions
+  } = options ?? {};
+
+  const makeRequest = async (token: string | null) =>
+    fetch(`${API_URL}${path}`, {
+      ...requestOptions,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(includeBranchHeader && selectedBranchId
+          ? { "x-branch-id": selectedBranchId }
+          : {}),
+        ...customHeaders,
+      },
+    });
+
+  let res = await makeRequest(accessToken);
+
+  if (res.status === 401 && accessToken) {
+    if (!refreshPromise) {
+      refreshPromise = refreshAccessToken().finally(() => {
+        refreshPromise = null;
+      });
+    }
+    const newToken = await refreshPromise;
+    if (newToken) {
+      res = await makeRequest(newToken);
+    }
+  }
+
+  const json = await res.json();
+  if (!json.success) {
+    throw new ApiError(
+      json.error?.message || "Error desconocido",
+      json.error?.code,
+      res.status,
+      json.error,
+    );
+  }
+  return json as T;
 }

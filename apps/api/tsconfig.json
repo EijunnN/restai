@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["bun"],
+    "types": ["bun", "@cloudflare/workers-types"],
     "paths": {
       "@restai/db": ["../../packages/db/src"],
       "@restai/db/*": ["../../packages/db/src/*"],

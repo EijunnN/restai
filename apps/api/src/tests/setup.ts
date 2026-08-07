@@ -51,8 +51,23 @@ export async function createTestTable(branchId: string, orgId: string, number: n
     organization_id: orgId,
     number,
     qr_code: uniq("qr"),
+    // Único por sede (uq_tables_branch_short_code) y de 8 caracteres como mucho.
+    // OJO: no vale truncar `uniq()`, porque su prefijo es común a todas las
+    // llamadas y las primeras 8 posiciones salían idénticas: dos mesas de la
+    // misma sede colisionaban siempre.
+    short_code: randomShortCode(),
   }).returning();
   return table;
+}
+
+/** Código corto aleatorio para pruebas, con el mismo alfabeto que la API. */
+function randomShortCode(length = 6): string {
+  const alphabet = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return out;
 }
 
 export async function createTestOrder(

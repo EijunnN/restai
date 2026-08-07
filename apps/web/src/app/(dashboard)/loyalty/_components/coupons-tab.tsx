@@ -362,7 +362,7 @@ function BulkCouponDialog({
             {result.codes.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label>Codigos generados</Label>
+                  <Label>Códigos generados</Label>
                   <Button type="button" variant="outline" size="sm" onClick={handleCopyAll}>
                     <Copy className="h-3.5 w-3.5 mr-1.5" />
                     Copiar todos
@@ -376,7 +376,7 @@ function BulkCouponDialog({
                         type="button"
                         onClick={() => {
                           navigator.clipboard.writeText(code);
-                          toast.success(`Codigo "${code}" copiado`);
+                          toast.success(`Código "${code}" copiado`);
                         }}
                         className="flex items-center gap-1 font-mono text-xs font-medium text-foreground hover:text-primary transition-colors text-left"
                         title="Copiar codigo"
@@ -571,7 +571,7 @@ export function CouponsTab() {
 
   function handleCopyCode(code: string) {
     navigator.clipboard.writeText(code);
-    toast.success(`Codigo "${code}" copiado`);
+    toast.success(`Código "${code}" copiado`);
   }
 
   function handleToggleStatus(coupon: any) {
@@ -788,7 +788,7 @@ export function CouponsTab() {
         open={!!deleteConfirm}
         onOpenChange={(v) => { if (!v) setDeleteConfirm(null); }}
         title="Eliminar cupon"
-        description={`Estas seguro de eliminar el cupon ${deleteConfirm?.name}?`}
+        description={`Estás seguro de eliminar el cupon ${deleteConfirm?.name}?`}
         onConfirm={handleDelete}
         loading={deleteCoupon.isPending}
       />

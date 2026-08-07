@@ -8,6 +8,7 @@ import { Button } from "@restai/ui/components/button";
 import { useCartStore } from "@/stores/cart-store";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
+  AlertCircle,
   ArrowLeft,
   Plus,
   Minus,
@@ -59,8 +60,21 @@ function useProductDetailLocalState() {
   const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
   const [selectedModifiers, setSelectedModifiers] = useState<Record<string, string[]>>({});
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  // Errores de validación POR GRUPO. Antes esto era un alert() del navegador:
+  // un cuadro gris del sistema, sin el nombre del grupo a la vista y que hay que
+  // cerrar antes de poder tocar nada. El mensaje va ahora junto al grupo que
+  // falta, que es donde el comensal tiene que actuar.
+  const [groupErrors, setGroupErrors] = useState<Record<string, string>>({});
+  // Si las opciones no llegan, callarse es lo peor posible: el comensal agrega
+  // el plato sin sus opciones obligatorias y el pedido ENTERO se rechaza al
+  // confirmarlo, ya en el carrito y sin explicación.
+  const [modifiersError, setModifiersError] = useState<string | null>(null);
 
   return {
+    modifiersError,
+    setModifiersError,
+    groupErrors,
+    setGroupErrors,
     menuData,
     setMenuData,
     loading,
@@ -122,12 +136,16 @@ function ModifierGroupsAccordion({
   setSelectedModifiers,
   openGroups,
   setOpenGroups,
+  groupErrors,
+  clearGroupError,
 }: {
   modifierGroups: ModifierGroup[];
   selectedModifiers: Record<string, string[]>;
   setSelectedModifiers: Dispatch<SetStateAction<Record<string, string[]>>>;
   openGroups: Record<string, boolean>;
   setOpenGroups: Dispatch<SetStateAction<Record<string, boolean>>>;
+  groupErrors: Record<string, string>;
+  clearGroupError: (groupId: string) => void;
 }) {
   if (modifierGroups.length === 0) return null;
 
@@ -137,6 +155,7 @@ function ModifierGroupsAccordion({
         const isSingleSelect = group.max_selections === 1;
         const selected = selectedModifiers[group.id] || [];
         const isOpen = openGroups[group.id] ?? !!group.is_required;
+        const groupError = groupErrors[group.id];
 
         const toggleGroup = () =>
           setOpenGroups((prev) => ({
@@ -147,12 +166,18 @@ function ModifierGroupsAccordion({
         return (
           <div
             key={group.id}
-            className="rounded-xl bg-secondary/50 overflow-hidden"
+            id={`modifier-group-${group.id}`}
+            className={cn(
+              "rounded-xl bg-secondary/50 overflow-hidden",
+              groupError && "ring-2 ring-destructive",
+            )}
           >
             <button
               type="button"
               onClick={toggleGroup}
-              className="w-full flex items-center justify-between p-4 hover:bg-secondary/70 transition-colors"
+              aria-expanded={isOpen}
+              aria-invalid={groupError ? true : undefined}
+              className="w-full min-h-12 flex items-center justify-between p-4 hover:bg-secondary/70 transition-colors"
             >
               <div className="flex items-center gap-2.5">
                 <h2 className="text-sm font-semibold">{group.name}</h2>
@@ -163,14 +188,14 @@ function ModifierGroupsAccordion({
                 )}
                 {selected.length > 0 && (
                   <span className="text-[10px] font-semibold text-foreground/70 bg-foreground/10 px-1.5 py-0.5 rounded-full">
-                    {selected.length} sel.
+                    {selected.length} {selected.length === 1 ? "elegida" : "elegidas"}
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-2">
                 {(group.max_selections || 0) > 1 && (
                   <span className="text-xs text-muted-foreground">
-                    Max {group.max_selections}
+                    Máx. {group.max_selections}
                   </span>
                 )}
                 <ChevronDown
@@ -189,10 +214,20 @@ function ModifierGroupsAccordion({
               }}
             >
               <div className="overflow-hidden">
+                {groupError && (
+                  <p
+                    role="alert"
+                    className="mx-3 mb-2 flex items-start gap-1.5 rounded-lg bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive"
+                  >
+                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    {groupError}
+                  </p>
+                )}
                 <div className="px-3 pb-3 space-y-1.5">
                   {group.modifiers.map((mod) => {
                     const isSelected = selected.includes(mod.id);
                     const handleToggle = () => {
+                      clearGroupError(group.id);
                       if (isSingleSelect) {
                         setSelectedModifiers((prev) => ({
                           ...prev,
@@ -310,6 +345,10 @@ export default function ProductDetailPage({
     setSelectedModifiers,
     openGroups,
     setOpenGroups,
+    groupErrors,
+    setGroupErrors,
+    modifiersError,
+    setModifiersError,
   } = useProductDetailLocalState();
 
   const loadMenu = useCallback(() => {
@@ -319,13 +358,13 @@ export default function ProductDetailPage({
       .then((res) => res.json())
       .then((result) => {
         if (!result.success) {
-          setError(result.error?.message || "Error al cargar el menu");
+          setError(result.error?.message || "No pudimos cargar la carta");
           return;
         }
         setMenuData(result.data);
       })
       .catch(() => {
-        setError("Error inesperado");
+        setError("No hay conexión con el restaurante. Revisa tu red e inténtalo de nuevo.");
       })
       .finally(() => {
         setLoading(false);
@@ -334,22 +373,29 @@ export default function ProductDetailPage({
 
   const loadModifiers = useCallback(() => {
     if (!menuData) return;
+    setModifiersError(null);
     void fetch(`${API_URL}/api/customer/${branchSlug}/menu/items/${itemId}/modifiers`)
       .then((res) => res.json())
       .then((result) => {
-        if (result.success) {
-          setModifierGroups(result.data);
-          const defaults: Record<string, boolean> = {};
-          for (const group of result.data) {
-            defaults[group.id] = !!group.is_required;
-          }
-          setOpenGroups(defaults);
+        if (!result.success) {
+          setModifiersError(
+            "No pudimos cargar las opciones de este plato. Vuelve a intentarlo antes de agregarlo.",
+          );
+          return;
         }
+        setModifierGroups(result.data);
+        const defaults: Record<string, boolean> = {};
+        for (const group of result.data) {
+          defaults[group.id] = !!group.is_required;
+        }
+        setOpenGroups(defaults);
       })
       .catch(() => {
-        // Keep silent; modifiers are optional.
+        setModifiersError(
+          "No pudimos cargar las opciones de este plato. Revisa tu conexión e inténtalo de nuevo.",
+        );
       });
-  }, [branchSlug, itemId, menuData, setModifierGroups, setOpenGroups]);
+  }, [branchSlug, itemId, menuData, setModifierGroups, setOpenGroups, setModifiersError]);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -369,7 +415,7 @@ export default function ProductDetailPage({
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Cargando producto...</p>
+        <p className="text-sm text-muted-foreground">Cargando el producto...</p>
       </div>
     );
   }
@@ -377,13 +423,24 @@ export default function ProductDetailPage({
   if (error || !menuData) {
     return (
       <div className="p-6 mt-12 text-center">
-        <p className="text-destructive font-medium mb-2">Error</p>
-        <p className="text-sm text-muted-foreground mb-4">
-          {error || "Error al cargar producto"}
+        <p role="alert" className="text-destructive font-medium mb-2">
+          No pudimos cargar el producto
         </p>
-        <Button variant="outline" onClick={() => router.back()}>
-          Volver
-        </Button>
+        <p className="text-sm text-muted-foreground mb-4">
+          {error || "Vuelve a intentarlo en un momento."}
+        </p>
+        <div className="mx-auto max-w-xs space-y-2">
+          <Button className="h-11 w-full" onClick={loadMenu}>
+            Reintentar
+          </Button>
+          <Button
+            variant="outline"
+            className="h-11 w-full"
+            onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
+          >
+            Volver a la carta
+          </Button>
+        </div>
       </div>
     );
   }
@@ -396,15 +453,14 @@ export default function ProductDetailPage({
         <UtensilsCrossed className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
         <p className="font-medium mb-2">Producto no encontrado</p>
         <p className="text-sm text-muted-foreground mb-4">
-          Este producto no existe o ya no esta disponible.
+          Este producto no existe o ya no está disponible.
         </p>
         <Button
           variant="outline"
-          onClick={() =>
-            router.push(`/${branchSlug}/${tableCode}/menu`)
-          }
+          className="h-11 w-full max-w-xs"
+          onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
         >
-          Volver al menu
+          Volver a la carta
         </Button>
       </div>
     );
@@ -417,19 +473,49 @@ export default function ProductDetailPage({
     .filter((i) => i.menuItemId === item.id)
     .reduce((sum, i) => sum + i.quantity, 0);
 
+  const clearGroupError = (groupId: string) => {
+    setGroupErrors((prev) => {
+      if (!prev[groupId]) return prev;
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+  };
+
   const handleAddToCart = () => {
+    // Validación en línea: se marcan TODOS los grupos que faltan (no solo el
+    // primero), se abren para que se vean sus opciones y se lleva la vista al
+    // primero. Nada de cuadros del sistema que tapan la pantalla.
+    const errors: Record<string, string> = {};
     for (const group of modifierGroups) {
-      if (group.is_required) {
-        const sel = selectedModifiers[group.id] || [];
-        if (sel.length < (group.min_selections || 1)) {
-          alert(
-            `Selecciona al menos ${group.min_selections || 1} opcion en "${group.name}"`,
-          );
-          return;
-        }
+      if (!group.is_required) continue;
+      const minimum = group.min_selections || 1;
+      const sel = selectedModifiers[group.id] || [];
+      if (sel.length < minimum) {
+        errors[group.id] =
+          minimum === 1
+            ? "Elige una opción para continuar"
+            : `Elige al menos ${minimum} opciones para continuar`;
       }
     }
 
+    if (Object.keys(errors).length > 0) {
+      setGroupErrors(errors);
+      setOpenGroups((prev) => {
+        const next = { ...prev };
+        for (const groupId of Object.keys(errors)) next[groupId] = true;
+        return next;
+      });
+      const firstId = modifierGroups.find((g) => errors[g.id])?.id;
+      if (firstId && typeof document !== "undefined") {
+        document
+          .getElementById(`modifier-group-${firstId}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
+
+    setGroupErrors({});
     const cartModifiers = buildCartModifiers(selectedModifiers, modifierGroups);
 
     // Always add as a line keyed by product+modifiers. The store merges only
@@ -448,6 +534,10 @@ export default function ProductDetailPage({
   const modifiersTotal = calculateModifiersTotal(selectedModifiers, modifierGroups);
 
   const totalPrice = (item.price + modifiersTotal) * quantity;
+
+  const missingGroupNames = modifierGroups
+    .filter((g) => groupErrors[g.id])
+    .map((g) => g.name);
 
   return (
     <div className="relative min-h-dvh pb-28">
@@ -513,7 +603,28 @@ export default function ProductDetailPage({
             setSelectedModifiers={setSelectedModifiers}
             openGroups={openGroups}
             setOpenGroups={setOpenGroups}
+            groupErrors={groupErrors}
+            clearGroupError={clearGroupError}
           />
+
+          {modifiersError && (
+            <div
+              role="alert"
+              className="flex flex-col gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              <div className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{modifiersError}</span>
+              </div>
+              <Button
+                variant="outline"
+                className="h-11 w-full"
+                onClick={() => loadModifiers()}
+              >
+                Reintentar
+              </Button>
+            </div>
+          )}
 
           {/* Already in cart indicator */}
           {cartQty > 0 && (
@@ -533,22 +644,39 @@ export default function ProductDetailPage({
           content section (relative z-10); otherwise the expanded modifier
           accordion paints over the Agregar bar and the quantity controls. */}
       <div className="fixed bottom-0 left-0 right-0 z-30 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
+        {/*
+          Resumen del error pegado a la acción: si el comensal está abajo del
+          todo, tiene que entender aquí mismo por qué no pasa nada al pulsar.
+        */}
+        {missingGroupNames.length > 0 && (
+          <div
+            role="alert"
+            className="mx-auto mb-3 flex max-w-lg items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              Falta elegir: {missingGroupNames.join(", ")}.
+            </span>
+          </div>
+        )}
         <div className="max-w-lg mx-auto flex items-center gap-3">
           {/* Quantity controls */}
           <div className="flex items-center bg-secondary rounded-2xl shrink-0">
             <button
               type="button"
+              aria-label="Quitar una unidad"
               onClick={() => setQuantity(Math.max(1, quantity - 1))}
               disabled={quantity <= 1}
               className="h-14 w-12 rounded-l-2xl flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10 disabled:opacity-30"
             >
               <Minus className="h-4 w-4" />
             </button>
-            <span className="text-lg font-bold min-w-[2rem] text-center text-foreground">
+            <span className="text-lg font-bold min-w-[2rem] text-center text-foreground tabular-nums">
               {quantity}
             </span>
             <button
               type="button"
+              aria-label="Añadir una unidad"
               onClick={() => setQuantity((prev) => prev + 1)}
               className="h-14 w-12 rounded-r-2xl flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10"
             >
@@ -556,19 +684,27 @@ export default function ProductDetailPage({
             </button>
           </div>
           {/* Add to cart button */}
+          {/* Sin las opciones cargadas no se puede agregar: el servidor rechazaría
+              el pedido entero por falta de un grupo obligatorio. */}
           <button
             type="button"
             onClick={handleAddToCart}
-            disabled={!item.is_available}
+            disabled={!item.is_available || modifiersError !== null}
             className={cn(
               "flex-1 h-14 rounded-2xl font-semibold text-base flex items-center justify-between px-5 transition-colors",
-              item.is_available
+              item.is_available && !modifiersError
                 ? "bg-foreground text-background hover:bg-foreground/90"
                 : "bg-muted text-muted-foreground cursor-not-allowed",
             )}
           >
-            <span>Agregar</span>
-            <span className="font-bold">{formatCurrency(totalPrice)}</span>
+            <span>
+              {!item.is_available
+                ? "Agotado"
+                : modifiersError
+                  ? "Opciones no disponibles"
+                  : "Agregar"}
+            </span>
+            <span className="font-bold tabular-nums">{formatCurrency(totalPrice)}</span>
           </button>
         </div>
       </div>

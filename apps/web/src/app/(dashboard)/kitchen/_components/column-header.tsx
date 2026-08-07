@@ -2,58 +2,60 @@
 
 import { cn } from "@/lib/utils";
 
+/**
+ * Cabecera de una columna del tablero.
+ *
+ * Deliberadamente sobria: un punto de color para identificar la columna de un
+ * vistazo, el nombre, cuántas hay y cuánto lleva esperando la más antigua. Nada
+ * pulsa ni late aquí — la alerta de retraso vive en una sola banda arriba del
+ * tablero, y el tiempo de cada comanda se colorea en su propia tarjeta. Repartir
+ * la misma alarma por tres sitios era lo que acababa anestesiando la vista.
+ */
+
+const DOT: Record<Variant, string> = {
+  pending: "bg-amber-500",
+  preparing: "bg-blue-500",
+  ready: "bg-green-500",
+};
+
+type Variant = "pending" | "preparing" | "ready";
+
 export function ColumnHeader({
-  icon: Icon,
   label,
   count,
   variant,
-  pulse,
+  /** Antigüedad de la comanda más vieja de la columna, ya formateada. */
+  oldest,
+  /** Texto alternativo al de "más antigua" (la columna de listos usa otro). */
+  meta,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
   label: string;
   count: number;
-  variant: "pending" | "preparing" | "ready";
-  pulse?: boolean;
+  variant: Variant;
+  oldest?: string;
+  meta?: string;
 }) {
-  const styles = {
-    pending: "bg-amber-500/15 border-amber-500/30 text-amber-800 dark:text-amber-300",
-    preparing: "bg-blue-500/15 border-blue-500/30 text-blue-800 dark:text-blue-300",
-    ready: "bg-green-500/15 border-green-500/30 text-green-800 dark:text-green-300",
-  };
-
-  const countBg = {
-    pending: "bg-amber-500 text-white",
-    preparing: "bg-blue-500 text-white",
-    ready: "bg-green-500 text-white",
-  };
-
   return (
-    <div
-      className={cn(
-        "sticky top-0 z-10 flex items-center justify-between rounded-2xl border px-4 py-3 backdrop-blur-sm shadow-sm",
-        styles[variant],
-        pulse && "animate-pulse"
-      )}
-    >
-      <div className="flex items-center gap-2">
-        <div className="rounded-xl bg-background/70 p-2">
-          <Icon className="h-5 w-5" />
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] opacity-70">
-            Estado
-          </p>
-          <h2 className="font-black text-sm uppercase tracking-wide">{label}</h2>
-        </div>
-      </div>
-      <span
-        className={cn(
-          "flex items-center justify-center h-9 min-w-9 rounded-xl px-2 text-sm font-black",
-          countBg[variant]
-        )}
-      >
+    <div className="flex flex-none items-center gap-2.5 border-b border-border px-4 py-3">
+      <span className={cn("h-1.5 w-1.5 rounded-[2px]", DOT[variant])} />
+
+      <h2 className="text-[12px] font-bold uppercase tracking-[0.14em] text-foreground">
+        {label}
+      </h2>
+
+      <span className="flex h-[22px] min-w-[22px] items-center justify-center rounded px-1.5 text-[12px] font-bold tabular-nums text-muted-foreground bg-foreground/[0.06] dark:bg-white/[0.06]">
         {count}
       </span>
+
+      <span className="flex-1" />
+
+      {meta ? (
+        <span className="text-[11px] text-muted-foreground">{meta}</span>
+      ) : count > 0 && oldest ? (
+        <span className="text-[11px] text-muted-foreground">
+          más antigua <span className="tabular-nums">{oldest}</span>
+        </span>
+      ) : null}
     </div>
   );
 }

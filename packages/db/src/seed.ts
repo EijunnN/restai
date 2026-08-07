@@ -322,6 +322,23 @@ async function seed() {
     { number: 14, capacity: 2, space_id: barra.id },
   ];
 
+  // Alfabeto sin caracteres ambiguos (ver generateShortCode en la API): el
+  // código va impreso en la mesa y el mozo lo dicta por teléfono.
+  const SHORT_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const usedShortCodes = new Set<string>();
+  const nextShortCode = () => {
+    for (;;) {
+      let code = "";
+      for (let i = 0; i < 5; i++) {
+        code += SHORT_CODE_ALPHABET[Math.floor(Math.random() * SHORT_CODE_ALPHABET.length)];
+      }
+      if (!usedShortCodes.has(code)) {
+        usedShortCodes.add(code);
+        return code;
+      }
+    }
+  };
+
   for (const t of tableConfigs) {
     await db.insert(schema.tables).values({
       branch_id: branch.id,
@@ -330,6 +347,7 @@ async function seed() {
       capacity: t.capacity,
       space_id: t.space_id,
       qr_code: `demo-principal-T${t.number}-${Date.now().toString(36)}${t.number}`,
+      short_code: nextShortCode(),
       status: "available",
     });
   }

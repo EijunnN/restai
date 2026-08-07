@@ -19,12 +19,29 @@ import {
   SelectItem,
   SelectValue,
 } from "@restai/ui/components/select";
-import { Loader2, Receipt, CheckCircle, Wallet, Check } from "lucide-react";
+import {
+  Loader2,
+  Receipt,
+  CheckCircle,
+  Wallet,
+  Check,
+  RefreshCw,
+  Ban,
+} from "lucide-react";
 import { toast } from "sonner";
 import { cn, formatCurrency } from "@/lib/utils";
-import { useTableActiveSession, useFreeTable } from "@/hooks/use-tables";
+import {
+  useTableActiveSession,
+  useFreeTable,
+  type ActiveSessionItem,
+  type ActiveSessionOrder,
+  type ActiveSessionResponse,
+  type TableRow,
+} from "@/hooks/use-tables";
 import { useCreateItemPayment } from "@/hooks/use-payments";
 import { apiFetch } from "@/lib/fetcher";
+import { useAuthStore } from "@/stores/auth-store";
+import { hasPermission } from "@/lib/permissions";
 
 const orderStatusLabels: Record<string, string> = {
   pending: "En cola",
@@ -42,17 +59,47 @@ const paymentStatusMeta: Record<string, { label: string; className: string }> = 
   paid: { label: "Pagado", className: "bg-green-500/15 text-green-700 dark:text-green-400" },
 };
 
+/**
+ * Convierte lo que teclea el cajero (soles con decimales) a CÉNTIMOS enteros,
+ * que es la única unidad de dinero que viaja a la API. Devuelve `null` si el
+ * campo está vacío o no es un número: sin esto, un `NaN` se colaba en el cuerpo
+ * de la petición como `null` y el cobro salía sin propina y sin aviso.
+ */
+function toCents(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseFloat(trimmed.replace(",", "."));
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.round(parsed * 100);
+}
+
+/** Una línea anulada ("86") ya no forma parte del importe: no se puede cobrar. */
+function isCancelled(item: ActiveSessionItem): boolean {
+  return item.status === "cancelled";
+}
+
 interface CobrarDialogProps {
-  table: any | null;
+  table: TableRow | null;
   onClose: () => void;
 }
 
 export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
   const open = !!table;
   const qc = useQueryClient();
-  const { data, isLoading } = useTableActiveSession(table?.id ?? null);
+  const {
+    data,
+    isLoading,
+    isError,
+    error: loadError,
+    refetch,
+  } = useTableActiveSession(table?.id ?? null);
   const itemPayment = useCreateItemPayment();
   const freeTable = useFreeTable();
+  // Liberar la mesa exige `tables:update`, que el cajero no tiene. Intentarlo
+  // igualmente le pintaba un error rojo tras CADA cobro completo, como si el
+  // pago hubiera fallado.
+  const role = useAuthStore((state) => state.user?.role);
+  const canFreeTable = hasPermission(role, "tables:update");
 
   const [chargingOrderId, setChargingOrderId] = useState<string | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
@@ -62,9 +109,9 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
   const [reference, setReference] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const session = (data as any)?.session ?? null;
-  const orders: any[] = (data as any)?.orders ?? [];
-  const totals = (data as any)?.totals ?? { total: 0, total_paid: 0, remaining: 0 };
+  const session = data?.session ?? null;
+  const orders: ActiveSessionOrder[] = data?.orders ?? [];
+  const totals = data?.totals ?? { total: 0, total_paid: 0, remaining: 0 };
 
   const resetForm = () => {
     setChargingOrderId(null);
@@ -81,13 +128,14 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
     onClose();
   };
 
+  /** Líneas cobrables: ni pagadas ni anuladas. */
+  const chargeableItems = (order: ActiveSessionOrder): ActiveSessionItem[] =>
+    (order.items ?? []).filter((it) => !it.paid && !isCancelled(it));
+
   // Start charging an order: select all of its still-unpaid items by default.
-  const startCharge = (order: any) => {
-    const unpaidIds = (order.items || [])
-      .filter((it: any) => !it.paid)
-      .map((it: any) => it.id);
+  const startCharge = (order: ActiveSessionOrder) => {
     setChargingOrderId(order.id);
-    setSelectedItems(new Set(unpaidIds));
+    setSelectedItems(new Set(chargeableItems(order).map((it) => it.id)));
     setMethod("cash");
     setReceived("");
     setTip("");
@@ -105,7 +153,7 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
   };
 
   const chargingOrder = orders.find((o) => o.id === chargingOrderId);
-  const unpaidItems: any[] = chargingOrder ? chargingOrder.items.filter((i: any) => !i.paid) : [];
+  const unpaidItems = chargingOrder ? chargeableItems(chargingOrder) : [];
   const selectedUnpaid = unpaidItems.filter((i) => selectedItems.has(i.id));
   const allUnpaidSelected = unpaidItems.length > 0 && selectedUnpaid.length === unpaidItems.length;
   // Owed = exact remaining when paying everything left (no rounding leftover),
@@ -116,14 +164,15 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
       : selectedUnpaid.reduce((s, i) => s + (i.share || 0), 0)
     : 0;
 
-  const receivedCents = received.trim() ? Math.round(parseFloat(received) * 100) : null;
+  const receivedCents = toCents(received);
+  const tipCents = toCents(tip) ?? 0;
   const changeAmount =
     receivedCents != null && receivedCents > owed ? receivedCents - owed : 0;
   const insufficient = receivedCents != null && receivedCents < owed;
   const canRegister = selectedUnpaid.length > 0 && owed > 0 && !insufficient;
 
   const submitPayment = async () => {
-    if (!chargingOrder || !canRegister) return;
+    if (!chargingOrder || !canRegister || !table) return;
     setError(null);
     try {
       await itemPayment.mutateAsync({
@@ -131,23 +180,40 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
         itemIds: selectedUnpaid.map((i) => i.id),
         method,
         reference: reference || undefined,
-        tip: tip ? Math.round(parseFloat(tip) * 100) : 0,
+        tip: tipCents,
       });
 
       // Re-read live balance for this table.
-      const refreshed: any = await apiFetch(`/api/tables/${table?.id}/active-session`);
-      qc.setQueryData(["tables", table?.id, "active-session"], refreshed);
+      const refreshed = await apiFetch<ActiveSessionResponse>(
+        `/api/tables/${table.id}/active-session`,
+      );
+      qc.setQueryData(["tables", table.id, "active-session"], refreshed);
 
       const remaining = refreshed?.totals?.remaining ?? 0;
       const hadOrders = (refreshed?.orders?.length ?? 0) > 0;
 
-      // Whole table settled → free it (also completes orders + loyalty/inventory).
+      // Mesa saldada → se libera sola (completa pedidos, puntos e inventario).
       if (hadOrders && remaining <= 0) {
+        if (!canFreeTable) {
+          toast.success(
+            `Cuenta de la mesa ${table.number} saldada. La libera el personal de sala.`,
+          );
+          handleClose();
+          return;
+        }
         try {
-          await freeTable.mutateAsync(table?.id);
-          toast.success(`Mesa ${table?.number} cobrada y liberada`);
-        } catch {
+          await freeTable.mutateAsync({ tableId: table.id });
+          toast.success(`Mesa ${table.number} cobrada y liberada`);
+        } catch (freeError) {
+          // El cobro SÍ se registró: eso no se puede perder de vista. Lo único
+          // que falló es liberar la mesa, y hay que decirlo o el mozo creerá
+          // que la mesa quedó libre y sentará a otro cliente encima.
           toast.success("Pago registrado");
+          toast.error(
+            freeError instanceof Error
+              ? `No se pudo liberar la mesa: ${freeError.message}`
+              : "El pago se registró, pero la mesa no se pudo liberar",
+          );
         }
         handleClose();
         return;
@@ -156,7 +222,11 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
       toast.success("Pago registrado");
       resetForm();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo registrar el pago");
+      // Sin el aviso visible, un cobro rechazado (línea anulada, orden cerrada,
+      // caja sin abrir) parecía no haber hecho nada y el cajero volvía a pulsar.
+      const message = e instanceof Error ? e.message : "No se pudo registrar el pago";
+      setError(message);
+      toast.error(message);
     }
   };
 
@@ -165,7 +235,7 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Wallet className="h-5 w-5" />
+            <Wallet className="h-5 w-5" aria-hidden="true" />
             Cobrar — Mesa {table?.number}
           </DialogTitle>
           <DialogDescription>
@@ -176,12 +246,29 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
         </DialogHeader>
 
         {isLoading ? (
-          <div className="flex items-center justify-center py-10">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <div className="space-y-3" aria-busy="true">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <div key={i} className="h-24 animate-pulse rounded-lg bg-muted" />
+            ))}
+          </div>
+        ) : isError ? (
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/50 bg-destructive/5 p-4"
+            role="alert"
+          >
+            <p className="text-sm text-destructive">
+              No se pudo cargar la cuenta de la mesa
+              {loadError instanceof Error ? `: ${loadError.message}` : "."}
+            </p>
+            <Button variant="outline" className="h-10" onClick={() => refetch()}>
+              <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
+              Reintentar
+            </Button>
           </div>
         ) : !session ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            Esta mesa no tiene una sesión activa.
+            Esta mesa no tiene una cuenta abierta. Usa «Sentar» para abrirle una al
+            cliente.
           </p>
         ) : orders.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
@@ -190,62 +277,78 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
         ) : (
           <div className="space-y-3">
             {orders.map((order) => {
-              const pm = paymentStatusMeta[order.payment_status] || paymentStatusMeta.unpaid;
+              const pm = paymentStatusMeta[order.payment_status] || paymentStatusMeta.unpaid!;
               const isCharging = chargingOrderId === order.id;
-              const orderUnpaid = (order.items || []).filter((i: any) => !i.paid);
+              const orderUnpaid = chargeableItems(order);
               return (
                 <div key={order.id} className="rounded-lg border bg-card">
                   <div className="flex items-start justify-between gap-2 p-3">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="font-semibold text-sm">#{order.order_number}</p>
-                        <span className="text-[10px] rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold">#{order.order_number}</p>
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
                           {orderStatusLabels[order.status] || order.status}
                         </span>
-                        <span className={cn("text-[10px] rounded-full px-2 py-0.5 font-medium", pm.className)}>
+                        <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", pm.className)}>
                           {pm.label}
                         </span>
                       </div>
-                      {/* Items — paid ones shown done, the rest selectable while charging */}
+                      {/* Líneas: las pagadas y las anuladas quedan fuera del cobro */}
                       <ul className="mt-2 space-y-1">
-                        {order.items.map((it: any) => {
+                        {order.items.map((it) => {
+                          const cancelled = isCancelled(it);
                           const checked = selectedItems.has(it.id);
-                          const selectable = isCharging && !it.paid;
+                          const selectable = isCharging && !it.paid && !cancelled;
                           return (
                             <li key={it.id}>
                               <button
                                 type="button"
                                 disabled={!selectable}
+                                aria-pressed={selectable ? checked : undefined}
                                 onClick={() => selectable && toggleItem(it.id)}
                                 className={cn(
-                                  "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs",
+                                  "flex min-h-10 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm",
                                   selectable && "hover:bg-muted/60",
-                                  it.paid && "opacity-60",
+                                  (it.paid || cancelled) && "opacity-60",
                                 )}
                               >
-                                {it.paid ? (
-                                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-green-600 dark:text-green-400">
-                                    <CheckCircle className="h-3.5 w-3.5" />
+                                {cancelled ? (
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground">
+                                    <Ban className="h-4 w-4" aria-hidden="true" />
+                                  </span>
+                                ) : it.paid ? (
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-green-600 dark:text-green-400">
+                                    <CheckCircle className="h-4 w-4" aria-hidden="true" />
                                   </span>
                                 ) : isCharging ? (
                                   <span
                                     className={cn(
-                                      "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                                      "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
                                       checked
                                         ? "border-primary bg-primary text-primary-foreground"
                                         : "border-muted-foreground/40",
                                     )}
                                   >
-                                    {checked && <Check className="h-3 w-3" />}
+                                    {checked && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
                                   </span>
                                 ) : (
-                                  <span className="h-4 w-4 shrink-0" />
+                                  <span className="h-5 w-5 shrink-0" />
                                 )}
-                                <span className={cn("flex-1", it.paid && "line-through")}>
+                                <span
+                                  className={cn(
+                                    "flex-1",
+                                    (it.paid || cancelled) && "line-through",
+                                  )}
+                                >
                                   {it.quantity}x {it.name}
+                                  {cancelled && (
+                                    <span className="ml-1 text-xs text-muted-foreground">
+                                      (anulado)
+                                    </span>
+                                  )}
                                 </span>
                                 <span className="shrink-0 text-muted-foreground">
-                                  {formatCurrency(it.share ?? 0)}
+                                  {formatCurrency(cancelled ? 0 : (it.share ?? 0))}
                                 </span>
                               </button>
                             </li>
@@ -253,8 +356,8 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                         })}
                       </ul>
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className="font-bold text-sm">{formatCurrency(order.total)}</p>
+                    <div className="shrink-0 text-right">
+                      <p className="text-sm font-bold">{formatCurrency(order.total)}</p>
                       {order.total_paid > 0 && order.remaining > 0 && (
                         <p className="text-[11px] text-muted-foreground">
                           Pagado {formatCurrency(order.total_paid)}
@@ -266,7 +369,7 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                         </p>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-[11px] text-green-600 dark:text-green-400">
-                          <CheckCircle className="h-3 w-3" /> Pagado
+                          <CheckCircle className="h-3 w-3" aria-hidden="true" /> Pagado
                         </span>
                       )}
                     </div>
@@ -275,19 +378,18 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                   {orderUnpaid.length > 0 && !isCharging && (
                     <div className="border-t px-3 py-2">
                       <Button
-                        size="sm"
                         variant="outline"
-                        className="w-full"
+                        className="h-10 w-full"
                         onClick={() => startCharge(order)}
                       >
-                        <Receipt className="h-4 w-4 mr-2" />
-                        Cobrar
+                        <Receipt className="mr-2 h-4 w-4" aria-hidden="true" />
+                        Cobrar este pedido
                       </Button>
                     </div>
                   )}
 
                   {isCharging && (
-                    <div className="border-t p-3 space-y-3 bg-muted/30">
+                    <div className="space-y-3 border-t bg-muted/30 p-3">
                       <p className="text-xs text-muted-foreground">
                         Marca los productos que paga este cliente.
                       </p>
@@ -296,9 +398,9 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                         <span className="font-bold">{formatCurrency(owed)}</span>
                       </div>
                       <div className="space-y-1.5">
-                        <Label>Método de pago</Label>
+                        <Label htmlFor={`method-${order.id}`}>Método de pago</Label>
                         <Select value={method} onValueChange={setMethod}>
-                          <SelectTrigger>
+                          <SelectTrigger id={`method-${order.id}`} className="h-10">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -316,7 +418,9 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                           <Label htmlFor={`rec-${order.id}`}>Monto recibido (S/)</Label>
                           <Input
                             id={`rec-${order.id}`}
+                            className="h-10"
                             type="number"
+                            inputMode="decimal"
                             step="0.01"
                             min="0"
                             placeholder="0.00"
@@ -328,7 +432,9 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                           <Label htmlFor={`tip-${order.id}`}>Propina (S/)</Label>
                           <Input
                             id={`tip-${order.id}`}
+                            className="h-10"
                             type="number"
+                            inputMode="decimal"
                             step="0.01"
                             min="0"
                             placeholder="0.00"
@@ -343,34 +449,42 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                         </p>
                       )}
                       {insufficient && (
-                        <p className="text-xs text-amber-600 dark:text-amber-400">
-                          El monto recibido es menor a lo seleccionado.
+                        <p className="text-xs text-amber-600 dark:text-amber-400" role="alert">
+                          El monto recibido es menor que lo seleccionado.
                         </p>
                       )}
                       <div className="space-y-1.5">
                         <Label htmlFor={`ref-${order.id}`}>Referencia</Label>
                         <Input
                           id={`ref-${order.id}`}
-                          placeholder="N° de operación, etc."
+                          className="h-10"
+                          placeholder="N.º de operación, etc."
                           value={reference}
                           onChange={(e) => setReference(e.target.value)}
                         />
                       </div>
-                      {error && <p className="text-sm text-destructive">{error}</p>}
+                      {error && (
+                        <p className="text-sm text-destructive" role="alert">
+                          {error}
+                        </p>
+                      )}
                       <div className="flex gap-2">
                         <Button
                           variant="outline"
-                          className="flex-1"
+                          className="h-10 flex-1"
                           onClick={resetForm}
                           disabled={itemPayment.isPending}
                         >
                           Cancelar
                         </Button>
                         <Button
-                          className="flex-1"
-                          onClick={submitPayment}
+                          className="h-10 flex-1"
+                          onClick={() => void submitPayment()}
                           disabled={itemPayment.isPending || !canRegister}
                         >
+                          {itemPayment.isPending && (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                          )}
                           {itemPayment.isPending ? "Registrando..." : `Cobrar ${formatCurrency(owed)}`}
                         </Button>
                       </div>
@@ -380,8 +494,8 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
               );
             })}
 
-            {/* Totals */}
-            <div className="rounded-lg border bg-muted/40 p-3 space-y-1 text-sm">
+            {/* Totales */}
+            <div className="space-y-1 rounded-lg border bg-muted/40 p-3 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Total</span>
                 <span className="font-medium">{formatCurrency(totals.total)}</span>
@@ -392,7 +506,7 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
                   {formatCurrency(totals.total_paid)}
                 </span>
               </div>
-              <div className="flex justify-between font-bold border-t pt-1">
+              <div className="flex justify-between border-t pt-1 font-bold">
                 <span>Pendiente</span>
                 <span className={totals.remaining > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}>
                   {formatCurrency(totals.remaining)}
@@ -400,7 +514,7 @@ export function CobrarDialog({ table, onClose }: CobrarDialogProps) {
               </div>
             </div>
 
-            <p className="text-[11px] text-muted-foreground text-center">
+            <p className="text-center text-[11px] text-muted-foreground">
               Al saldar el total (pendiente en S/ 0), la mesa se libera
               automáticamente y los pedidos se completan.
             </p>

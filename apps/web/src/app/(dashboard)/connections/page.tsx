@@ -5,13 +5,22 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@restai/ui/components/tabs";
-import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw, Loader2, Bell, Receipt } from "lucide-react";
+import { Wifi, Check, X, Clock, UserCheck, UserX, RefreshCw, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { cn } from "@/lib/utils";
-import { useSessions, useApproveSession, useRejectSession, useEndSession, useMyAssignedTables } from "@/hooks/use-tables";
+import {
+  useSessions,
+  useApproveSession,
+  useRejectSession,
+  useMyAssignedTables,
+} from "@/hooks/use-tables";
 import { useBranchSettings } from "@/hooks/use-settings";
 import { useAuthStore } from "@/stores/auth-store";
+import { hasPermission } from "@/lib/permissions";
 import type { WsMessage } from "@restai/types";
+import { ServiceRequestTray } from "./_components/service-request-tray";
+import { EndSessionDialog, type EndSessionTarget } from "./_components/end-session-dialog";
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -25,6 +34,13 @@ const statusConfig: Record<string, { label: string; color: string; icon: any }> 
   rejected: { label: "Rechazada", color: "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/20", icon: UserX },
 };
 
+const emptyMessages: Record<string, string> = {
+  pending: "No hay solicitudes de ingreso esperando aprobación.",
+  active: "Ninguna mesa tiene una visita abierta ahora mismo.",
+  completed: "Todavía no hay visitas cerradas para mostrar.",
+  all: "Aún no hay sesiones de clientes en esta sede.",
+};
+
 interface TableSession {
   id: string;
   customer_name: string;
@@ -35,45 +51,33 @@ interface TableSession {
   status: string;
 }
 
-interface TableServiceRequest {
-  id: string;
-  type: "request_bill" | "call_waiter";
-  tableId: string;
-  tableNumber: number;
-  tableSessionId: string;
-  customerName: string;
-  timestamp: number;
-}
-
 interface SessionEventPayload {
   sessionId: string;
   tableId: string;
 }
 
-interface ServiceRequestPayload {
-  tableId: string;
-  tableNumber: number;
-  tableSessionId: string;
-  customerName?: string;
-}
-
 export default function ConnectionsPage() {
   const [tab, setTab] = useState("pending");
   const [mutatingId, setMutatingId] = useState<string | null>(null);
-  const [serviceRequests, setServiceRequests] = useState<TableServiceRequest[]>([]);
+  const [endTarget, setEndTarget] = useState<EndSessionTarget | null>(null);
   const queryClient = useQueryClient();
-  const { data: sessions, isLoading, refetch } = useSessions(tab === "all" ? undefined : tab);
+  const { data: sessions, isLoading, isError, error, refetch } = useSessions(
+    tab === "all" ? undefined : tab,
+  );
   const approveSession = useApproveSession();
   const rejectSession = useRejectSession();
-  const endSession = useEndSession();
 
-  // Waiter assignment filtering
+  // Filtro por asignación de mozos
   const user = useAuthStore((s) => s.user);
   const accessToken = useAuthStore((s) => s.accessToken);
   const selectedBranchId = useAuthStore((s) => s.selectedBranchId);
   const { data: branchSettingsData } = useBranchSettings();
-  const { data: myAssignedTables } = useMyAssignedTables();
   const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
+  const { data: myAssignedTables } = useMyAssignedTables({ enabled: waiterAssignmentEnabled });
+  // Aceptar, rechazar y terminar una visita exigen `tables:update`. El cajero
+  // llega a esta pantalla con `tables:read` a secas: los botones le devolvían
+  // "Sin permisos" en la cara.
+  const canOperate = hasPermission(user?.role, "tables:update");
   const isAdminOrManager = user?.role === "super_admin" || user?.role === "org_admin" || user?.role === "branch_manager";
   const shouldFilter = waiterAssignmentEnabled && !isAdminOrManager;
   const assignedTableIds = useMemo(
@@ -81,99 +85,68 @@ export default function ConnectionsPage() {
     [myAssignedTables]
   );
 
+  /**
+   * Mesas visibles para este usuario, o `null` si ve toda la sala.
+   *
+   * Si la sede filtra por asignación pero a este mozo no le han asignado
+   * ninguna mesa, se le enseña todo: es preferible que vea de más a que se
+   * quede mirando una pantalla vacía mientras el comedor llama.
+   */
+  const allowedTableIds = useMemo(
+    () => (shouldFilter && assignedTableIds.size > 0 ? assignedTableIds : null),
+    [shouldFilter, assignedTableIds]
+  );
+
   const sessionList = useMemo(() => {
     const all = (sessions ?? []) as TableSession[];
-    // If assignment filtering is disabled or user is admin/manager, show all
-    if (!waiterAssignmentEnabled || isAdminOrManager) return all;
-    // Filter to only sessions whose table is assigned to this waiter
-    if (assignedTableIds.size === 0) return all; // No assignments = show all (fallback)
-    return all.filter((session) => assignedTableIds.has(session.table_id));
-  }, [sessions, waiterAssignmentEnabled, isAdminOrManager, assignedTableIds]);
-
-  const visibleServiceRequests = useMemo(() => {
-    if (!shouldFilter) {
-      return serviceRequests;
-    }
-
-    if (assignedTableIds.size === 0) {
-      return serviceRequests;
-    }
-
-    return serviceRequests.filter((request) => assignedTableIds.has(request.tableId));
-  }, [serviceRequests, shouldFilter, assignedTableIds]);
-
-  const requestSummary = useMemo(() => {
-    return visibleServiceRequests.reduce(
-      (summary, request) => {
-        if (request.type === "request_bill") {
-          summary.requestBillCount += 1;
-        } else {
-          summary.callWaiterCount += 1;
-        }
-
-        summary.total += 1;
-        return summary;
-      },
-      { total: 0, requestBillCount: 0, callWaiterCount: 0 }
-    );
-  }, [visibleServiceRequests]);
+    if (!allowedTableIds) return all;
+    return all.filter((session) => allowedTableIds.has(session.table_id));
+  }, [sessions, allowedTableIds]);
 
   const handleWsMessage = useCallback((msg: WsMessage) => {
-    if (msg.type === "auth:success") {
+    // WsMessageType todavía no declara los eventos nuevos de sala y avisos.
+    const type = msg.type as string;
+
+    if (type === "auth:success") {
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
       return;
     }
 
     if (
-      msg.type === "session:pending" ||
-      msg.type === "session:approved" ||
-      msg.type === "session:rejected" ||
-      msg.type === "session:ended"
+      type === "table:request_bill" ||
+      type === "table:call_waiter" ||
+      type === "service_request:acknowledged" ||
+      type === "service_request:resolved"
     ) {
-      const payload = msg.payload as SessionEventPayload;
+      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
+      return;
+    }
 
-      if (shouldFilter && assignedTableIds.size > 0 && !assignedTableIds.has(payload.tableId)) {
+    if (
+      type === "session:pending" ||
+      type === "session:approved" ||
+      type === "session:rejected" ||
+      type === "session:ended" ||
+      type === "session:started" ||
+      type === "session:moved" ||
+      type === "session:merged"
+    ) {
+      const payload = msg.payload as Partial<SessionEventPayload>;
+
+      if (
+        allowedTableIds &&
+        payload.tableId &&
+        !allowedTableIds.has(payload.tableId)
+      ) {
         return;
       }
 
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });
       void queryClient.invalidateQueries({ queryKey: ["tables", "sessions", "pending"] });
-
-      if (msg.type === "session:ended") {
-        setServiceRequests((prev) => prev.filter((request) => request.tableSessionId !== payload.sessionId));
-      }
-      return;
+      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
     }
-
-    if (msg.type !== "table:request_bill" && msg.type !== "table:call_waiter") {
-      return;
-    }
-
-    const payload = msg.payload as ServiceRequestPayload;
-
-    if (shouldFilter && assignedTableIds.size > 0 && !assignedTableIds.has(payload.tableId)) {
-      return;
-    }
-
-    const requestType: TableServiceRequest["type"] =
-      msg.type === "table:request_bill" ? "request_bill" : "call_waiter";
-    const requestId = `${payload.tableSessionId}:${requestType}`;
-
-    setServiceRequests((prev) => {
-      const nextRequest: TableServiceRequest = {
-        id: requestId,
-        type: requestType,
-        tableId: payload.tableId,
-        tableNumber: payload.tableNumber,
-        tableSessionId: payload.tableSessionId,
-        customerName: payload.customerName || "Cliente",
-        timestamp: msg.timestamp,
-      };
-      const filtered = prev.filter((request) => request.id !== requestId);
-
-      return [nextRequest, ...filtered].slice(0, 25);
-    });
-  }, [assignedTableIds, queryClient, shouldFilter]);
+  }, [allowedTableIds, queryClient]);
 
   useWebSocket(
     selectedBranchId ? [`branch:${selectedBranchId}`] : [],
@@ -183,68 +156,21 @@ export default function ConnectionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Conexiones</h1>
-          <p className="text-muted-foreground">Gestiona las sesiones de clientes</p>
+          <p className="text-muted-foreground">
+            Avisos de mesa y sesiones de clientes
+          </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()}>
-          <RefreshCw className="h-4 w-4 mr-2" />
+        <Button variant="outline" className="h-10" onClick={() => refetch()}>
+          <RefreshCw className="h-4 w-4 mr-2" aria-hidden="true" />
           Actualizar
         </Button>
       </div>
 
-      {visibleServiceRequests.length > 0 && (
-        <Card>
-          <CardContent className="p-4 space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="font-medium">Solicitudes en tiempo real</p>
-                <p className="text-sm text-muted-foreground">
-                  {requestSummary.requestBillCount} cuenta, {requestSummary.callWaiterCount} mozo
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setServiceRequests([])}>
-                Limpiar
-              </Button>
-            </div>
-
-            <div className="space-y-2">
-              {visibleServiceRequests.map((request) => (
-                <div
-                  key={request.id}
-                  className="flex items-start justify-between gap-3 rounded-lg border border-border bg-muted/30 px-3 py-3"
-                >
-                  <div className="flex items-start gap-3 min-w-0">
-                    {request.type === "request_bill" ? (
-                      <Receipt className="h-4 w-4 mt-0.5 shrink-0 text-blue-500" />
-                    ) : (
-                      <Bell className="h-4 w-4 mt-0.5 shrink-0 text-orange-500" />
-                    )}
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium">
-                        Mesa {request.tableNumber}: {request.customerName}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        {request.type === "request_bill" ? "Solicita la cuenta" : "Solicita mozo"}
-                      </p>
-                    </div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setServiceRequests((prev) => prev.filter((item) => item.id !== request.id));
-                    }}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Bandeja de avisos: lo primero que mira el mozo */}
+      <ServiceRequestTray allowedTableIds={allowedTableIds} />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
@@ -261,62 +187,125 @@ export default function ConnectionsPage() {
                 <div key={i} className="animate-pulse bg-muted rounded-lg h-20" />
               ))}
             </div>
+          ) : isError ? (
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/50 bg-destructive/5 p-4"
+              role="alert"
+            >
+              <p className="text-sm text-destructive">
+                No se pudieron cargar las sesiones
+                {error instanceof Error ? `: ${error.message}` : "."}
+              </p>
+              <Button variant="outline" className="h-10" onClick={() => refetch()}>
+                <RefreshCw className="h-4 w-4 mr-2" aria-hidden="true" />
+                Reintentar
+              </Button>
+            </div>
           ) : sessionList.length === 0 ? (
             <Card>
-              <CardContent className="flex flex-col items-center justify-center py-12">
-                <Wifi className="h-12 w-12 text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">No hay sesiones {tab === "pending" ? "pendientes" : tab === "active" ? "activas" : ""}</p>
+              <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+                <Wifi className="h-12 w-12 text-muted-foreground mb-4" aria-hidden="true" />
+                <p className="text-muted-foreground">
+                  {emptyMessages[tab] ?? emptyMessages.all}
+                </p>
               </CardContent>
             </Card>
           ) : (
             <div className="space-y-3">
-              {sessionList.map((session: any) => {
-                const config = statusConfig[session.status] || statusConfig.pending;
+              {sessionList.map((session) => {
+                const config = statusConfig[session.status] ?? statusConfig.pending!;
                 const Icon = config.icon;
+                const busy = mutatingId === session.id;
                 return (
                   <Card key={session.id}>
                     <CardContent className="p-4">
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-4">
                           <div className={cn("flex items-center justify-center h-10 w-10 rounded-full border", config.color)}>
-                            <Icon className="h-5 w-5" />
+                            <Icon className="h-5 w-5" aria-hidden="true" />
                           </div>
                           <div>
                             <p className="font-medium">{session.customer_name}</p>
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                               <span>Mesa {session.table_number}</span>
                               {session.customer_phone && <span>· {session.customer_phone}</span>}
-                              <span>· {session.started_at ? formatDate(session.started_at) : ""}</span>
+                              {session.started_at && <span>· {formatDate(session.started_at)}</span>}
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className={cn("text-xs px-2.5 py-1 rounded-full font-medium border", config.color)}>
                             {config.label}
                           </span>
-                          {session.status === "pending" && (
-                            <div className="flex gap-1 ml-2">
-                              <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={mutatingId === session.id} onClick={() => {
-                                setMutatingId(session.id);
-                                rejectSession.mutate(session.id, { onSettled: () => setMutatingId(null) });
-                              }}>
-                                {mutatingId === session.id && rejectSession.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                          {session.status === "pending" && canOperate && (
+                            <div className="flex gap-2">
+                              <Button
+                                variant="outline"
+                                className="h-10 text-destructive hover:text-destructive"
+                                aria-label={`Rechazar a ${session.customer_name} en la mesa ${session.table_number}`}
+                                disabled={busy}
+                                onClick={() => {
+                                  setMutatingId(session.id);
+                                  rejectSession.mutate(session.id, {
+                                    onSuccess: () => toast.success("Solicitud rechazada"),
+                                    onError: (err) =>
+                                      toast.error(
+                                        err instanceof Error
+                                          ? err.message
+                                          : "No se pudo rechazar la solicitud",
+                                      ),
+                                    onSettled: () => setMutatingId(null),
+                                  });
+                                }}
+                              >
+                                {busy && rejectSession.isPending ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <X className="h-4 w-4" aria-hidden="true" />
+                                )}
                               </Button>
-                              <Button size="sm" disabled={mutatingId === session.id} onClick={() => {
-                                setMutatingId(session.id);
-                                approveSession.mutate(session.id, { onSettled: () => setMutatingId(null) });
-                              }}>
-                                {mutatingId === session.id && approveSession.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Check className="h-4 w-4 mr-1" />}
+                              <Button
+                                className="h-10"
+                                disabled={busy}
+                                onClick={() => {
+                                  setMutatingId(session.id);
+                                  approveSession.mutate(session.id, {
+                                    onSuccess: () =>
+                                      toast.success(
+                                        `${session.customer_name} ya puede pedir en la mesa ${session.table_number}`,
+                                      ),
+                                    onError: (err) =>
+                                      toast.error(
+                                        err instanceof Error
+                                          ? err.message
+                                          : "No se pudo aceptar la solicitud",
+                                      ),
+                                    onSettled: () => setMutatingId(null),
+                                  });
+                                }}
+                              >
+                                {busy && approveSession.isPending ? (
+                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <Check className="h-4 w-4 mr-1" aria-hidden="true" />
+                                )}
                                 Aceptar
                               </Button>
                             </div>
                           )}
-                          {session.status === "active" && (
-                            <Button size="sm" variant="outline" className="ml-2" disabled={mutatingId === session.id} onClick={() => {
-                              setMutatingId(session.id);
-                              endSession.mutate(session.id, { onSettled: () => setMutatingId(null) });
-                            }}>
-                              {mutatingId === session.id && endSession.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <X className="h-4 w-4 mr-1" />}
+                          {session.status === "active" && canOperate && (
+                            <Button
+                              variant="outline"
+                              className="h-10"
+                              onClick={() =>
+                                setEndTarget({
+                                  id: session.id,
+                                  customerName: session.customer_name,
+                                  tableNumber: session.table_number,
+                                })
+                              }
+                            >
+                              <X className="h-4 w-4 mr-1" aria-hidden="true" />
                               Terminar
                             </Button>
                           )}
@@ -330,6 +319,8 @@ export default function ConnectionsPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      <EndSessionDialog session={endTarget} onClose={() => setEndTarget(null)} />
     </div>
   );
 }

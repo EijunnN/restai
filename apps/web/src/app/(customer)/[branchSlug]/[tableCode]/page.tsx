@@ -27,7 +27,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 const registerSchema = z.object({
   customerName: z.string().min(1, "Ingresa tu nombre").max(255),
   customerPhone: z.string().max(20).optional(),
-  email: z.string().email("Email invalido").optional().or(z.literal("")),
+  email: z.string().email("Email inválido").optional().or(z.literal("")),
   birthDate: z.string().optional(),
 });
 
@@ -75,9 +75,15 @@ function CustomerEntryPageContent({
   const router = useRouter();
   // Referral link support: /{branch}/{table}?ref=CODE → forwarded on register.
   const referralCode = useSearchParams().get("ref") || undefined;
-  // Marketing consent (Ley 29733). Defaults on for loyalty joiners so they get
-  // coupons/offers by email; clearly shown and toggleable.
-  const [marketingOptIn, setMarketingOptIn] = useState(true);
+  // Consentimiento de marketing (Ley 29733). Arranca DESMARCADO: la norma exige
+  // un acto afirmativo del titular, y una casilla premarcada no lo es. Además,
+  // una lista construida con consentimientos que nadie dio activamente tiene
+  // tasas de queja altísimas y acaba dañando la reputación de envío del dominio.
+  const [marketingOptIn, setMarketingOptIn] = useState(false);
+  // Número real de la mesa, que resuelve el servidor. El parámetro de la URL es
+  // el identificador del QR ("demo-principal-T5-m3k9x2a"), no algo que se pueda
+  // enseñar a una persona.
+  const [tableNumber, setTableNumber] = useState<number | null>(null);
   const {
     loading,
     setLoading,
@@ -110,6 +116,11 @@ function CustomerEntryPageContent({
     void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`)
       .then((res) => res.json())
       .then((result) => {
+        if (result.success) {
+          // El servidor devuelve el número de mesa junto al estado de sesión.
+          const num = result.data?.tableNumber ?? result.data?.table_number;
+          if (typeof num === "number") setTableNumber(num);
+        }
         if (result.success && result.data.hasSession) {
           setExistingSession(result.data);
         } else {
@@ -190,7 +201,7 @@ function CustomerEntryPageContent({
             setLoading(false);
             return;
           }
-          setError(result.error?.message || "Error al iniciar sesion");
+          setError(result.error?.message || "Error al iniciar sesión");
           setLoading(false);
           return;
         }
@@ -239,7 +250,7 @@ function CustomerEntryPageContent({
               <RefreshCw className="h-8 w-8 text-green-600" />
             </div>
             <CardTitle className="text-2xl">
-              {canReconnect ? "Sesion activa" : "Mesa ocupada"}
+              {canReconnect ? "Sesión activa" : "Mesa ocupada"}
             </CardTitle>
             <CardDescription>
               {canReconnect
@@ -281,7 +292,7 @@ function CustomerEntryPageContent({
             </div>
             <CardTitle className="text-2xl">Mesa en espera</CardTitle>
             <CardDescription>
-              Esta mesa esta esperando aprobacion del personal. Intenta de nuevo en unos momentos.
+              Esta mesa está esperando la aprobación del personal. Intenta de nuevo en unos momentos.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -311,7 +322,12 @@ function CustomerEntryPageContent({
           </div>
           <CardTitle className="text-2xl">Bienvenido</CardTitle>
           <CardDescription>
-            Mesa {tableCode} - Ingresa tus datos para empezar a ordenar
+            {/*
+              Nunca el identificador del QR: "Mesa demo-principal-T5-m3k9x2a" es
+              lo primero que veía el comensal y no significa nada para nadie.
+            */}
+            {tableNumber !== null ? `Mesa ${tableNumber} · ` : ""}
+            Ingresa tus datos para empezar a ordenar
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit(onSubmit)}>
@@ -335,7 +351,7 @@ function CustomerEntryPageContent({
               )}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="customerPhone">Telefono (opcional)</Label>
+              <Label htmlFor="customerPhone">Teléfono (opcional)</Label>
               <Input
                 id="customerPhone"
                 placeholder="987 654 321"
@@ -370,7 +386,7 @@ function CustomerEntryPageContent({
                     Quieres acumular puntos?
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Registrate y gana puntos con cada pedido
+                    Regístrate y gana puntos con cada pedido
                   </p>
                 </div>
                 <div className={`h-5 w-9 rounded-full transition-colors relative ${

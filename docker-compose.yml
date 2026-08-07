@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fenrinegro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en el .env}
       POSTGRES_DB: restai
     volumes:
       - pgdata:/var/lib/postgresql
@@ -34,7 +34,7 @@ services:
     working_dir: /app/packages/db
     command: ["bun", "run", "src/migrate.ts"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-fenrinegro}@postgres:5432/restai
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en el .env}@postgres:5432/restai
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,7 +47,7 @@ services:
     restart: unless-stopped
     environment:
       API_PORT: "3001"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-fenrinegro}@postgres:5432/restai
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en el .env}@postgres:5432/restai
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}

@@ -8,15 +8,30 @@ import { Card, CardContent } from "@restai/ui/components/card";
 import { Input } from "@restai/ui/components/input";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
-import { formatCurrency } from "@/lib/utils";
-import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift, ChevronRight, UtensilsCrossed } from "lucide-react";
+import { cn, formatCurrency } from "@/lib/utils";
+import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift, ChevronRight, UtensilsCrossed, AlertCircle, ClipboardList } from "lucide-react";
 import { toast } from "sonner";
+import { describeReward } from "@/components/customer/reward-label";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 // Default IGV (18%, stored in basis points: 1800/10000). All totals computed
 // here are DISPLAY-ONLY ESTIMATES — the server recomputes and is authoritative.
 // We prefer the branch's tax_rate from the public /menu response when present.
 const DEFAULT_TAX_RATE = 1800; // 18% IGV
+
+/**
+ * Canje pendiente tal y como lo sirve GET /my-redemptions. `reward_type` es lo
+ * que permite distinguir un producto gratis (discount_value = 0) de un
+ * descuento: sin él, la recompensa se anunciaba como "S/ 0.00 de descuento".
+ */
+interface PendingRedemption {
+  id: string;
+  reward_name: string;
+  reward_type?: string | null;
+  discount_type: string | null;
+  discount_value: number | null;
+  menu_item_id?: string | null;
+}
 
 function useCartPageLocalState() {
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -31,10 +46,15 @@ function useCartPageLocalState() {
   const [couponError, setCouponError] = useState<string | null>(null);
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; name: string; type: string; discount_value: number; menu_item_id?: string | null; min_order_amount?: number | null; max_discount_amount?: number | null } | null>(null);
   const [availableCoupons, setAvailableCoupons] = useState<any[]>([]);
-  const [pendingRedemptions, setPendingRedemptions] = useState<Array<{ id: string; reward_name: string; discount_type: string; discount_value: number }>>([]);
-  const [appliedRedemption, setAppliedRedemption] = useState<{ id: string; reward_name: string; discount_type: string; discount_value: number } | null>(null);
+  const [pendingRedemptions, setPendingRedemptions] = useState<PendingRedemption[]>([]);
+  const [appliedRedemption, setAppliedRedemption] = useState<PendingRedemption | null>(null);
+  // Nombres de la carta para describir un canje de producto gratis: el endpoint
+  // de canjes devuelve el id del plato, no su nombre.
+  const [menuItemNames, setMenuItemNames] = useState<Record<string, string>>({});
 
   return {
+    menuItemNames,
+    setMenuItemNames,
     notes,
     setNotes,
     loading,
@@ -121,16 +141,53 @@ function SlideToConfirm({ onConfirm, label }: { onConfirm: () => void; label: st
     updateVisuals(e.clientX - startX.current);
   };
 
+  const confirm = () => {
+    if (confirmed) return;
+    updateVisuals(getMax());
+    setConfirmed(true);
+    onConfirm();
+  };
+
   const handlePointerUp = () => {
     if (!isDragging.current || confirmed) return;
     isDragging.current = false;
     const max = getMax();
     if (currentOffset.current >= max * 0.8) {
-      updateVisuals(max);
-      setConfirmed(true);
-      onConfirm();
+      confirm();
     } else {
       snapBack();
+    }
+  };
+
+  /**
+   * Confirmación por teclado.
+   *
+   * El deslizamiento existe para evitar pedidos por toque accidental, no para
+   * excluir a nadie. Sin esto, el ÚLTIMO paso del embudo era imposible para
+   * quien navega con teclado, usa lector de pantalla o tiene movilidad reducida:
+   * podía elegir todo el pedido y no llegar a enviarlo.
+   *
+   * Las flechas avanzan el control (conserva el gesto deliberado); Enter y
+   * Espacio confirman directamente, que es lo que espera quien usa teclado.
+   */
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (confirmed) return;
+    const max = getMax();
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      confirm();
+      return;
+    }
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      const next = currentOffset.current + max / 5;
+      if (next >= max) confirm();
+      else updateVisuals(next);
+      return;
+    }
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      updateVisuals(Math.max(0, currentOffset.current - max / 5));
     }
   };
 
@@ -174,7 +231,15 @@ function SlideToConfirm({ onConfirm, label }: { onConfirm: () => void; label: st
       {/* Draggable thumb */}
       <div
         ref={thumbRef}
-        className="absolute top-1 left-1 w-[60px] h-[56px] rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing"
+        role="button"
+        tabIndex={confirmed ? -1 : 0}
+        aria-label={
+          confirmed
+            ? "Pedido confirmado"
+            : `${label}. Desliza hacia la derecha, o pulsa Enter para confirmar.`
+        }
+        aria-disabled={confirmed}
+        className="absolute top-1 left-1 w-[60px] h-[56px] rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
         style={{
           background: confirmed ? "oklch(0.55 0.18 142)" : "var(--background)",
           boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
@@ -184,6 +249,7 @@ function SlideToConfirm({ onConfirm, label }: { onConfirm: () => void; label: st
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onKeyDown={handleKeyDown}
       >
         {confirmed ? (
           <Check className="h-6 w-6 text-white" />
@@ -250,6 +316,8 @@ export default function CartPage({
     setPendingRedemptions,
     appliedRedemption,
     setAppliedRedemption,
+    menuItemNames,
+    setMenuItemNames,
   } = useCartPageLocalState();
 
   const getToken = useCallback(() => {
@@ -325,10 +393,12 @@ export default function CartPage({
     return () => clearTimeout(timeout);
   }, [loadDiscounts]);
 
-  // Prefer the branch tax_rate from the public menu when available; the menu
-  // endpoint is public so no auth is required. These totals remain estimates —
-  // the server recomputes the authoritative total on order creation.
-  const loadTaxRate = useCallback(() => {
+  // El IGV REAL de la sede (`branch.tax_rate`, en centésimas de punto). Ya no se
+  // asume 18 %: una sede exonerada de la Amazonía o un cambio de tipo dejaría el
+  // total estimado sistemáticamente mal. La misma respuesta sirve para traducir
+  // menu_item_id → nombre del plato en los canjes de producto gratis. Sigue
+  // siendo una ESTIMACIÓN: el servidor recalcula y manda al registrar el pedido.
+  const loadBranchMenu = useCallback(() => {
     void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`)
       .then((res) => res.json())
       .then((data) => {
@@ -336,18 +406,26 @@ export default function CartPage({
         if (typeof rate === "number" && rate > 0) {
           setTaxRate(rate);
         }
+        const items = data?.data?.items;
+        if (Array.isArray(items)) {
+          const names: Record<string, string> = {};
+          for (const item of items as Array<{ id: string; name: string }>) {
+            names[item.id] = item.name;
+          }
+          setMenuItemNames(names);
+        }
       })
       .catch(() => {
         // Fall back to DEFAULT_TAX_RATE on any error.
       });
-  }, [branchSlug, tableCode, setTaxRate]);
+  }, [branchSlug, tableCode, setTaxRate, setMenuItemNames]);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-      void loadTaxRate();
+      void loadBranchMenu();
     }, 0);
     return () => clearTimeout(timeout);
-  }, [loadTaxRate]);
+  }, [loadBranchMenu]);
 
   // Display-only estimates — server total is authoritative.
   const subtotal = getSubtotal();
@@ -370,7 +448,7 @@ export default function CartPage({
       .then((res) => res.json())
       .then((data) => {
         if (!data.success) {
-          setCouponError(data.error?.message || "Cupon invalido");
+          setCouponError(data.error?.message || "Cupón inválido");
           setCouponLoading(false);
           return;
         }
@@ -387,7 +465,7 @@ export default function CartPage({
         setCouponLoading(false);
       })
       .catch(() => {
-        setCouponError("Error al validar cupon");
+        setCouponError("No pudimos validar el cupón. Inténtalo de nuevo.");
         setCouponLoading(false);
       });
   };
@@ -408,8 +486,19 @@ export default function CartPage({
   // is applied. All math mirrors apps/api/src/services/order.service.ts so the
   // previewed total matches the server's confirmed total. Still an ESTIMATE —
   // the server recomputes and is authoritative.
-  function computeCouponDiscount(): { discount: number; blockedReason: string | null } {
-    if (!appliedCoupon) return { discount: 0, blockedReason: null };
+  //
+  // `serverOnly` marca los cupones cuyo descuento NO se puede estimar aquí: la
+  // validación pública no devuelve `buy_quantity`/`get_quantity`/`category_id`,
+  // así que el importe lo pone el servidor al confirmar. Esos SÍ se envían (si
+  // allí tampoco aplican, el pedido pasa igual y el cupón no se consume); los
+  // demás, cuando se puede demostrar que no descuentan nada, se retienen con un
+  // motivo legible en vez de tumbar el pedido entero.
+  function computeCouponDiscount(): {
+    discount: number;
+    blockedReason: string | null;
+    serverOnly: boolean;
+  } {
+    if (!appliedCoupon) return { discount: 0, blockedReason: null, serverOnly: false };
 
     // Min order amount gate (server rejects the coupon below this threshold).
     if (
@@ -419,9 +508,20 @@ export default function CartPage({
       const faltan = appliedCoupon.min_order_amount - subtotal;
       return {
         discount: 0,
-        blockedReason: `Pedido minimo ${formatCurrency(appliedCoupon.min_order_amount)} · faltan ${formatCurrency(faltan)}`,
+        serverOnly: false,
+        blockedReason: `Pedido mínimo ${formatCurrency(appliedCoupon.min_order_amount)} · faltan ${formatCurrency(faltan)}`,
       };
     }
+
+    /** Cupón que exige un plato concreto que no está en el carrito. */
+    const faltaElPlato = (): string => {
+      const nombre = appliedCoupon.menu_item_id
+        ? menuItemNames[appliedCoupon.menu_item_id]
+        : null;
+      return nombre
+        ? `Agrega ${nombre} al carrito para usar este cupón`
+        : "Agrega al carrito el producto de este cupón";
+    };
 
     let discount = 0;
     switch (appliedCoupon.type) {
@@ -435,7 +535,8 @@ export default function CartPage({
         // 1 unit free at the modifier-inclusive effective unit price.
         if (appliedCoupon.menu_item_id) {
           const match = items.find((i) => i.menuItemId === appliedCoupon.menu_item_id);
-          if (match) discount = effectiveUnitPrice(match);
+          if (!match) return { discount: 0, blockedReason: faltaElPlato(), serverOnly: false };
+          discount = effectiveUnitPrice(match);
         } else if (items.length > 0) {
           const cheapest = items.reduce(
             (min, i) => (effectiveUnitPrice(i) < effectiveUnitPrice(min) ? i : min),
@@ -449,15 +550,15 @@ export default function CartPage({
         // Percentage off a specific item's modifier-inclusive line total.
         if (appliedCoupon.menu_item_id) {
           const match = items.find((i) => i.menuItemId === appliedCoupon.menu_item_id);
-          if (match) discount = Math.round(effectiveLineTotal(match) * (appliedCoupon.discount_value / 100));
+          if (!match) return { discount: 0, blockedReason: faltaElPlato(), serverOnly: false };
+          discount = Math.round(effectiveLineTotal(match) * (appliedCoupon.discount_value / 100));
         }
         break;
       }
-      case "buy_x_get_y": {
-        // Server calculates exact discount — show approximate as "promo applied"
-        discount = 0;
-        break;
-      }
+      // 2x1 y descuento por categoría: el importe lo calcula el servidor.
+      case "buy_x_get_y":
+      case "category_discount":
+        return { discount: 0, blockedReason: null, serverOnly: true };
       default:
         discount = 0;
     }
@@ -466,22 +567,68 @@ export default function CartPage({
     if (appliedCoupon.max_discount_amount != null && discount > appliedCoupon.max_discount_amount) {
       discount = appliedCoupon.max_discount_amount;
     }
-    return { discount: Math.min(discount, subtotal), blockedReason: null };
-  }
+    discount = Math.min(discount, subtotal);
 
-  const { discount: couponDiscount, blockedReason: couponBlockedReason } = computeCouponDiscount();
-
-  function getRedemptionDiscount(): number {
-    if (!appliedRedemption) return 0;
-    const remaining = subtotal - couponDiscount;
-    if (remaining <= 0) return 0;
-    if (appliedRedemption.discount_type === "percentage") {
-      return Math.round(remaining * (appliedRedemption.discount_value / 100));
+    // Descuento nulo demostrable (cupón mal configurado, valor 0): no se envía,
+    // para no gastar un uso del cupón a cambio de nada.
+    if (discount <= 0) {
+      return {
+        discount: 0,
+        blockedReason: "Este cupón no descuenta nada en tu pedido actual",
+        serverOnly: false,
+      };
     }
-    return Math.min(appliedRedemption.discount_value, remaining);
+
+    return { discount, blockedReason: null, serverOnly: false };
   }
 
-  const redemptionDiscount = getRedemptionDiscount();
+  const {
+    discount: couponDiscount,
+    blockedReason: couponBlockedReason,
+    serverOnly: couponServerOnly,
+  } = computeCouponDiscount();
+
+  /**
+   * Estimación del canje, calcada de applyRedemption() en el servidor.
+   *
+   * Un canje de PRODUCTO GRATIS solo descuenta si ese plato está en el carrito:
+   * si no lo está, el servidor descuenta 0 y el comensal se llevaría la sorpresa
+   * al pagar. Aquí se dice antes, con el nombre del plato que falta.
+   */
+  function getRedemptionDiscount(): { discount: number; blockedReason: string | null } {
+    if (!appliedRedemption) return { discount: 0, blockedReason: null };
+    const remaining = subtotal - couponDiscount;
+    if (remaining <= 0) return { discount: 0, blockedReason: null };
+
+    if (appliedRedemption.reward_type === "free_item") {
+      const itemId = appliedRedemption.menu_item_id;
+      const match = itemId ? items.find((i) => i.menuItemId === itemId) : undefined;
+      if (!match) {
+        const name = itemId ? menuItemNames[itemId] : null;
+        return {
+          discount: 0,
+          blockedReason: name
+            ? `Agrega ${name} al carrito para aprovechar esta recompensa`
+            : "Agrega al carrito el producto de esta recompensa",
+        };
+      }
+      return { discount: Math.min(effectiveUnitPrice(match), remaining), blockedReason: null };
+    }
+
+    if (appliedRedemption.discount_type === "percentage") {
+      return {
+        discount: Math.round(remaining * ((appliedRedemption.discount_value ?? 0) / 100)),
+        blockedReason: null,
+      };
+    }
+    return {
+      discount: Math.min(appliedRedemption.discount_value ?? 0, remaining),
+      blockedReason: null,
+    };
+  }
+
+  const { discount: redemptionDiscount, blockedReason: redemptionBlockedReason } =
+    getRedemptionDiscount();
   const totalDiscount = couponDiscount + redemptionDiscount;
   // IGV is calculated on (subtotal - discount) to match backend logic
   const taxableBase = subtotal - totalDiscount;
@@ -512,13 +659,18 @@ export default function CartPage({
         // is blocked, omit it so the order is not rejected wholesale by the
         // server — the user already sees the hint that it is not applied.
         ...(appliedCoupon && !couponBlockedReason ? { couponCode: appliedCoupon.code } : {}),
-        ...(appliedRedemption ? { redemptionId: appliedRedemption.id } : {}),
+        // Un canje que no descuenta nada (producto gratis que no está en el
+        // carrito) SE CONSUMIRÍA igualmente al enviarlo: el servidor lo marca
+        // como usado. No se manda hasta que de verdad valga algo.
+        ...(appliedRedemption && !redemptionBlockedReason
+          ? { redemptionId: appliedRedemption.id }
+          : {}),
       }),
     })
       .then((res) => res.json())
       .then((data) => {
         if (!data.success) {
-          setError(data.error?.message || "Error al crear orden");
+          setError(data.error?.message || "No pudimos registrar tu pedido. Inténtalo de nuevo.");
           setLoading(false);
           return;
         }
@@ -535,7 +687,7 @@ export default function CartPage({
         router.push(`/${branchSlug}/${tableCode}/status`);
       })
       .catch(() => {
-        setError("Error inesperado");
+        setError("No hay conexión con el restaurante. Revisa tu red e inténtalo de nuevo.");
         setLoading(false);
       });
   };
@@ -546,15 +698,27 @@ export default function CartPage({
         <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-muted">
           <ShoppingBag className="h-10 w-10 text-muted-foreground" />
         </div>
-        <h2 className="text-xl font-bold mb-2">Carrito vacio</h2>
-        <p className="text-muted-foreground mb-6">Agrega productos desde el menu</p>
-        <Button
-          variant="outline"
-          onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
-        >
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Volver al Menu
-        </Button>
+        <h2 className="text-xl font-bold mb-2">Tu carrito está vacío</h2>
+        <p className="text-muted-foreground mb-6">
+          Elige algo de la carta y aparecerá aquí.
+        </p>
+        <div className="mx-auto max-w-xs space-y-2">
+          <Button
+            className="h-12 w-full"
+            onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
+          >
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Volver a la carta
+          </Button>
+          <Button
+            variant="outline"
+            className="h-12 w-full"
+            onClick={() => router.push(`/${branchSlug}/${tableCode}/status`)}
+          >
+            <ClipboardList className="h-4 w-4 mr-2" />
+            Ver mis pedidos
+          </Button>
+        </div>
       </div>
     );
   }
@@ -562,20 +726,37 @@ export default function CartPage({
   return (
     <div className="p-4 space-y-4 pb-28">
       {/* Header */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         <Button
           variant="ghost"
           size="icon"
+          className="h-10 w-10"
+          aria-label="Volver a la carta"
           onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
         >
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <h1 className="text-xl font-bold">Tu Pedido</h1>
-        <span className="text-sm text-muted-foreground">({items.length} items)</span>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-xl font-bold">Tu pedido</h1>
+          <p className="text-xs text-muted-foreground">
+            {items.length} {items.length === 1 ? "producto" : "productos"}
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          className="h-10 shrink-0 gap-1.5 px-2 text-xs"
+          onClick={() => router.push(`/${branchSlug}/${tableCode}/status`)}
+        >
+          <ClipboardList className="h-4 w-4" />
+          Mis pedidos
+        </Button>
       </div>
 
       {error && (
-        <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">
+        <div
+          role="alert"
+          className="rounded-lg bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive"
+        >
           {error}
         </div>
       )}
@@ -633,33 +814,38 @@ export default function CartPage({
                     </ul>
                   )}
                 </div>
+                {/* 40px de lado: se pulsa de pie y con una sola mano. */}
                 <div className="flex items-center gap-1.5">
                   <Button
                     variant="outline"
                     size="icon"
-                    className="h-8 w-8 rounded-full"
+                    className="h-10 w-10 rounded-full"
+                    aria-label={`Quitar una unidad de ${item.name}`}
                     onClick={() => updateLineQuantity(item.lineId, item.quantity - 1)}
                   >
-                    <Minus className="h-3.5 w-3.5" />
+                    <Minus className="h-4 w-4" />
                   </Button>
-                  <span className="w-7 text-center font-bold text-sm">
+                  <span className="w-7 text-center font-bold text-sm tabular-nums">
                     {item.quantity}
                   </span>
                   <Button
                     size="icon"
-                    className="h-8 w-8 rounded-full"
+                    className="h-10 w-10 rounded-full"
+                    aria-label={`Añadir una unidad de ${item.name}`}
                     onClick={() => updateLineQuantity(item.lineId, item.quantity + 1)}
                   >
-                    <Plus className="h-3.5 w-3.5" />
+                    <Plus className="h-4 w-4" />
                   </Button>
                 </div>
-                <div className="text-right shrink-0">
-                  <p className="font-bold text-sm">
+                <div className="shrink-0 text-right">
+                  <p className="font-bold text-sm tabular-nums">
                     {formatCurrency(effectiveLineTotal(item))}
                   </p>
                   <button
+                    type="button"
                     onClick={() => removeLine(item.lineId)}
-                    className="text-destructive hover:text-destructive/80 mt-1 p-1"
+                    aria-label={`Quitar ${item.name} del carrito`}
+                    className="ml-auto mt-1 flex h-10 w-10 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -668,7 +854,8 @@ export default function CartPage({
               <div className="mt-3">
                 <Input
                   placeholder="Notas (ej: sin cebolla)"
-                  className="text-sm h-9"
+                  aria-label={`Notas para ${item.name}`}
+                  className="text-sm h-10"
                   value={notes[item.lineId] || ""}
                   onChange={(e) =>
                     setNotes({ ...notes, [item.lineId]: e.target.value })
@@ -684,11 +871,13 @@ export default function CartPage({
       <Card>
         <CardContent className="p-4">
           <button
+            type="button"
+            aria-expanded={couponOpen}
             onClick={() => setCouponOpen(!couponOpen)}
-            className="flex items-center gap-2 text-sm font-medium text-foreground w-full"
+            className="flex min-h-11 w-full items-center gap-2 text-sm font-medium text-foreground"
           >
             <Ticket className="h-4 w-4 text-primary" />
-            Tengo un cupon
+            Tengo un cupón
             {appliedCoupon && !couponBlockedReason && (
               <span className="text-[10px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">
                 Aplicado
@@ -696,7 +885,7 @@ export default function CartPage({
             )}
             {appliedCoupon && couponBlockedReason && (
               <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                No aplicable aun
+                No aplicable aún
               </span>
             )}
             <ChevronDown
@@ -729,10 +918,10 @@ export default function CartPage({
                           max_discount_amount: coupon.max_discount_amount ?? null,
                         });
                       }}
-                      className="w-full flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
+                      className="w-full min-h-12 flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
                     >
-                      <div>
-                        <p className="text-sm font-medium">{coupon.name}</p>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{coupon.name}</p>
                         <p className="text-xs text-muted-foreground font-mono">{coupon.code}</p>
                       </div>
                       <span className="text-sm font-bold text-primary">
@@ -757,7 +946,12 @@ export default function CartPage({
                       <p className="text-xs text-amber-600 dark:text-amber-400">{couponBlockedReason}</p>
                     </div>
                   </div>
-                  <button onClick={() => setAppliedCoupon(null)} className="p-1">
+                  <button
+                    type="button"
+                    onClick={() => setAppliedCoupon(null)}
+                    aria-label="Quitar el cupón"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
+                  >
                     <X className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                   </button>
                 </div>
@@ -769,13 +963,18 @@ export default function CartPage({
                       <p className="text-sm font-medium text-green-800 dark:text-green-300">{appliedCoupon.code}</p>
                       <p className="text-xs text-green-600 dark:text-green-400">
                         {appliedCoupon.name}
-                        {appliedCoupon.type === "buy_x_get_y"
-                          ? " - Promo aplicada en caja"
+                        {couponServerOnly
+                          ? " · el descuento se calcula al confirmar el pedido"
                           : ` - ${formatCurrency(couponDiscount)} descuento`}
                       </p>
                     </div>
                   </div>
-                  <button onClick={() => setAppliedCoupon(null)} className="p-1">
+                  <button
+                    type="button"
+                    onClick={() => setAppliedCoupon(null)}
+                    aria-label="Quitar el cupón"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
+                  >
                     <X className="h-4 w-4 text-green-600 dark:text-green-400" />
                   </button>
                 </div>
@@ -783,22 +982,22 @@ export default function CartPage({
                 <>
                   <div className="flex gap-2">
                     <Input
-                      placeholder="Ingresa tu codigo"
+                      placeholder="Ingresa tu código"
                       value={couponCode}
                       onChange={(e) => { setCouponCode(e.target.value.toUpperCase()); setCouponError(null); }}
-                      className="text-sm h-9 font-mono"
+                      aria-label="Código de cupón"
+                      className="text-sm h-10 font-mono"
                     />
                     <Button
-                      size="sm"
                       onClick={handleValidateCoupon}
                       disabled={couponLoading || !couponCode.trim()}
-                      className="h-9 px-4"
+                      className="h-10 px-4"
                     >
                       {couponLoading ? "..." : "Aplicar"}
                     </Button>
                   </div>
                   {couponError && (
-                    <p className="text-xs text-destructive">{couponError}</p>
+                    <p role="alert" className="text-xs text-destructive">{couponError}</p>
                   )}
                 </>
               )}
@@ -814,30 +1013,76 @@ export default function CartPage({
           <CardContent className="p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground mb-3">
               <Gift className="h-4 w-4 text-primary" />
-              Recompensas Canjeadas
-              {appliedRedemption && (
+              Recompensas canjeadas
+              {appliedRedemption && !redemptionBlockedReason && (
                 <span className="text-[10px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">
                   Aplicada
+                </span>
+              )}
+              {appliedRedemption && redemptionBlockedReason && (
+                <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                  Falta un producto
                 </span>
               )}
             </div>
 
             {appliedRedemption ? (
-              <div className="flex items-center justify-between rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
-                <div className="flex items-center gap-2">
-                  <Check className="h-4 w-4 text-green-600 dark:text-green-400" />
-                  <div>
-                    <p className="text-sm font-medium text-green-800 dark:text-green-300">{appliedRedemption.reward_name}</p>
-                    <p className="text-xs text-green-600 dark:text-green-400">
-                      {appliedRedemption.discount_type === "percentage"
-                        ? `${appliedRedemption.discount_value}% de descuento`
-                        : `${formatCurrency(appliedRedemption.discount_value)} de descuento`}
-                      {redemptionDiscount > 0 && ` · -${formatCurrency(redemptionDiscount)}`}
+              <div
+                className={cn(
+                  "flex items-center justify-between gap-2 rounded-lg border p-3",
+                  redemptionBlockedReason
+                    ? "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800"
+                    : "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800",
+                )}
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  {redemptionBlockedReason ? (
+                    <Gift className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  ) : (
+                    <Check className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+                  )}
+                  <div className="min-w-0">
+                    <p
+                      className={cn(
+                        "text-sm font-medium",
+                        redemptionBlockedReason
+                          ? "text-amber-800 dark:text-amber-300"
+                          : "text-green-800 dark:text-green-300",
+                      )}
+                    >
+                      {appliedRedemption.reward_name}
+                    </p>
+                    <p
+                      className={cn(
+                        "text-xs",
+                        redemptionBlockedReason
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-green-600 dark:text-green-400",
+                      )}
+                    >
+                      {redemptionBlockedReason ??
+                        `${describeReward(appliedRedemption, menuItemNames)}${
+                          redemptionDiscount > 0
+                            ? ` · -${formatCurrency(redemptionDiscount)}`
+                            : ""
+                        }`}
                     </p>
                   </div>
                 </div>
-                <button onClick={() => setAppliedRedemption(null)} className="p-1">
-                  <X className="h-4 w-4 text-green-600 dark:text-green-400" />
+                <button
+                  type="button"
+                  onClick={() => setAppliedRedemption(null)}
+                  aria-label={`Quitar la recompensa ${appliedRedemption.reward_name}`}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
+                >
+                  <X
+                    className={cn(
+                      "h-4 w-4",
+                      redemptionBlockedReason
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-green-600 dark:text-green-400",
+                    )}
+                  />
                 </button>
               </div>
             ) : (
@@ -845,18 +1090,17 @@ export default function CartPage({
                 {pendingRedemptions.map((r) => (
                   <button
                     key={r.id}
+                    type="button"
                     onClick={() => setAppliedRedemption(r)}
-                    className="w-full flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
+                    className="w-full min-h-12 flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 hover:bg-primary/10 transition-colors text-left"
                   >
-                    <div>
-                      <p className="text-sm font-medium">{r.reward_name}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{r.reward_name}</p>
                       <p className="text-xs text-muted-foreground">
-                        {r.discount_type === "percentage"
-                          ? `${r.discount_value}% de descuento`
-                          : `${formatCurrency(r.discount_value)} de descuento`}
+                        {describeReward(r, menuItemNames)}
                       </p>
                     </div>
-                    <span className="text-xs font-bold text-primary">Aplicar</span>
+                    <span className="text-xs font-bold text-primary shrink-0">Aplicar</span>
                   </button>
                 ))}
               </div>
@@ -874,24 +1118,44 @@ export default function CartPage({
           </div>
           {couponDiscount > 0 && (
             <div className="flex justify-between text-sm">
-              <span className="text-green-600 dark:text-green-400">Cupon ({appliedCoupon?.code})</span>
+              <span className="text-green-600 dark:text-green-400">Cupón ({appliedCoupon?.code})</span>
               <span className="font-medium text-green-600 dark:text-green-400">-{formatCurrency(couponDiscount)}</span>
             </div>
           )}
-          {appliedCoupon && !couponBlockedReason && appliedCoupon.type === "buy_x_get_y" && (
-            <div className="flex justify-between text-sm">
-              <span className="text-green-600 dark:text-green-400">Cupon ({appliedCoupon.code})</span>
-              <span className="font-medium text-green-600 dark:text-green-400">Promo en caja</span>
+          {appliedCoupon && couponServerOnly && (
+            <div className="flex justify-between gap-3 text-sm">
+              <span className="text-green-600 dark:text-green-400">Cupón ({appliedCoupon.code})</span>
+              {/* El total de abajo NO incluye este descuento: el importe lo
+                  calcula el servidor con las reglas de la promoción. */}
+              <span className="shrink-0 text-xs font-medium text-green-600 dark:text-green-400">
+                Se aplica al confirmar
+              </span>
             </div>
           )}
           {redemptionDiscount > 0 && (
             <div className="flex justify-between text-sm">
-              <span className="text-green-600 dark:text-green-400">Recompensa</span>
+              <span className="text-green-600 dark:text-green-400">
+                Recompensa ({appliedRedemption?.reward_name})
+              </span>
               <span className="font-medium text-green-600 dark:text-green-400">-{formatCurrency(redemptionDiscount)}</span>
             </div>
           )}
+          {appliedRedemption && redemptionBlockedReason && (
+            <div className="flex justify-between gap-3 text-sm">
+              <span className="text-amber-600 dark:text-amber-400">
+                Recompensa ({appliedRedemption.reward_name})
+              </span>
+              <span className="shrink-0 text-xs font-medium text-amber-600 dark:text-amber-400">
+                Sin aplicar
+              </span>
+            </div>
+          )}
           <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">IGV ({taxRate / 100}%)</span>
+            {/* El porcentaje sale de branch.tax_rate (centésimas de punto) y se
+                escribe con coma decimal, como en el Perú. */}
+            <span className="text-muted-foreground">
+              IGV ({(taxRate / 100).toLocaleString("es-PE", { maximumFractionDigits: 2 })}%)
+            </span>
             <span className="font-medium">{formatCurrency(totalDiscount > 0 ? adjustedTax : tax)}</span>
           </div>
           <div className="border-t border-border pt-3">
@@ -909,6 +1173,21 @@ export default function CartPage({
       {/* Fixed bottom — Slide to confirm */}
       <div className="fixed bottom-0 left-0 right-0 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
         <div className="max-w-lg mx-auto">
+          {/*
+            El error se muestra AQUÍ, pegado a la acción. Antes solo se pintaba
+            en la cabecera de la página: con el carrito largo quedaba fuera de la
+            pantalla y el comensal arrastraba el control una y otra vez sin
+            entender por qué no pasaba nada.
+          */}
+          {error && !loading && (
+            <div
+              role="alert"
+              className="mb-3 flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
           {loading ? (
             <div className="h-14 rounded-2xl bg-foreground flex items-center justify-center gap-2">
               <div className="h-4 w-4 border-2 border-background/30 border-t-background rounded-full animate-spin" />

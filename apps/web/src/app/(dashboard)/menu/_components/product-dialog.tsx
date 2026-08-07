@@ -153,7 +153,7 @@ export function ProductDialog({
               />
             </div>
             <div className="space-y-2 col-span-2 sm:col-span-1">
-              <Label htmlFor="prod-cat">Categoria</Label>
+              <Label htmlFor="prod-cat">Categoría</Label>
               <Select value={categoryId || "none"} onValueChange={(v) => setCategoryId(v === "none" ? "" : v)}>
                 <SelectTrigger disabled={categories.length === 0}>
                   <SelectValue placeholder={categories.length === 0 ? "Crea una categoria primero" : "Selecciona categoria"} />
@@ -169,12 +169,12 @@ export function ProductDialog({
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="prod-desc">Descripcion</Label>
+            <Label htmlFor="prod-desc">Descripción</Label>
             <Input
               id="prod-desc"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Descripcion opcional"
+              placeholder="Descripción opcional"
             />
           </div>
           <div className="grid grid-cols-2 gap-4">

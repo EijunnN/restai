@@ -26,7 +26,7 @@ export function SalesChart({ days, isLoading }: SalesChartProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Ventas por Dia</CardTitle>
+        <CardTitle>Ventas por día</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-[300px]">
@@ -74,7 +74,7 @@ export function SalesChart({ days, isLoading }: SalesChartProps) {
             </ResponsiveContainer>
           ) : (
             <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-              No hay datos de ventas disponibles
+              No hubo ventas completadas en este periodo
             </div>
           )}
         </div>

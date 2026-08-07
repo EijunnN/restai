@@ -82,7 +82,7 @@ export function CreateStaffDialog({ open, onOpenChange }: CreateStaffDialogProps
             />
           </div>
           <div className="space-y-2">
-            <Label>Contrasena</Label>
+            <Label>Contraseña</Label>
             <Input
               type="password"
               value={form.password}

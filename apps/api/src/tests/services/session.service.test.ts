@@ -189,10 +189,68 @@ describe("session.service", () => {
     expect(caughtError).not.toBeNull();
     expect(caughtError!.message).toBe("SESSION_HAS_OPEN_ORDERS");
 
-    // Complete the order, then endSession should work
+    // Completar la comanda YA NO basta para cerrar la visita: la cuenta sigue
+    // sin cobrarse. Antes esto liberaba la mesa y convertía un impago en venta
+    // cerrada (con puntos e inventario descontados) sin traza ninguna.
     await db.update(schema.orders).set({ status: "completed" }).where(eq(schema.orders.id, order.id));
+
+    let balanceError: any = null;
+    try {
+      await endSession({ sessionId: session.id, branchId });
+    } catch (e: any) {
+      balanceError = e;
+    }
+    expect(balanceError).not.toBeNull();
+    expect(balanceError.code).toBe("TABLE_HAS_BALANCE");
+    expect(balanceError.pendingAmount).toBe(1180);
+
+    // Con la cuenta saldada, la visita se cierra con normalidad.
+    await db.insert(schema.payments).values({
+      order_id: order.id,
+      organization_id: orgId,
+      branch_id: branchId,
+      method: "cash",
+      amount: 1180,
+      status: "completed",
+    });
+
     const result = await endSession({ sessionId: session.id, branchId });
     expect(result.session.status).toBe("completed");
+
+    await db.delete(schema.tableSessions).where(eq(schema.tableSessions.id, session.id));
+  });
+
+  it("endSession con force perdona el saldo pendiente", async () => {
+    const session = await createSession({
+      tableId,
+      branchId,
+      organizationId: orgId,
+      customerName: "Forzada",
+      token: "tok_force_end",
+      status: "active",
+    });
+
+    const cat = await createTestCategory(branchId, orgId);
+    const menuItem = await createTestMenuItem(branchId, orgId, cat.id);
+    await db.insert(schema.orders).values({
+      organization_id: orgId,
+      branch_id: branchId,
+      table_session_id: session.id,
+      order_number: "TEST-SESS-FORCE",
+      type: "dine_in",
+      status: "completed",
+      subtotal: 2000,
+      tax: 360,
+      discount: 0,
+      total: 2360,
+    });
+
+    // Sin force: bloqueado.
+    await expect(endSession({ sessionId: session.id, branchId })).rejects.toThrow();
+
+    // Con force: se cierra. El endpoint restringe esto a `payments:void` y lo audita.
+    const forced = await endSession({ sessionId: session.id, branchId, force: true });
+    expect(forced.session.status).toBe("completed");
 
     await db.delete(schema.tableSessions).where(eq(schema.tableSessions.id, session.id));
   });

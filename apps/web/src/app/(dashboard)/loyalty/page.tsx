@@ -21,7 +21,7 @@ export default function LoyaltyPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Fidelizacion"
+        title="Fidelización"
         description="Gestiona tus clientes, programa de puntos, recompensas y cupones"
       />
 

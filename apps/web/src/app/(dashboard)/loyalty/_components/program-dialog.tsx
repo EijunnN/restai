@@ -78,7 +78,7 @@ export function ProgramDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Editar Programa" : "Crear Programa de Fidelizacion"}</DialogTitle>
+          <DialogTitle>{isEdit ? "Editar Programa" : "Crear Programa de Fidelización"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">

@@ -85,6 +85,34 @@
       "when": 1782420000000,
       "tag": "0011_order_items_paid_at",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785000000000,
+      "tag": "0012_operational_maturity",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785003600000,
+      "tag": "0013_ruc_prefix_16",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785007200000,
+      "tag": "0014_one_active_session_per_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785010800000,
+      "tag": "0015_loyalty_earned_unique",
+      "breakpoints": true
     }
   ]
 }

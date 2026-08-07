@@ -1,0 +1,5 @@
+[test]
+# Espera la conexión de base de datos antes de arrancar la suite: sin esto, el
+# primer fichero de tests en ejecutarse fallaba con "La conexión de DB aún no
+# está lista", y el error parecía de lógica cuando era de arranque.
+preload = ["./src/tests/preload.ts"]

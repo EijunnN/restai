@@ -7,8 +7,10 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tableStatusEnum, sessionStatusEnum } from "./enums";
 import { organizations, branches } from "./tenants";
 import { users } from "./auth";
@@ -51,6 +53,12 @@ export const tables = pgTable(
     number: integer("number").notNull(),
     capacity: integer("capacity").default(4).notNull(),
     qr_code: varchar("qr_code", { length: 100 }).unique().notNull(),
+    /**
+     * Código corto dictable por teléfono (alfabeto sin caracteres ambiguos).
+     * Es el plan B cuando el comensal no puede escanear el QR: sin cámara, sin
+     * datos, sticker despegado. Único por sede, no globalmente.
+     */
+    short_code: varchar("short_code", { length: 8 }).notNull(),
     status: tableStatusEnum("status").default("available").notNull(),
     position_x: integer("position_x").default(0).notNull(),
     position_y: integer("position_y").default(0).notNull(),
@@ -58,6 +66,7 @@ export const tables = pgTable(
   },
   (table) => [
     unique("tables_branch_number_unique").on(table.branch_id, table.number),
+    unique("uq_tables_branch_short_code").on(table.branch_id, table.short_code),
   ],
 );
 
@@ -101,4 +110,17 @@ export const tableSessions = pgTable("table_sessions", {
 }, (table) => [
   index("idx_sessions_table_status").on(table.table_id, table.status),
   index("idx_sessions_branch").on(table.branch_id),
+  /**
+   * Una sola visita ACTIVA por mesa (migración 0014).
+   *
+   * Con dos visitas activas sobre la misma mesa, el saldo que pinta el diálogo
+   * de cobro y el que calcula el guard de "Liberar" se computan sobre conjuntos
+   * distintos, y el mozo ve un 409 que contradice a su pantalla.
+   *
+   * Debe estar declarado AQUÍ y no solo en el SQL: el flujo de desarrollo usa
+   * `drizzle-kit push`, que borra lo que no aparece en el esquema TS.
+   */
+  uniqueIndex("uq_table_sessions_one_active")
+    .on(table.table_id)
+    .where(sql`${table.status} = 'active'`),
 ]);

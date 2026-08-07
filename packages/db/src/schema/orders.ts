@@ -48,6 +48,12 @@ export const orders = pgTable("orders", {
   delivery_phone: varchar("delivery_phone", { length: 20 }),
   delivery_fee: integer("delivery_fee").default(0).notNull(),
   delivery_driver_id: uuid("delivery_driver_id").references(() => users.id, { onDelete: "set null" }),
+  /**
+   * Miembro del staff que tomó el pedido (null si lo hizo el propio comensal
+   * desde el QR). Sin esto no hay ventas por mozo, ni comisiones, ni forma de
+   * saber quién levantó una comanda.
+   */
+  created_by: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   inventory_deducted: boolean("inventory_deducted").default(false).notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -56,6 +62,7 @@ export const orders = pgTable("orders", {
   index("idx_orders_table_session").on(table.table_session_id),
   index("idx_orders_customer").on(table.customer_id),
   index("idx_orders_created_at").on(table.created_at),
+  index("idx_orders_created_by").on(table.created_by),
 ]);
 
 export const orderItems = pgTable("order_items", {
@@ -76,6 +83,12 @@ export const orderItems = pgTable("order_items", {
   // tables "cobrar" dialog). null = still owed. Lets staff settle a shared table
   // item-by-item and see exactly which products remain unpaid.
   paid_at: timestamp("paid_at", { withTimezone: true }),
+  // Anulación de línea ("86" de cocina: se acabó el plato). Se conserva la fila
+  // con status='cancelled' en lugar de borrarla, para que la comanda impresa y
+  // el histórico sigan cuadrando con lo que ocurrió en el servicio.
+  cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+  cancel_reason: text("cancel_reason"),
+  cancelled_by: uuid("cancelled_by").references(() => users.id, { onDelete: "set null" }),
 }, (table) => [
   index("idx_order_items_order").on(table.order_id),
 ]);

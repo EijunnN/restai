@@ -59,6 +59,12 @@ interface OrdersTableProps {
   activeChargeOrderId?: string | null;
   onUpdateStatus: (id: string, status: string) => void;
   onPrintReceipt: (order: any) => void;
+  /**
+   * Sin este manejador NO se pinta el botón "Cobrar": la pantalla lo omite
+   * cuando el rol no puede cobrar (la cocina entra aquí con `orders:read` pero
+   * no tiene `payments:create`), y así el botón deja de prometer algo que
+   * termina en un 403.
+   */
   onCharge?: (order: any) => void;
 }
 
@@ -121,7 +127,7 @@ export function OrdersTable({
                     Hora
                   </th>
                   <th className="text-center p-3 text-sm font-medium text-muted-foreground hidden md:table-cell">
-                    Accion
+                    Acción
                   </th>
                 </tr>
               </thead>
@@ -271,7 +277,7 @@ export function OrdersTable({
 
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          {pagination.total} ordenes en total
+          {pagination.total} órdenes en total
         </p>
         {pagination.totalPages > 1 && (
           <div className="flex items-center gap-2">

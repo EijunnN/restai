@@ -92,7 +92,7 @@ export function CreateItemDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="itemCategory">Categoria</Label>
+            <Label htmlFor="itemCategory">Categoría</Label>
             <Select
               value={form.categoryId}
               onValueChange={(v) => setForm({ ...form, categoryId: v })}

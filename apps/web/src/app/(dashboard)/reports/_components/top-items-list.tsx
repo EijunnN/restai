@@ -17,7 +17,7 @@ export function TopItemsList({ topItems, isLoading }: TopItemsListProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Top Productos</CardTitle>
+        <CardTitle>Productos más vendidos</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -37,7 +37,7 @@ export function TopItemsList({ topItems, isLoading }: TopItemsListProps) {
           </div>
         ) : topItems.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">
-            No hay datos de productos
+            Ningún producto se vendió en este periodo
           </p>
         ) : (
           <div className="space-y-3">

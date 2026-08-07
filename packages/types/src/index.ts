@@ -1,9 +1,27 @@
 // WebSocket message types
+/**
+ * Eventos que viajan por el canal de tiempo real.
+ *
+ * Esta unión debe cubrir TODO lo que publica la API. Se había quedado corta: la
+ * cocina recibía `order:item_cancelled` y `menu:availability` y no podía
+ * compararlos sin castear a string, así que el tablero seguía mostrando platos
+ * que ya nadie iba a servir.
+ */
 export type WsMessageType =
+  // ── Comandas ──
   | "order:new"
   | "order:updated"
   | "order:item_status"
   | "order:cancelled"
+  /** Un plato concreto se anuló ("86" de cocina). */
+  | "order:item_cancelled"
+  // ── Carta ──
+  /** Cambió la disponibilidad de un plato: hay que releer la carta. */
+  | "menu:availability"
+  // ── Caja ──
+  /** Se anuló un cobro: los saldos de la mesa y del día cambian. */
+  | "payment:voided"
+  // ── Mesas y visitas ──
   | "table:status"
   | "table:call_waiter"
   | "table:request_bill"
@@ -12,10 +30,22 @@ export type WsMessageType =
   | "session:pending"
   | "session:approved"
   | "session:rejected"
+  /** La cuenta se movió a otra mesa. */
+  | "session:moved"
+  /** Varias mesas se juntaron en una. */
+  | "session:merged"
+  // ── Avisos de mesa (bandeja del mozo) ──
+  | "service_request:created"
+  | "service_request:acknowledged"
+  | "service_request:resolved"
+  | "service_request:cancelled"
+  // ── Cocina e infraestructura ──
   | "kitchen:alert"
   | "ping"
   | "pong"
-  | "auth:success";
+  | "auth:success"
+  | "auth:error"
+  | "auth:expired";
 
 export interface WsMessage<T = unknown> {
   type: WsMessageType;

@@ -9,8 +9,10 @@ import {
   timestamp,
   jsonb,
   index,
+  uniqueIndex,
   unique,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import {
   loyaltyTransactionTypeEnum,
   discountTypeEnum,
@@ -104,6 +106,22 @@ export const loyaltyTransactions = pgTable("loyalty_transactions", {
   index("idx_loyalty_tx_customer_loyalty").on(table.customer_loyalty_id),
   index("idx_loyalty_tx_order").on(table.order_id),
   index("idx_loyalty_tx_expiry").on(table.type, table.expired, table.expires_at),
+  /**
+   * Un solo movimiento 'earned' por pedido: es la capa de base de datos que
+   * respalda la idempotencia de `awardPoints` (apps/api/src/services/
+   * loyalty.service.ts), que además traduce el 23505 a "ya otorgados".
+   *
+   * Se declara aquí —y no solo en la migración 0015— porque la base de datos de
+   * desarrollo es push-based: sin esta declaración, un `db:push` no crearía el
+   * índice (o lo borraría por sobrar respecto al esquema) y la garantía se
+   * perdería en silencio justo donde se prueba.
+   *
+   * Es PARCIAL a propósito: 'redeemed', 'adjusted' y 'expired' sí pueden
+   * repetirse por pedido, y los ajustes sin pedido no deben competir entre sí.
+   */
+  uniqueIndex("uq_loyalty_tx_order_earned")
+    .on(table.order_id)
+    .where(sql`${table.type} = 'earned' AND ${table.order_id} IS NOT NULL`),
 ]);
 
 export const rewards = pgTable("rewards", {

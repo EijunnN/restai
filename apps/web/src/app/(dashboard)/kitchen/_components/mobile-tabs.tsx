@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, ChefHat, CheckCircle } from "lucide-react";
+import { Clock, ChefHat, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ColumnHeader } from "./column-header";
 import { KitchenOrderCard } from "./order-card";
@@ -9,114 +9,110 @@ import { useKitchenContext } from "./kitchen-context";
 
 type TabKey = "pending" | "preparing" | "ready";
 
-const TAB_CONFIG: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { key: "pending", label: "Pendientes", icon: Clock },
-  { key: "preparing", label: "Preparando", icon: ChefHat },
-  { key: "ready", label: "Listos", icon: CheckCircle },
+const TAB_CONFIG: {
+  key: TabKey;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  emptyLabel: string;
+  dot: string;
+}[] = [
+  { key: "pending", label: "En cola", icon: Clock, emptyLabel: "Sin órdenes en cola", dot: "bg-amber-500" },
+  { key: "preparing", label: "Preparando", icon: ChefHat, emptyLabel: "Nada en preparación", dot: "bg-blue-500" },
+  { key: "ready", label: "Listos", icon: CheckCircle2, emptyLabel: "Sin órdenes listas", dot: "bg-green-500" },
 ];
-
-const COLUMN_CONFIG: Record<
-  TabKey,
-  { icon: React.ComponentType<{ className?: string }>; label: string; emptyLabel: string }
-> = {
-  pending: { icon: Clock, label: "Pendientes", emptyLabel: "Sin ordenes pendientes" },
-  preparing: { icon: ChefHat, label: "En Preparacion", emptyLabel: "Nada en preparacion" },
-  ready: { icon: CheckCircle, label: "Listos", emptyLabel: "Sin ordenes listas" },
-};
 
 function MobileColumn({ status }: { status: TabKey }) {
   const {
-    columns,
+    views,
     advanceOrder,
-    handleItemReady,
+    goBackOrder,
     handlePrint,
     newOrderIds,
-    isAdvancing,
-    isUpdatingItem,
+    pendingOrderIds,
+    orders,
   } = useKitchenContext();
 
-  const config = COLUMN_CONFIG[status];
-  const columnOrders = columns[status];
+  const config = TAB_CONFIG.find((t) => t.key === status)!;
+  const cards = views[status];
 
   return (
-    <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 13.5rem)" }}>
+    <div className="flex min-h-0 flex-col">
       <ColumnHeader
-        icon={config.icon}
         label={config.label}
-        count={columnOrders.length}
+        count={cards.length}
         variant={status}
-        pulse={status === "pending" && columnOrders.length > 0}
+        oldest={cards[0]?.timeLabel}
       />
-      {columnOrders.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-          <config.icon className="h-10 w-10 mb-3 opacity-30" />
-          <p className="text-sm">{config.emptyLabel}</p>
-        </div>
-      ) : (
-        columnOrders.map((order: any, index: number) => (
-          <KitchenOrderCard
-            key={order.id}
-            order={order}
-            columnStatus={status}
-            priorityRank={index + 1}
-            onAdvance={advanceOrder}
-            onPrint={handlePrint}
-            onItemReady={
-              status === "preparing"
-                ? (itemId) => handleItemReady(itemId)
-                : () => {}
-            }
-            isAdvancing={isAdvancing}
-            isUpdatingItem={isUpdatingItem}
-            isNew={newOrderIds.has(order.id)}
-          />
-        ))
-      )}
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
+        {cards.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2.5 py-14 text-muted-foreground opacity-60">
+            <config.icon className="h-7 w-7" />
+            <p className="text-[13px]">{config.emptyLabel}</p>
+          </div>
+        ) : (
+          cards.map((card) => (
+            <KitchenOrderCard
+              key={card.order.id}
+              view={card}
+              columnStatus={status}
+              onAdvance={advanceOrder}
+              onBack={goBackOrder}
+              onPrint={handlePrint}
+              isAdvancing={pendingOrderIds.has(card.order.id)}
+              isNew={newOrderIds.has(card.order.id)}
+              totalInBoard={orders.length}
+            />
+          ))
+        )}
+      </div>
     </div>
   );
 }
 
 export function MobileTabs() {
   const [activeTab, setActiveTab] = useState<TabKey>("pending");
-  const { columns } = useKitchenContext();
+  const { views } = useKitchenContext();
 
   return (
-    <>
-      {/* Tab bar */}
-      <div className="flex gap-1.5 shrink-0 md:hidden">
-        {TAB_CONFIG.map(({ key, label, icon: TabIcon }) => (
-          <button
-            key={key}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-1.5 rounded-2xl border px-3 py-3 text-sm font-semibold transition-colors",
-              activeTab === key
-                ? key === "pending"
-                  ? "border-amber-500 bg-amber-500 text-white"
-                  : key === "preparing"
-                    ? "border-blue-500 bg-blue-500 text-white"
-                    : "border-green-500 bg-green-500 text-white"
-                : "border-border bg-card text-muted-foreground"
-            )}
-            onClick={() => setActiveTab(key)}
-          >
-            <TabIcon className="h-4 w-4" />
-            {label}
-            {columns[key].length > 0 && (
-              <span className={cn(
-                "ml-0.5 text-xs rounded-full h-5 min-w-5 px-1 flex items-center justify-center font-bold",
-                activeTab === key ? "bg-white/30 text-white" : "bg-foreground/10"
-              )}>
-                {columns[key].length}
-              </span>
-            )}
-          </button>
-        ))}
+    <div className="flex min-h-0 flex-1 flex-col md:hidden">
+      {/*
+        Pestañas sobrias, del mismo lenguaje que el tablero de escritorio: un
+        punto de color y el contador. Antes cada pestaña activa se pintaba de un
+        color pleno distinto, y con la tarjeta ya coloreada la pantalla acababa
+        pareciendo un semáforo averiado.
+      */}
+      <div className="flex shrink-0 gap-1 border-b border-border px-2">
+        {TAB_CONFIG.map(({ key, label, dot }) => {
+          const active = activeTab === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              aria-current={active ? "page" : undefined}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-2 border-b-2 px-2 py-3 text-[13px] font-semibold transition-colors",
+                active
+                  ? "border-foreground text-foreground"
+                  : "border-transparent text-muted-foreground",
+              )}
+              onClick={() => setActiveTab(key)}
+            >
+              <span className={cn("h-1.5 w-1.5 rounded-[2px]", dot)} />
+              {label}
+              {views[key].length > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded px-1 text-[11px] font-bold tabular-nums bg-foreground/[0.08] dark:bg-white/[0.08]">
+                  {views[key].length}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Single column view */}
-      <div className="flex-1 min-h-0 md:hidden">
+      <div className="min-h-0 flex-1">
         <MobileColumn status={activeTab} />
       </div>
-    </>
+    </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useAuthStore } from "@/stores/auth-store";
 import { useRouter } from "next/navigation";
+import { landingRouteForRole } from "@/lib/permissions";
 
 export function useAuth() {
   const {
@@ -26,12 +27,18 @@ export function useAuth() {
     );
     const data = await res.json();
     if (!data.success)
-      throw new Error(data.error?.message || "Error al iniciar sesion");
+      throw new Error(data.error?.message || "Error al iniciar sesión");
     setAuth(data.data.user, data.data.accessToken, data.data.refreshToken);
     if (data.data.user.branches?.length > 0) {
       setSelectedBranch(data.data.user.branches[0]);
     }
-    router.push("/orders");
+    // Cada rol entra donde trabaja, no a una pantalla fija.
+    //
+    // Iba siempre a /orders: el cocinero empezaba su turno mirando una tabla de
+    // pedidos que no puede usar y tenía que buscar su tablero a mano cada vez, y
+    // el cajero aterrizaba lejos del POS. `landingRouteForRole` ya resolvía esto
+    // para el guard del layout; el login se lo saltaba.
+    router.push(landingRouteForRole(data.data.user.role));
   };
 
   const register = async (input: {
@@ -53,7 +60,8 @@ export function useAuth() {
     if (!data.success)
       throw new Error(data.error?.message || "Error al registrarse");
     setAuth(data.data.user, data.data.accessToken, data.data.refreshToken);
-    router.push("/orders");
+    // Quien acaba de registrarse es administrador de su organización: entra al panel.
+    router.push(landingRouteForRole(data.data.user.role));
   };
 
   const logout = () => {

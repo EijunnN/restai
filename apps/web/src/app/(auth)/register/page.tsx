@@ -116,7 +116,7 @@ export default function RegisterPage() {
             )}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="password">Contrasena</Label>
+            <Label htmlFor="password">Contraseña</Label>
             <Input
               id="password"
               type="password"
@@ -137,7 +137,7 @@ export default function RegisterPage() {
           <p className="text-sm text-muted-foreground">
             Ya tienes cuenta?{" "}
             <Link href="/login" className="text-primary hover:underline">
-              Inicia sesion
+              Inicia sesión
             </Link>
           </p>
         </CardFooter>

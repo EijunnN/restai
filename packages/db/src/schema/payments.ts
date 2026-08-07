@@ -18,6 +18,8 @@ import {
 } from "./enums";
 import { organizations, branches } from "./tenants";
 import { orders } from "./orders";
+import { users } from "./auth";
+import { cashSessions } from "./operations";
 
 export const payments = pgTable("payments", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -35,9 +37,22 @@ export const payments = pgTable("payments", {
   reference: varchar("reference", { length: 255 }),
   tip: integer("tip").default(0).notNull(), // in cents
   status: paymentStatusEnum("status").default("pending").notNull(),
+  /** Quién cobró. Imprescindible para el arqueo y para atribuir un faltante. */
+  user_id: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  /** Caja abierta en la que se registró el cobro (null si se cobró sin caja). */
+  cash_session_id: uuid("cash_session_id").references(() => cashSessions.id, {
+    onDelete: "set null",
+  }),
+  // Anulación: un cobro mal tecleado se revierte dejando traza, nunca se borra.
+  // La migración 0012 exige que voided_at y void_reason vayan siempre juntos.
+  voided_at: timestamp("voided_at", { withTimezone: true }),
+  voided_by: uuid("voided_by").references(() => users.id, { onDelete: "set null" }),
+  void_reason: text("void_reason"),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("idx_payments_order").on(table.order_id),
+  index("idx_payments_user").on(table.user_id),
+  index("idx_payments_cash_session").on(table.cash_session_id),
 ]);
 
 export const invoices = pgTable("invoices", {

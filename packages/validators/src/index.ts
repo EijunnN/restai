@@ -353,6 +353,28 @@ export const idParamSchema = z.object({
 export const updateOrgSettingsSchema = z.object({
   name: z.string().min(2).max(255).optional(),
   logoUrl: z.string().url().nullable().optional(),
+  /**
+   * RUC del emisor. Sin él no se puede imprimir un ticket válido ni emitir un
+   * comprobante electrónico. El formato peruano lo valida también un CHECK en la
+   * base (migración 0012).
+   */
+  // MISMO patrón que usan el validador de facturación (línea ~178) y
+  // PUT /api/sunat/config. Incluye el prefijo 16 (no domiciliados), que este
+  // regex omitía: un emisor con RUC 16 podía configurar SUNAT pero no guardar
+  // sus propios datos fiscales.
+  ruc: z
+    .string()
+    .regex(
+      /^(10|15|16|17|20)\d{9}$/,
+      "El RUC debe tener 11 dígitos y empezar por 10, 15, 16, 17 o 20",
+    )
+    .nullable()
+    .optional(),
+  legalName: z.string().max(255).nullable().optional(),
+  /**
+   * Ajustes libres. OJO: se FUSIONAN con los existentes en el servidor, no los
+   * reemplazan; enviar `{a:1}` no borra `{b:2}`.
+   */
   settings: z.record(z.unknown()).optional(),
 });
 

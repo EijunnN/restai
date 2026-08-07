@@ -1,40 +1,34 @@
 "use client";
+/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/no-giant-component */
 
-import { use, useState, useEffect, useCallback } from "react";
+import { Suspense, use, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
 import { Button } from "@restai/ui/components/button";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { TableActionButtons } from "@/components/customer/table-action-buttons";
 import { useCustomerStore } from "@/stores/customer-store";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@restai/ui/components/dialog";
-import {
-  Clock,
+  AlertCircle,
+  ArrowRight,
   CheckCircle,
   ChefHat,
-  UtensilsCrossed,
-  RefreshCcw,
+  Clock,
   Loader2,
   Receipt,
-  Bell,
-  XCircle,
+  RefreshCcw,
+  ShoppingBag,
   Star,
-  ArrowRight,
+  UtensilsCrossed,
+  XCircle,
 } from "lucide-react";
-import Link from "next/link";
-import type { WsMessage, WsOrderPayload } from "@restai/types";
+import type { WsMessage } from "@restai/types";
 import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-const ACTION_COOLDOWN_MS = 30_000;
-const ACTION_COOLDOWN_STORAGE_KEY = "customer_table_action_cooldown";
-type TableAction = "request_bill" | "call_waiter";
 
 interface OrderItem {
   id: string;
@@ -43,20 +37,25 @@ interface OrderItem {
   status: string;
 }
 
-interface OrderData {
+/** Fila de GET /my-orders (todos los pedidos de la visita). */
+interface VisitOrder {
   id: string;
   order_number: string;
   status: string;
-  items: OrderItem[];
+  total: number | null;
   created_at: string;
-  subtotal?: number;
-  tax?: number;
-  discount?: number;
-  total?: number;
+  items: OrderItem[];
 }
 
-interface WsOrderItemStatusPayload {
-  orderId: string;
+/** GET /orders/:id — añade el desglose de importes; exige sesión activa. */
+interface OrderDetail extends VisitOrder {
+  subtotal?: number | null;
+  tax?: number | null;
+  discount?: number | null;
+}
+
+interface WsOrderIdPayload {
+  orderId?: string;
 }
 
 const steps = [
@@ -81,7 +80,7 @@ const itemStatusLabels: Record<string, string> = {
   preparing: "Preparando",
   ready: "Listo",
   served: "Servido",
-  cancelled: "Cancelado",
+  cancelled: "Anulado",
 };
 
 const itemStatusVariants: Record<string, string> = {
@@ -92,10 +91,19 @@ const itemStatusVariants: Record<string, string> = {
   cancelled: "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/20",
 };
 
-// The per-item badge reads order_items.status, which can lag behind the order
-// (e.g. orders created before the cascade fix, or transient WS lag). Derive the
-// displayed item status as the furthest-along of the item's own status and the
-// status implied by the ORDER, so a served order never shows "En cola" items.
+const orderStatusLabels: Record<string, string> = {
+  pending: "Recibido",
+  confirmed: "Confirmado",
+  preparing: "Preparando",
+  ready: "Listo",
+  served: "Servido",
+  completed: "Completado",
+  cancelled: "Anulado",
+};
+
+// La insignia por línea lee order_items.status, que puede ir por detrás del
+// pedido. Se muestra el estado MÁS avanzado entre el de la línea y el que
+// implica el pedido, para que un pedido servido no enseñe líneas "En cola".
 const itemStatusRank: Record<string, number> = {
   pending: 0,
   preparing: 1,
@@ -113,9 +121,30 @@ const orderToItemStatus: Record<string, string> = {
 function effectiveItemStatus(itemStatus: string, orderStatus: string): string {
   if (itemStatus === "cancelled" || orderStatus === "cancelled") return itemStatus;
   const derived = orderToItemStatus[orderStatus] ?? itemStatus;
-  return (itemStatusRank[derived] ?? 0) > (itemStatusRank[itemStatus] ?? 0)
-    ? derived
-    : itemStatus;
+  return (itemStatusRank[derived] ?? 0) > (itemStatusRank[itemStatus] ?? 0) ? derived : itemStatus;
+}
+
+function formatTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  // Zona horaria de Lima explícita: un móvil con el reloj en otro huso (o un
+  // turista) veía la hora de su pedido desplazada varias horas.
+  return date.toLocaleTimeString("es-PE", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Lima",
+  });
+}
+
+function StatusSkeleton() {
+  return (
+    <div className="space-y-4 p-4" aria-busy="true">
+      <div className="h-8 w-40 animate-pulse rounded bg-muted" />
+      <div className="h-24 animate-pulse rounded-xl bg-muted" />
+      <div className="h-40 animate-pulse rounded-xl bg-muted" />
+      <div className="h-32 animate-pulse rounded-xl bg-muted" />
+    </div>
+  );
 }
 
 export default function OrderStatusPage({
@@ -123,194 +152,172 @@ export default function OrderStatusPage({
 }: {
   params: Promise<{ branchSlug: string; tableCode: string }>;
 }) {
+  // useSearchParams() necesita una frontera de Suspense: el pedido enlazado
+  // desde el perfil llega como ?orderId=…, y sin ella la página entera se
+  // renderizaría en cliente sin fallback.
+  return (
+    <Suspense fallback={<StatusSkeleton />}>
+      <OrderStatusView params={params} />
+    </Suspense>
+  );
+}
+
+function OrderStatusView({
+  params,
+}: {
+  params: Promise<{ branchSlug: string; tableCode: string }>;
+}) {
+  "use no memo";
   const { branchSlug, tableCode } = use(params);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedOrderId = searchParams.get("orderId");
 
   const storeOrderId = useCustomerStore((s) => s.orderId);
   const storeToken = useCustomerStore((s) => s.token);
+  const storeSessionId = useCustomerStore((s) => s.sessionId);
 
-  const [order, setOrder] = useState<OrderData | null>(null);
+  const [orders, setOrders] = useState<VisitOrder[]>([]);
+  const [detail, setDetail] = useState<OrderDetail | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [actionSent, setActionSent] = useState<Record<TableAction, boolean>>({
-    request_bill: false,
-    call_waiter: false,
-  });
-  const [actionCooldownUntil, setActionCooldownUntil] = useState<Record<TableAction, number>>({
-    request_bill: 0,
-    call_waiter: 0,
-  });
-  const [cooldownTick, setCooldownTick] = useState(Date.now());
-  const [actionNotice, setActionNotice] = useState<{
-    kind: "success" | "error";
-    message: string;
-  } | null>(null);
-  const [showConfirmation, setShowConfirmation] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // NÚMERO de mesa. El segmento `tableCode` de la URL es el qr_code interno
+  // ("mi-sede-T7-lx8k2a"): pintarlo tal cual daba "Mesa mi-sede-T7-lx8k2a" en la
+  // cabecera. El número real solo lo sirve la carta pública.
+  const [tableNumber, setTableNumber] = useState<number | null>(null);
 
   const getToken = useCallback(() => {
     if (storeToken) return storeToken;
-    if (typeof window !== "undefined") {
-      return sessionStorage.getItem("customer_token");
-    }
+    if (typeof window !== "undefined") return sessionStorage.getItem("customer_token");
     return null;
   }, [storeToken]);
 
-  const getOrderId = useCallback(() => {
-    if (storeOrderId) return storeOrderId;
-    if (typeof window !== "undefined") {
-      return sessionStorage.getItem("customer_order_id");
-    }
-    return null;
-  }, [storeOrderId]);
-
   const getSessionId = useCallback(() => {
-    const storeSessionId = useCustomerStore.getState().sessionId;
     if (storeSessionId) return storeSessionId;
     if (typeof window !== "undefined") return sessionStorage.getItem("customer_session_id");
     return null;
-  }, []);
+  }, [storeSessionId]);
 
-  const handleTableAction = useCallback(async (action: TableAction) => {
+  /** Todos los pedidos de la visita. Es la fuente de verdad de esta pantalla. */
+  const fetchOrders = useCallback(async () => {
     const token = getToken();
-    const sessionId = getSessionId();
-    if (!token || !sessionId) return;
-
-    const remainingMs = actionCooldownUntil[action] - Date.now();
-    if (remainingMs > 0) {
-      const remainingSeconds = Math.ceil(remainingMs / 1000);
-      setActionNotice({
-        kind: "error",
-        message: `Espera ${remainingSeconds}s antes de volver a enviar esta solicitud.`,
-      });
-      return;
-    }
-
-    try {
-      setActionLoading(action);
-      const res = await fetch(`${API_URL}/api/customer/table-action`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ action, tableSessionId: sessionId }),
-      });
-      const result = await res.json();
-
-      if (!res.ok || !result.success) {
-        const retryAfterSec = result?.data?.retryAfterSec;
-        if (typeof retryAfterSec === "number" && retryAfterSec > 0) {
-          const now = Date.now();
-          setCooldownTick(now);
-          setActionCooldownUntil((prev) => ({
-            ...prev,
-            [action]: now + retryAfterSec * 1000,
-          }));
-        }
-        throw new Error(result.error?.message || "No se pudo enviar la solicitud");
-      }
-
-      const now = Date.now();
-      setCooldownTick(now);
-      setActionSent((prev) => ({ ...prev, [action]: true }));
-      setActionCooldownUntil((prev) => ({
-        ...prev,
-        [action]: now + ACTION_COOLDOWN_MS,
-      }));
-      const successMessage =
-        action === "request_bill"
-          ? "Tu solicitud de cuenta fue enviada al restaurante."
-          : "Tu solicitud de mozo fue enviada al restaurante.";
-      setActionNotice({ kind: "success", message: successMessage });
-      toast.success(successMessage);
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error
-          ? err.message
-          : "No se pudo enviar la solicitud. Intenta nuevamente.";
-      setActionNotice({ kind: "error", message: errorMessage });
-      toast.error(errorMessage);
-    } finally {
-      setActionLoading(null);
-    }
-  }, [getToken, getSessionId, actionCooldownUntil]);
-
-  const fetchOrder = useCallback(async () => {
-    const orderId = getOrderId();
-    const token = getToken();
-
-    if (!orderId || !token) {
-      setError("No se encontro la orden. Intenta realizar un nuevo pedido.");
+    if (!token) {
+      setError("Tu sesión de mesa no está activa. Vuelve a escanear el código QR.");
       setLoading(false);
       return;
     }
 
     try {
-      const res = await fetch(
-        `${API_URL}/api/customer/orders/${orderId}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
+      const res = await fetch(`${API_URL}/api/customer/my-orders`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const result = await res.json();
-      if (!result.success) {
-        throw new Error(result.error?.message || "Error al obtener la orden");
+      if (!result?.success) {
+        throw new Error(result?.error?.message || "No pudimos cargar tus pedidos");
       }
-      setOrder(result.data);
+      setOrders(Array.isArray(result.data) ? (result.data as VisitOrder[]) : []);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error inesperado");
+      // El error NO borra lo ya cargado: un corte de red de un segundo durante
+      // un refresco automático hacía desaparecer la lista entera de pedidos y
+      // dejaba una pantalla de error donde había información válida.
+      setError(err instanceof Error ? err.message : "No pudimos cargar tus pedidos");
     } finally {
       setLoading(false);
     }
-  }, [getOrderId, getToken]);
-
-  const handleCancelOrder = useCallback(async () => {
-    const orderId = getOrderId();
-    const token = getToken();
-    if (!orderId || !token) return;
-
-    try {
-      setCancelling(true);
-      const res = await fetch(
-        `${API_URL}/api/customer/orders/${orderId}/cancel`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      );
-      const result = await res.json();
-      if (!result.success) {
-        setError(result.error?.message || "No se pudo cancelar el pedido");
-        return;
-      }
-      await fetchOrder();
-    } catch {
-      setError("Error al cancelar el pedido");
-    } finally {
-      setCancelling(false);
-      setCancelDialogOpen(false);
-    }
-  }, [getOrderId, getToken, fetchOrder]);
+  }, [getToken]);
 
   useEffect(() => {
-    fetchOrder();
-  }, [fetchOrder]);
+    void fetchOrders();
+  }, [fetchOrders]);
+
+  // Número de mesa desde la carta pública (no exige sesión activa). Si falla, la
+  // cabecera se limita a decir "Tu visita": nunca el código interno.
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`)
+      .then((res) => res.json())
+      .then((result) => {
+        const number = result?.data?.table?.number;
+        if (!cancelled && typeof number === "number") setTableNumber(number);
+      })
+      .catch(() => {
+        // Sin número: se usa el texto neutro.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [branchSlug, tableCode]);
+
+  // Selección: primero lo que pide la URL (enlace desde el perfil), luego el
+  // último pedido de este dispositivo, y si no, el más reciente de la visita.
+  useEffect(() => {
+    if (orders.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    const preferred = [requestedOrderId, storeOrderId].find(
+      (id) => id && orders.some((o) => o.id === id),
+    );
+    setSelectedId((current) => {
+      if (current && orders.some((o) => o.id === current)) return current;
+      return preferred ?? orders[0].id;
+    });
+  }, [orders, requestedOrderId, storeOrderId]);
+
+  /**
+   * Desglose de importes del pedido seleccionado. Solo lo sirve /orders/:id, que
+   * exige sesión ACTIVA: si la visita ya se cerró simplemente no hay desglose y
+   * se sigue mostrando el total del listado, sin romper la pantalla.
+   */
+  const fetchDetail = useCallback(
+    async (orderId: string) => {
+      const token = getToken();
+      if (!token) return;
+      try {
+        const res = await fetch(`${API_URL}/api/customer/orders/${orderId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const result = await res.json();
+        if (result?.success) {
+          setDetail(result.data as OrderDetail);
+          return;
+        }
+      } catch {
+        // Sin desglose: el listado ya trae total, estado y líneas.
+      }
+      setDetail(null);
+    },
+    [getToken],
+  );
+
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      return;
+    }
+    void fetchDetail(selectedId);
+  }, [selectedId, fetchDetail]);
+
+  const refreshAll = useCallback(async () => {
+    await fetchOrders();
+    if (selectedId) await fetchDetail(selectedId);
+  }, [fetchOrders, fetchDetail, selectedId]);
 
   useWebSocket(
     getSessionId() ? [`session:${getSessionId()}`] : [],
     (msg: WsMessage) => {
       if (msg.type === "auth:success") {
-        void fetchOrder();
+        void refreshAll();
         return;
       }
-
+      // `session:ended` NO se trata aquí: el layout del comensal ya lo escucha
+      // globalmente, limpia la sesión y devuelve a la pantalla de entrada.
+      // Duplicarlo produciría dos navegaciones en carrera.
       if (
         msg.type !== "order:new" &&
         msg.type !== "order:updated" &&
@@ -319,394 +326,419 @@ export default function OrderStatusPage({
       ) {
         return;
       }
-
-      const currentOrderId = getOrderId();
-
-      if (!currentOrderId) {
-        return;
-      }
-
-      const payload = msg.type === "order:item_status"
-        ? msg.payload as WsOrderItemStatusPayload
-        : msg.payload as WsOrderPayload;
-
-      if (payload.orderId === currentOrderId) {
-        void fetchOrder();
+      // Cualquier movimiento de la visita cambia el acumulado de la mesa, no
+      // solo el del pedido abierto: se refresca todo.
+      const payload = msg.payload as WsOrderIdPayload;
+      if (payload?.orderId || msg.type === "order:new") {
+        void refreshAll();
       }
     },
     getToken() || undefined,
   );
 
-  // Show confirmation banner on first load if order is new
-  useEffect(() => {
-    if (order && order.status === "pending" && !showConfirmation) {
-      setShowConfirmation(true);
-      const timer = setTimeout(() => setShowConfirmation(false), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [order?.id]);
+  const selected = orders.find((o) => o.id === selectedId) ?? null;
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const key = `${ACTION_COOLDOWN_STORAGE_KEY}:${branchSlug}:${tableCode}`;
-    const raw = window.sessionStorage.getItem(key);
-    if (!raw) return;
+  const handleCancelOrder = useCallback(async () => {
+    if (!selected) return;
+    const token = getToken();
+    if (!token) return;
 
     try {
-      const parsed = JSON.parse(raw) as Partial<Record<TableAction, number>>;
-      setActionCooldownUntil({
-        request_bill:
-          typeof parsed.request_bill === "number" ? parsed.request_bill : 0,
-        call_waiter:
-          typeof parsed.call_waiter === "number" ? parsed.call_waiter : 0,
+      setCancelling(true);
+      const res = await fetch(`${API_URL}/api/customer/orders/${selected.id}/cancel`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
       });
-      setCooldownTick(Date.now());
+      const result = await res.json();
+
+      if (!result?.success) {
+        // 409 = la cocina se adelantó mientras mirábamos la pantalla. Es un
+        // resultado normal: se explica y se refresca, no se reintenta.
+        const message =
+          result?.error?.message || "No pudimos anular el pedido. Avisa al mozo.";
+        if (result?.error?.code === "CONFLICT") {
+          toast.info(message);
+        } else {
+          toast.error(message);
+        }
+        await refreshAll();
+        return;
+      }
+
+      toast.success("Pedido anulado");
+      await refreshAll();
     } catch {
-      window.sessionStorage.removeItem(key);
+      toast.error("No hay conexión. No pudimos anular el pedido.");
+    } finally {
+      setCancelling(false);
+      setCancelDialogOpen(false);
     }
-  }, [branchSlug, tableCode]);
+  }, [selected, getToken, refreshAll]);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const key = `${ACTION_COOLDOWN_STORAGE_KEY}:${branchSlug}:${tableCode}`;
-    window.sessionStorage.setItem(key, JSON.stringify(actionCooldownUntil));
-  }, [actionCooldownUntil, branchSlug, tableCode]);
+  // Acumulado de la visita: lo que el comensal quiere saber ANTES de pedir la
+  // cuenta. Los pedidos anulados no suman. Se calcula antes de cualquier retorno
+  // temprano porque también se muestra al cerrarse la mesa.
+  const liveOrders = orders.filter((o) => o.status !== "cancelled");
+  const tableTotal = liveOrders.reduce((sum, o) => sum + (o.total ?? 0), 0);
 
-  useEffect(() => {
-    const hasActiveCooldown = Object.values(actionCooldownUntil).some(
-      (ts) => ts > Date.now()
-    );
-    if (!hasActiveCooldown) return;
+  if (loading) return <StatusSkeleton />;
 
-    setCooldownTick(Date.now());
-    const intervalId = window.setInterval(() => {
-      setCooldownTick(Date.now());
-    }, 1000);
-
-    return () => window.clearInterval(intervalId);
-  }, [actionCooldownUntil]);
-
-  if (loading) {
+  // El error solo se apodera de la pantalla cuando NO hay nada que enseñar. Con
+  // pedidos ya cargados se muestra como aviso, sin borrar la información.
+  if (error && orders.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Cargando tu pedido...</p>
+      <div className="space-y-4 p-6 pt-12 text-center">
+        <AlertCircle className="mx-auto h-12 w-12 text-destructive" />
+        <p role="alert" className="font-medium text-destructive">
+          {error}
+        </p>
+        <div className="space-y-2">
+          <Button
+            className="h-11 w-full"
+            onClick={() => {
+              setLoading(true);
+              void fetchOrders();
+            }}
+          >
+            <RefreshCcw className="mr-2 h-4 w-4" />
+            Reintentar
+          </Button>
+          <Button
+            variant="outline"
+            className="h-11 w-full"
+            onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
+          >
+            Volver a la carta
+          </Button>
+        </div>
       </div>
     );
   }
 
-  if (error || !order) {
+  if (orders.length === 0) {
     return (
-      <div className="p-6 mt-12 text-center">
-        <p className="text-destructive font-medium mb-4">{error || "Orden no encontrada"}</p>
-        <Link href={`/${branchSlug}/${tableCode}/menu`}>
-          <Button variant="outline">Volver al Menu</Button>
-        </Link>
+      <div className="space-y-4 p-6 pt-12 text-center">
+        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-muted">
+          <ShoppingBag className="h-10 w-10 text-muted-foreground" />
+        </div>
+        <h1 className="text-xl font-bold">Todavía no has pedido nada</h1>
+        <p className="text-sm text-muted-foreground">
+          Cuando envíes tu primer pedido aparecerá aquí con su estado en tiempo real.
+        </p>
+        <Button
+          className="h-12 w-full"
+          onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
+        >
+          Ver la carta
+        </Button>
       </div>
     );
   }
 
-  const currentStep = stepIndex[order.status] ?? 0;
-  const isCancelled = order.status === "cancelled";
-  // Only allow cancel when the ORDER itself is pending (not just item-level)
-  const canCancel = order.status === "pending";
-  const requestBillCooldownSeconds = Math.max(
-    0,
-    Math.ceil((actionCooldownUntil.request_bill - cooldownTick) / 1000)
-  );
-  const callWaiterCooldownSeconds = Math.max(
-    0,
-    Math.ceil((actionCooldownUntil.call_waiter - cooldownTick) / 1000)
-  );
+  const selectedIsCancelled = selected?.status === "cancelled";
+  const canCancelSelected = selected?.status === "pending";
+  const currentStep = selected ? (stepIndex[selected.status] ?? 0) : 0;
 
   return (
-    <div className="p-4 space-y-5">
-      {/* Confirmation banner */}
-      {showConfirmation && (
-        <div className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-4 text-center animate-in fade-in slide-in-from-top-2 duration-300">
-          <CheckCircle className="h-8 w-8 text-green-600 dark:text-green-400 mx-auto mb-2" />
-          <p className="font-semibold text-green-800 dark:text-green-300">Pedido recibido</p>
-          <p className="text-sm text-green-600 dark:text-green-400">Tu orden fue enviada a cocina</p>
+    <div className="space-y-5 p-4 pb-8">
+      <div className="pt-2 text-center">
+        <h1 className="text-2xl font-bold">Tus pedidos</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {tableNumber !== null ? `Mesa ${tableNumber}` : "Tu visita"} ·{" "}
+          {liveOrders.length} {liveOrders.length === 1 ? "pedido" : "pedidos"}
+        </p>
+      </div>
+
+      {/* Aviso de refresco fallido: la información sigue en pantalla. */}
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <p>{error}</p>
+            <p className="mt-0.5 text-xs opacity-80">
+              Lo que ves puede estar desactualizado.
+            </p>
+            <Button variant="outline" className="mt-2 h-10" onClick={() => void refreshAll()}>
+              Reintentar
+            </Button>
+          </div>
         </div>
       )}
 
-      {/* Header */}
-      <div className="text-center pt-2">
-        <h1 className="text-2xl font-bold">Tu Pedido</h1>
-        <p className="text-muted-foreground mt-1">Orden #{order.order_number}</p>
-      </div>
-
-      {/* Cancelled banner */}
-      {isCancelled ? (
-        <Card>
-          <CardContent className="p-5 text-center">
-            <XCircle className="h-12 w-12 text-red-500 mx-auto mb-3" />
-            <p className="font-semibold text-lg text-red-600 dark:text-red-400">Pedido Cancelado</p>
-            <p className="text-sm text-muted-foreground mt-1">Este pedido ha sido cancelado</p>
-          </CardContent>
-        </Card>
-      ) : (
-        /* Stepper */
-        <Card>
-          <CardContent className="p-5">
-            <div className="space-y-1">
-              {steps.map((step, index) => {
-                const isCompleted = index <= currentStep;
-                const isCurrent = index === currentStep;
-                const isLast = index === steps.length - 1;
-                return (
-                  <div key={step.key}>
-                    <div className="flex items-center gap-4 py-2">
-                      <div
-                        className={cn(
-                          "flex items-center justify-center h-10 w-10 rounded-full shrink-0 transition-all",
-                          isCurrent
-                            ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
-                            : isCompleted
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-muted text-muted-foreground",
-                        )}
-                      >
-                        <step.icon className="h-5 w-5" />
-                      </div>
-                      <div className="flex-1">
-                        <p
-                          className={cn(
-                            "font-medium text-sm",
-                            isCompleted ? "text-foreground" : "text-muted-foreground",
-                          )}
-                        >
-                          {step.label}
-                        </p>
-                        {isCurrent && (
-                          <p className="text-xs text-primary font-medium mt-0.5">
-                            Estado actual
-                          </p>
-                        )}
-                      </div>
-                      {isCompleted && (
-                        <CheckCircle className="h-5 w-5 text-primary shrink-0" />
-                      )}
-                    </div>
-                    {!isLast && (
-                      <div className="ml-5 w-px h-3 bg-border" />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Items */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Detalle del Pedido</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {order.items.map((item) => {
-            const displayStatus = effectiveItemStatus(item.status, order.status);
-            return (
-              <div
-                key={item.id}
-                className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30"
-              >
-                <p className="font-medium text-sm">
-                  {item.quantity}x {item.name}
-                </p>
-                <span
-                  className={cn(
-                    "text-xs px-2.5 py-1 rounded-full font-medium border",
-                    itemStatusVariants[displayStatus] || "bg-muted text-muted-foreground border-border",
-                  )}
-                >
-                  {itemStatusLabels[displayStatus] || displayStatus}
-                </span>
-              </div>
-            );
-          })}
-
-          {/* Order total summary */}
-          {order.total != null && (
-            <div className="pt-3 mt-2 border-t border-border space-y-1">
-              {order.subtotal != null && (
-                <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>Subtotal</span>
-                  <span>{formatCurrency(order.subtotal)}</span>
-                </div>
-              )}
-              {order.tax != null && order.tax > 0 && (
-                <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>IGV</span>
-                  <span>{formatCurrency(order.tax)}</span>
-                </div>
-              )}
-              {order.discount != null && order.discount > 0 && (
-                <div className="flex justify-between text-sm text-green-600 dark:text-green-400">
-                  <span>Descuento</span>
-                  <span>-{formatCurrency(order.discount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between font-bold text-sm pt-1">
-                <span>Total</span>
-                <span>{formatCurrency(order.total)}</span>
-              </div>
-            </div>
-          )}
+      {/* Acumulado de la mesa */}
+      <Card className="border-primary/20 bg-primary/5">
+        <CardContent className="flex items-center gap-4 p-4">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10">
+            <Receipt className="h-6 w-6 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs text-muted-foreground">Total acumulado de la mesa</p>
+            <p className="text-2xl font-bold tabular-nums text-primary">
+              {formatCurrency(tableTotal)}
+            </p>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Loyalty profile link */}
-      <Link href={`/${branchSlug}/${tableCode}/profile`}>
-        <Card className="border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors cursor-pointer">
-          <CardContent className="p-4 flex items-center gap-3">
-            <Star className="h-5 w-5 text-primary shrink-0" />
-            <p className="text-sm font-medium flex-1">Ver mis puntos y recompensas</p>
-            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
-          </CardContent>
-        </Card>
-      </Link>
+      {/* Listado de todos los pedidos de la visita */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Pedidos de esta visita</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {orders.map((order) => {
+            const isSelected = order.id === selectedId;
+            const liveItems = order.items.filter((i) => i.status !== "cancelled");
+            return (
+              <button
+                key={order.id}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => setSelectedId(order.id)}
+                className={cn(
+                  "flex min-h-12 w-full items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors",
+                  isSelected
+                    ? "border-primary bg-primary/5"
+                    : "border-border bg-muted/30 hover:bg-muted/50",
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold">#{order.order_number}</span>
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                        itemStatusVariants[orderToItemStatus[order.status] ?? "pending"] ??
+                          "border-border bg-muted text-muted-foreground",
+                        order.status === "cancelled" && itemStatusVariants.cancelled,
+                      )}
+                    >
+                      {orderStatusLabels[order.status] ?? order.status}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {formatTime(order.created_at)} · {liveItems.length}{" "}
+                    {liveItems.length === 1 ? "producto" : "productos"}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    "shrink-0 text-sm font-semibold tabular-nums",
+                    order.status === "cancelled" && "text-muted-foreground line-through",
+                  )}
+                >
+                  {formatCurrency(order.total ?? 0)}
+                </span>
+              </button>
+            );
+          })}
+        </CardContent>
+      </Card>
 
-      {/* Cancel button - only when order status is pending */}
-      {canCancel && (
-        <Button
-          variant="destructive"
-          className="w-full gap-2"
-          disabled={cancelling}
-          onClick={() => setCancelDialogOpen(true)}
-        >
-          <XCircle className="h-4 w-4" />
-          Cancelar Pedido
-        </Button>
-      )}
-
-      {/* Actions */}
-      {!isCancelled && (
-        <div className="flex gap-3">
-          <Button
-            variant="outline"
-            className="flex-1"
-            disabled={refreshing}
-            onClick={async () => {
-              setRefreshing(true);
-              await fetchOrder();
-              setRefreshing(false);
-            }}
-          >
-            {refreshing ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <RefreshCcw className="h-4 w-4 mr-2" />
-            )}
-            {refreshing ? "Actualizando..." : "Actualizar"}
-          </Button>
-          <Link href={`/${branchSlug}/${tableCode}/menu`} className="flex-1">
-            <Button variant="default" className="w-full">
-              Pedir Mas
-            </Button>
-          </Link>
-        </div>
-      )}
-
-      {/* Table action buttons */}
-      {!isCancelled && (
+      {selected && (
         <>
-          <div className="flex gap-3">
-            <Button
-              variant="outline"
-              className="flex-1 gap-2"
-              disabled={actionLoading !== null || requestBillCooldownSeconds > 0}
-              onClick={() => handleTableAction("request_bill")}
-            >
-              <Receipt className="h-4 w-4" />
-              {actionLoading === "request_bill"
-                ? "Enviando..."
-                : requestBillCooldownSeconds > 0
-                  ? `Reintentar en ${requestBillCooldownSeconds}s`
-                  : actionSent.request_bill
-                    ? "Solicitar Cuenta (de nuevo)"
-                    : "Pedir la Cuenta"}
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1 gap-2"
-              disabled={actionLoading !== null || callWaiterCooldownSeconds > 0}
-              onClick={() => handleTableAction("call_waiter")}
-            >
-              <Bell className="h-4 w-4" />
-              {actionLoading === "call_waiter"
-                ? "Enviando..."
-                : callWaiterCooldownSeconds > 0
-                  ? `Reintentar en ${callWaiterCooldownSeconds}s`
-                  : actionSent.call_waiter
-                    ? "Llamar al Mozo (de nuevo)"
-                    : "Llamar al Mozo"}
-            </Button>
-          </div>
-          {actionNotice && (
-            <div
-              className={cn(
-                "rounded-lg border px-3 py-2 text-sm",
-                actionNotice.kind === "success"
-                  ? "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300"
-                  : "border-destructive/30 bg-destructive/10 text-destructive"
-              )}
-            >
-              {actionNotice.message}
-            </div>
+          {/* Seguimiento del pedido seleccionado */}
+          {selectedIsCancelled ? (
+            <Card>
+              <CardContent className="p-5 text-center">
+                <XCircle className="mx-auto mb-3 h-12 w-12 text-red-500" />
+                <p className="text-lg font-semibold text-red-600 dark:text-red-400">
+                  Pedido #{selected.order_number} anulado
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Este pedido no se preparará y no suma al total de la mesa.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">
+                  Pedido #{selected.order_number}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-5 pt-0">
+                <div className="space-y-1">
+                  {steps.map((step, index) => {
+                    const isCompleted = index <= currentStep;
+                    const isCurrent = index === currentStep;
+                    const isLast = index === steps.length - 1;
+                    return (
+                      <div key={step.key}>
+                        <div className="flex items-center gap-4 py-2">
+                          <div
+                            className={cn(
+                              "flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all",
+                              isCurrent
+                                ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
+                                : isCompleted
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            <step.icon className="h-5 w-5" />
+                          </div>
+                          <div className="flex-1">
+                            <p
+                              className={cn(
+                                "text-sm font-medium",
+                                isCompleted ? "text-foreground" : "text-muted-foreground",
+                              )}
+                            >
+                              {step.label}
+                            </p>
+                            {isCurrent && (
+                              <p className="mt-0.5 text-xs font-medium text-primary">
+                                Estado actual
+                              </p>
+                            )}
+                          </div>
+                          {isCompleted && (
+                            <CheckCircle className="h-5 w-5 shrink-0 text-primary" />
+                          )}
+                        </div>
+                        {!isLast && <div className="ml-5 h-3 w-px bg-border" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
           )}
-          {(requestBillCooldownSeconds > 0 || callWaiterCooldownSeconds > 0) && (
-            <p className="text-xs text-muted-foreground">
-              Anti-spam activo: cada solicitud tiene 30 segundos de espera.
-            </p>
+
+          {/* Detalle del pedido seleccionado */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">
+                Detalle del pedido #{selected.order_number}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {selected.items.map((item) => {
+                const displayStatus = effectiveItemStatus(item.status, selected.status);
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3"
+                  >
+                    <p
+                      className={cn(
+                        "min-w-0 flex-1 text-sm font-medium",
+                        displayStatus === "cancelled" && "text-muted-foreground line-through",
+                      )}
+                    >
+                      {item.quantity}x {item.name}
+                    </p>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium",
+                        itemStatusVariants[displayStatus] ||
+                          "border-border bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {itemStatusLabels[displayStatus] || displayStatus}
+                    </span>
+                  </div>
+                );
+              })}
+
+              <div className="mt-2 space-y-1 border-t border-border pt-3">
+                {detail?.id === selected.id && detail.subtotal != null && (
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>Subtotal</span>
+                    <span className="tabular-nums">{formatCurrency(detail.subtotal)}</span>
+                  </div>
+                )}
+                {detail?.id === selected.id && (detail.discount ?? 0) > 0 && (
+                  <div className="flex justify-between text-sm text-green-600 dark:text-green-400">
+                    <span>Descuento</span>
+                    <span className="tabular-nums">
+                      -{formatCurrency(detail.discount ?? 0)}
+                    </span>
+                  </div>
+                )}
+                {detail?.id === selected.id && (detail.tax ?? 0) > 0 && (
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>IGV</span>
+                    <span className="tabular-nums">{formatCurrency(detail.tax ?? 0)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between pt-1 text-sm font-bold">
+                  <span>Total del pedido</span>
+                  <span className="tabular-nums">
+                    {formatCurrency(selected.total ?? 0)}
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {canCancelSelected && (
+            <Button
+              variant="destructive"
+              className="h-12 w-full gap-2"
+              disabled={cancelling}
+              onClick={() => setCancelDialogOpen(true)}
+            >
+              <XCircle className="h-4 w-4" />
+              Anular pedido #{selected.order_number}
+            </Button>
           )}
         </>
       )}
 
-      {/* Back to menu after cancellation */}
-      {isCancelled && (
-        <Link href={`/${branchSlug}/${tableCode}/menu`}>
-          <Button variant="default" className="w-full">
-            Volver al Menu
-          </Button>
+      {/* Navegación: nunca dejar al comensal encerrado en una pantalla */}
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          className="h-12 flex-1 gap-2"
+          disabled={refreshing}
+          onClick={async () => {
+            setRefreshing(true);
+            await refreshAll();
+            setRefreshing(false);
+          }}
+        >
+          {refreshing ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCcw className="h-4 w-4" />
+          )}
+          {refreshing ? "Actualizando..." : "Actualizar"}
+        </Button>
+        <Link href={`/${branchSlug}/${tableCode}/menu`} className="flex-1">
+          <Button className="h-12 w-full">Pedir más</Button>
         </Link>
-      )}
+      </div>
 
-      {/* Cancel confirmation dialog */}
-      <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Cancelar Pedido</DialogTitle>
-            <DialogDescription>
-              Esta seguro que desea cancelar su pedido? Esta accion no se puede deshacer.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setCancelDialogOpen(false)}
-              disabled={cancelling}
-            >
-              No, mantener pedido
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleCancelOrder}
-              disabled={cancelling}
-            >
-              {cancelling ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Cancelando...
-                </>
-              ) : (
-                "Si, cancelar pedido"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <TableActionButtons branchSlug={branchSlug} tableCode={tableCode} />
+
+      <Link href={`/${branchSlug}/${tableCode}/profile`} className="block">
+        <Card className="cursor-pointer border-primary/20 bg-primary/5 transition-colors hover:bg-primary/10">
+          <CardContent className="flex min-h-12 items-center gap-3 p-4">
+            <Star className="h-5 w-5 shrink-0 text-primary" />
+            <p className="flex-1 text-sm font-medium">Ver mis puntos y recompensas</p>
+            <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+          </CardContent>
+        </Card>
+      </Link>
+
+      <ConfirmDialog
+        open={cancelDialogOpen}
+        onOpenChange={setCancelDialogOpen}
+        title={`Anular el pedido #${selected?.order_number ?? ""}`}
+        description="Solo se puede anular mientras la cocina no lo haya empezado. Si ya está en preparación, te lo diremos y tendrás que avisar al mozo."
+        confirmLabel="Sí, anular pedido"
+        cancelLabel="No, mantenerlo"
+        loading={cancelling}
+        onConfirm={handleCancelOrder}
+      />
     </div>
   );
 }

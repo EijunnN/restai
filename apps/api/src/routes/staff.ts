@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, desc, gte, lte, inArray, isNull, ne, count } from "drizzle-orm";
@@ -7,9 +8,14 @@ import { createUserSchema, idParamSchema } from "@restai/validators";
 import { ROLES, PERMISSIONS } from "@restai/config";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
-import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
+import {
+  tenantMiddleware,
+  requireBranch,
+  getAccessibleBranchIds,
+} from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
 import { hashPassword } from "../lib/hash.js";
+import { auditFromContext } from "../lib/audit.js";
 
 /**
  * Role ceiling check: a caller may only create/assign a target role whose
@@ -21,6 +27,60 @@ function canAssignRole(callerRole: string, targetRole: string): boolean {
   const target = ROLES[targetRole as keyof typeof ROLES];
   if (!caller || !target) return false;
   return target.level > caller.level;
+}
+
+/**
+ * Valida la lista de sedes que se pretende asignar a un empleado.
+ *
+ * Dos comprobaciones, y las dos hacen falta:
+ *
+ * 1. Las sedes existen y son de esta organización. Sin esto se escribe una
+ *    pertenencia a la sede de otro cliente.
+ * 2. El llamador ALCANZA esas sedes. Sin esto, la autorización por sede es
+ *    decorativa: quien solo gestiona Surco se asigna Miraflores y pasa a leer
+ *    sus ventas, su auditoría y a renombrar la sede (lo que invalida los QR ya
+ *    impresos). Los roles globales (super_admin, org_admin) no tienen techo
+ *    aquí, que es justo lo que los hace globales.
+ *
+ * Devuelve `null` si todo es correcto, o el error a responder.
+ */
+async function validateAssignableBranches(
+  c: Context<AppEnv>,
+  branchIds: string[],
+): Promise<{ code: string; message: string; status: 400 | 403 } | null> {
+  if (branchIds.length === 0) return null;
+  const tenant = c.get("tenant") as any;
+
+  const ownedBranches = await db
+    .select({ id: schema.branches.id })
+    .from(schema.branches)
+    .where(
+      and(
+        inArray(schema.branches.id, branchIds),
+        eq(schema.branches.organization_id, tenant.organizationId),
+      ),
+    );
+
+  // `branchIds` puede traer repetidos: comparar longitudes sin deduplicar
+  // rechazaría una lista válida, así que se comprueba la pertenencia real.
+  const owned = new Set(ownedBranches.map((b) => b.id));
+  if (branchIds.some((id) => !owned.has(id))) {
+    return { code: "BAD_REQUEST", message: "Una o más sedes no son válidas", status: 400 };
+  }
+
+  const accessible = await getAccessibleBranchIds(c);
+  if (accessible === null) return null; // rol global: sin techo de sede
+
+  const reachable = new Set(accessible);
+  if (branchIds.some((id) => !reachable.has(id))) {
+    return {
+      code: "FORBIDDEN",
+      message: "No puedes asignar sedes que tú mismo no gestionas",
+      status: 403,
+    };
+  }
+
+  return null;
 }
 
 const staff = new Hono<AppEnv>();
@@ -108,20 +168,13 @@ staff.post(
       );
     }
 
-    // Verify all requested branches belong to this organization
-    const ownedBranches = await db
-      .select({ id: schema.branches.id })
-      .from(schema.branches)
-      .where(
-        and(
-          inArray(schema.branches.id, body.branchIds),
-          eq(schema.branches.organization_id, tenant.organizationId),
-        ),
-      );
-    if (ownedBranches.length !== body.branchIds.length) {
+    // Las sedes deben ser de esta organización Y estar al alcance del llamador:
+    // si no, un gerente daría de alta empleados en sedes que él no gestiona.
+    const branchError = await validateAssignableBranches(c, body.branchIds);
+    if (branchError) {
       return c.json(
-        { success: false, error: { code: "BAD_REQUEST", message: "Una o más sedes no son válidas" } },
-        400,
+        { success: false, error: { code: branchError.code, message: branchError.message } },
+        branchError.status,
       );
     }
 
@@ -194,9 +247,17 @@ staff.patch(
     const tenant = c.get("tenant") as any;
     const caller = c.get("user") as any;
 
-    // Verify user belongs to this org
+    // Verify user belongs to this org.
+    // Se traen también nombre y estado porque son el "antes" de la traza de
+    // auditoría que se escribe al final.
     const [user] = await db
-      .select({ id: schema.users.id, role: schema.users.role })
+      .select({
+        id: schema.users.id,
+        role: schema.users.role,
+        name: schema.users.name,
+        email: schema.users.email,
+        is_active: schema.users.is_active,
+      })
       .from(schema.users)
       .where(
         and(
@@ -289,21 +350,29 @@ staff.patch(
       }
     }
 
-    // Verify all requested branches belong to this organization
-    if (body.branchIds !== undefined && body.branchIds.length > 0) {
-      const ownedBranches = await db
-        .select({ id: schema.branches.id })
-        .from(schema.branches)
-        .where(
-          and(
-            inArray(schema.branches.id, body.branchIds),
-            eq(schema.branches.organization_id, tenant.organizationId),
-          ),
-        );
-      if (ownedBranches.length !== body.branchIds.length) {
+    // Cambio de sedes.
+    //
+    // Nadie reescribe sus PROPIAS sedes, por la misma razón por la que nadie se
+    // cambia su propio rol: sería la vía directa para saltarse el techo. Un
+    // gerente de una sede se asignaba toda la organización con un
+    // `PATCH /api/staff/<su id>` y, como la pertenencia se lee de la base y no
+    // del token, el ascenso surtía efecto de inmediato y sin dejar rastro.
+    if (body.branchIds !== undefined) {
+      if (id === caller.sub) {
         return c.json(
-          { success: false, error: { code: "BAD_REQUEST", message: "Una o más sedes no son válidas" } },
-          400,
+          {
+            success: false,
+            error: { code: "FORBIDDEN", message: "No puedes cambiar tus propias sedes" },
+          },
+          403,
+        );
+      }
+
+      const branchError = await validateAssignableBranches(c, body.branchIds);
+      if (branchError) {
+        return c.json(
+          { success: false, error: { code: branchError.code, message: branchError.message } },
+          branchError.status,
         );
       }
     }
@@ -327,7 +396,16 @@ staff.patch(
     }
 
     // Update branch assignments if provided
+    let sedesAntes: string[] | undefined;
     if (body.branchIds !== undefined) {
+      // Se leen ANTES de borrarlas: son el "antes" de la traza, y una vez hecho
+      // el DELETE ya no hay forma de reconstruir a qué sedes pertenecía.
+      const previas = await db
+        .select({ branch_id: schema.userBranches.branch_id })
+        .from(schema.userBranches)
+        .where(eq(schema.userBranches.user_id, id));
+      sedesAntes = previas.map((p) => p.branch_id);
+
       await db
         .delete(schema.userBranches)
         .where(eq(schema.userBranches.user_id, id));
@@ -341,6 +419,28 @@ staff.patch(
         );
       }
     }
+
+    // Traza. Cambiar el rol o las sedes de un empleado decide qué dinero puede
+    // mover y qué locales puede ver: sin registro, un ascenso indebido era
+    // indistinguible de un alta legítima al revisar el histórico.
+    await auditFromContext(c, {
+      action: "staff.update",
+      entityType: "user",
+      entityId: id,
+      summary: `Se modificó a ${user.name ?? user.email}`,
+      before: {
+        name: user.name,
+        role: user.role,
+        is_active: user.is_active,
+        ...(sedesAntes !== undefined ? { branch_ids: sedesAntes } : {}),
+      },
+      after: {
+        name: body.name ?? user.name,
+        role: body.role ?? user.role,
+        is_active: body.isActive ?? user.is_active,
+        ...(body.branchIds !== undefined ? { branch_ids: body.branchIds } : {}),
+      },
+    });
 
     return c.json({ success: true, data: { id } });
   },
@@ -361,9 +461,10 @@ staff.patch(
     const { id } = c.req.valid("param");
     const body = c.req.valid("json");
     const tenant = c.get("tenant") as any;
+    const caller = c.get("user") as any;
 
     const [user] = await db
-      .select({ id: schema.users.id })
+      .select({ id: schema.users.id, role: schema.users.role })
       .from(schema.users)
       .where(
         and(
@@ -376,6 +477,22 @@ staff.patch(
       return c.json(
         { success: false, error: { code: "NOT_FOUND", message: "Usuario no encontrado" } },
         404,
+      );
+    }
+
+    // Techo de rol, idéntico al de PATCH /:id. Sin esto, cualquiera con
+    // `staff:update` (un branch_manager) podía reescribir la contraseña de un
+    // org_admin y entrar como dueño: escalada vertical en dos clics.
+    if (id !== caller.sub && !canAssignRole(caller.role, user.role)) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "FORBIDDEN",
+            message: "No puedes cambiar la contraseña de este usuario",
+          },
+        },
+        403,
       );
     }
 
