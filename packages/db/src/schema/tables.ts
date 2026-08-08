@@ -62,12 +62,57 @@ export const tables = pgTable(
     status: tableStatusEnum("status").default("available").notNull(),
     position_x: integer("position_x").default(0).notNull(),
     position_y: integer("position_y").default(0).notNull(),
+    /**
+     * Forma en el plano: `round` | `square` | `rect` | `bar` (migración 0017).
+     *
+     * No es decoración: una redonda de dos y una tabla corrida de ocho se
+     * dibujan y se usan distinto, y el mozo reconoce su sala por la silueta
+     * antes que por el número.
+     */
+    shape: varchar("shape", { length: 12 }).default("square").notNull(),
+    /** Giro en el plano, en grados [0, 360). Las terrazas rara vez se alinean. */
+    rotation: integer("rotation").default(0).notNull(),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     unique("tables_branch_number_unique").on(table.branch_id, table.number),
     unique("uq_tables_branch_short_code").on(table.branch_id, table.short_code),
   ],
+);
+
+/**
+ * Mobiliario fijo del plano: cocina, barra, escalera, baños, entrada.
+ *
+ * No son mesas y no pueden serlo: no se ocupan, no se cobran, no tienen QR ni
+ * aforo. Son las referencias que convierten un diagrama de rectángulos en una
+ * sala reconocible, y las que permiten decir "la 12 es la del fondo, junto a la
+ * escalera". Cuelgan del espacio: si se borra el ambiente, se van con él.
+ */
+export const spaceFixtures = pgTable(
+  "space_fixtures",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    space_id: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    branch_id: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    organization_id: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Qué es. La interfaz elige el icono a partir de esto. */
+    kind: varchar("kind", { length: 20 }).notNull(),
+    /** Rótulo propio, para cuando "Barra 2" dice más que "Barra". */
+    label: varchar("label", { length: 60 }),
+    position_x: integer("position_x").default(0).notNull(),
+    position_y: integer("position_y").default(0).notNull(),
+    width: integer("width").default(120).notNull(),
+    height: integer("height").default(60).notNull(),
+    rotation: integer("rotation").default(0).notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_space_fixtures_space").on(table.space_id)],
 );
 
 export const tableAssignments = pgTable("table_assignments", {

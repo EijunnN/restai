@@ -121,6 +121,8 @@ tables.get("/", requirePermission("tables:read"), async (c) => {
       status: schema.tables.status,
       position_x: schema.tables.position_x,
       position_y: schema.tables.position_y,
+      shape: schema.tables.shape,
+      rotation: schema.tables.rotation,
       created_at: schema.tables.created_at,
       /**
        * Resumen de la visita viva de la mesa, o NULL si no hay ninguna.
@@ -349,19 +351,47 @@ tables.patch(
 // Exige `tables:layout` y no `tables:update`: mover el plano es configurar el
 // local, no operar una mesa. El mozo arrastra mesas en su pantalla, pero no
 // puede rehacer la distribución del salón para todos.
+/**
+ * Coloca la mesa en el plano: posición y, opcionalmente, forma y giro.
+ *
+ * Las tres cosas son lo mismo —dibujar la sala— y por eso comparten endpoint y
+ * permiso (`tables:layout`). Separar la forma en `PATCH /:id`, que solo exige
+ * `tables:update`, dejaría a cualquier mozo reconfigurando el plano del local
+ * desde la ficha de la mesa.
+ *
+ * `shape` y `rotation` son opcionales: el arrastre, que es la operación
+ * frecuente, sigue enviando solo `x` e `y`.
+ */
 tables.patch(
   "/:id/position",
   requirePermission("tables:layout"),
   zValidator("param", idParamSchema),
-  zValidator("json", z.object({ x: z.number(), y: z.number() })),
+  zValidator(
+    "json",
+    z.object({
+      x: z.number(),
+      y: z.number(),
+      shape: z.enum(["round", "square", "rect", "bar"]).optional(),
+      // Se normaliza a [0, 360) antes de escribir: la interfaz gira en pasos de
+      // 15° y acaba mandando 360 o -15 con toda naturalidad.
+      rotation: z.number().int().optional(),
+    }),
+  ),
   async (c) => {
     const { id } = c.req.valid("param");
-    const { x, y } = c.req.valid("json");
+    const { x, y, shape, rotation } = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
     const [updated] = await db
       .update(schema.tables)
-      .set({ position_x: x, position_y: y })
+      .set({
+        position_x: Math.round(x),
+        position_y: Math.round(y),
+        ...(shape ? { shape } : {}),
+        ...(rotation !== undefined
+          ? { rotation: ((Math.round(rotation) % 360) + 360) % 360 }
+          : {}),
+      })
       .where(
         and(
           eq(schema.tables.id, id),

@@ -99,6 +99,8 @@ function TablesContent() {
   const anchaParaPanelFijo = useMediaQuery(XL_QUERY);
 
   const [viewMode, setViewMode] = useState<"grid" | "planner">("grid");
+  /** El plano avisa cuando entra en edición: la ficha cambia de contenido. */
+  const [layoutMode, setLayoutMode] = useState(false);
   const [qrDialog, setQrDialog] = useState<TableRow | null>(null);
   const [createTableDialog, setCreateTableDialog] = useState(false);
   const [createSpaceDialog, setCreateSpaceDialog] = useState(false);
@@ -198,6 +200,7 @@ function TablesContent() {
     statusChangePending: updateTableStatus.isPending,
     canDelete,
     canCharge,
+    layoutMode: viewMode === "planner" && layoutMode,
   };
 
   if (error) {
@@ -377,7 +380,16 @@ function TablesContent() {
       <div className="flex min-h-0 flex-1 gap-4 p-4">
         <div className="min-h-0 flex-1 overflow-y-auto">
           {viewMode === "planner" ? (
-            <FloorPlannerView tables={tables} requestByTableId={requestByTableId} />
+            /* El plano comparte la selección con la cuadrícula: tocar una mesa
+               aquí abre la MISMA ficha del panel, sin diálogo aparte. */
+            <FloorPlannerView
+              tables={tables}
+              requestByTableId={requestByTableId}
+              spaceId={space !== ALL_SPACES && space !== UNASSIGNED_SPACE ? space : null}
+              selectedId={selected?.id ?? null}
+              onSelect={selectTable}
+              onModeChange={setLayoutMode}
+            />
           ) : isLoading ? (
             <div className="grid grid-cols-2 gap-3.5 md:grid-cols-3 2xl:grid-cols-4">
               {Array.from({ length: 12 }).map((_, i) => (

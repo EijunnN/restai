@@ -26,6 +26,7 @@ import {
   type TableRow,
 } from "@/hooks/use-tables";
 import { useTablesContext } from "./tables-context";
+import { TableLayoutEditor } from "./table-layout-editor";
 
 /**
  * Panel lateral de la sala.
@@ -52,6 +53,11 @@ interface Props {
   statusChangePending: boolean;
   canDelete: boolean;
   canCharge: boolean;
+  /**
+   * El plano está en modo edición: la ficha muestra cómo ES la mesa (forma,
+   * aforo, giro) en lugar de qué pasa en ella.
+   */
+  layoutMode?: boolean;
 }
 
 export function SidePanel(props: Props) {
@@ -312,6 +318,7 @@ function TableDetail({
   statusChangePending,
   canDelete,
   canCharge,
+  layoutMode,
 }: Props & { table: TableRow }) {
   const { selectTable, canOperateTables, waiterAssignmentEnabled } = useTablesContext();
   const sesion = table.active_session;
@@ -395,7 +402,10 @@ function TableDetail({
       </div>
 
       <div className="px-5 pb-5">
-        {ocupada && sesion && (
+        {/* Dibujando el local: lo que importa es la mesa, no su cuenta. */}
+        {layoutMode && <TableLayoutEditor table={table} />}
+
+        {!layoutMode && ocupada && sesion && (
           <div className="border-t border-border py-4">
             {cuentaLoading ? (
               <div className="space-y-2">
@@ -441,20 +451,20 @@ function TableDetail({
 
         {/* Acción principal. "Sentar" y "Liberar" NO son cambios de estado:
             abren su diálogo, que es quien crea o cierra la cuenta de verdad. */}
-        {ocupada && canCharge && (
+        {!layoutMode && ocupada && canCharge && (
           <Button className="mt-4 h-[50px] w-full text-[15px]" onClick={() => onCharge(table)}>
             <CreditCard className="mr-2 h-[17px] w-[17px]" aria-hidden="true" />
             Cobrar
           </Button>
         )}
-        {!ocupada && puedeSentar && canOperateTables && (
+        {!layoutMode && !ocupada && puedeSentar && canOperateTables && (
           <Button className="mt-4 h-[50px] w-full text-[15px]" onClick={() => onSeat(table)}>
             <Users className="mr-2 h-[17px] w-[17px]" aria-hidden="true" />
             Sentar cliente
           </Button>
         )}
 
-        <div className="mt-3 flex flex-wrap gap-1.5">
+        <div className={cn("mt-3 flex flex-wrap gap-1.5", layoutMode && "hidden")}>
           <SecondaryAction icon={QrCode} label="QR" onClick={() => onQr(table)} />
           <SecondaryAction icon={History} label="Historial" onClick={() => onHistory(table)} />
           {waiterAssignmentEnabled && canOperateTables && (
@@ -473,7 +483,7 @@ function TableDetail({
           )}
         </div>
 
-        {canOperateTables && (
+        {canOperateTables && !layoutMode && (
           <div className="mt-4 flex gap-1 rounded-xl bg-muted p-1">
             {(["available", "occupied", "reserved", "maintenance"] as const).map((k) => (
               <button

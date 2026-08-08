@@ -38,6 +38,10 @@ export interface TableRow {
   status: string;
   position_x: number;
   position_y: number;
+  /** Silueta en el plano. Por defecto `square`, que es lo que había antes. */
+  shape?: "round" | "square" | "rect" | "bar";
+  /** Giro en el plano, en grados [0, 360). */
+  rotation?: number;
   created_at: string;
   /**
    * Visita viva de la mesa, o `null` si no hay ninguna.
@@ -179,15 +183,30 @@ export function useDeleteTable() {
   });
 }
 
+/**
+ * Colocación de una mesa en el plano.
+ *
+ * Posición, forma y giro viajan juntos porque son la misma operación —dibujar
+ * la sala— y comparten permiso (`tables:layout`). El arrastre, que es lo
+ * frecuente, manda solo `x` e `y`.
+ */
+export interface TablePlacement {
+  id: string;
+  x: number;
+  y: number;
+  shape?: "round" | "square" | "rect" | "bar";
+  rotation?: number;
+}
+
 export function useUpdateTablePosition() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, x, y }: { id: string; x: number; y: number }) =>
+    mutationFn: ({ id, x, y, shape, rotation }: TablePlacement) =>
       apiFetch(`/api/tables/${id}/position`, {
         method: "PATCH",
-        body: JSON.stringify({ x, y }),
+        body: JSON.stringify({ x, y, shape, rotation }),
       }),
-    onMutate: async ({ id, x, y }) => {
+    onMutate: async ({ id, x, y, shape, rotation }: TablePlacement) => {
       // useTables stores under ["tables", spaceId] (e.g. ["tables", undefined]),
       // so use partial-match operations to hit the real cache key(s).
       await qc.cancelQueries({ queryKey: ["tables"] });
@@ -198,7 +217,15 @@ export function useUpdateTablePosition() {
         return {
           ...old,
           tables: old.tables.map((t: any) =>
-            t.id === id ? { ...t, position_x: x, position_y: y } : t
+            t.id === id
+              ? {
+                  ...t,
+                  position_x: x,
+                  position_y: y,
+                  ...(shape ? { shape } : {}),
+                  ...(rotation !== undefined ? { rotation } : {}),
+                }
+              : t,
           ),
         };
       });
@@ -545,5 +572,126 @@ export function useMyAssignedTables(options?: { enabled?: boolean }) {
     queryKey: ["tables", "my-assignments"],
     queryFn: () => apiFetch<{ table_id: string; table_number: number }[]>("/api/tables/my-assignments"),
     enabled: options?.enabled ?? true,
+  });
+}
+
+
+// --- Mobiliario del plano ---
+
+/**
+ * Elemento fijo de la sala: cocina, barra, escalera, baños, entrada.
+ *
+ * No es una mesa: no se ocupa, no se cobra y no tiene QR. Es lo que hace que el
+ * plano se parezca al local y no a un diagrama de rectángulos.
+ */
+export interface SpaceFixture {
+  id: string;
+  space_id: string;
+  kind: "kitchen" | "bar" | "stairs" | "restroom" | "entrance" | "wall" | "plant" | "other";
+  label: string | null;
+  position_x: number;
+  position_y: number;
+  width: number;
+  height: number;
+  rotation: number;
+}
+
+export function useSpaceFixtures(spaceId?: string | null) {
+  return useQuery<SpaceFixture[]>({
+    queryKey: ["space-fixtures", spaceId ?? "all"],
+    queryFn: () =>
+      apiFetch<SpaceFixture[]>(
+        spaceId ? `/api/spaces/fixtures?spaceId=${spaceId}` : "/api/spaces/fixtures",
+      ),
+    // El mobiliario se coloca una vez y se mira siempre: no tiene sentido
+    // volver a pedirlo con cada refresco de la sala.
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useCreateFixture() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      spaceId: string;
+      kind: SpaceFixture["kind"];
+      label?: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      rotation?: number;
+    }) =>
+      apiFetch<SpaceFixture>("/api/spaces/fixtures", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["space-fixtures"] }),
+    onError: notifyError("No se pudo añadir el elemento al plano"),
+  });
+}
+
+export function useUpdateFixture() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string;
+      kind?: SpaceFixture["kind"];
+      label?: string;
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+      rotation?: number;
+    }) =>
+      apiFetch<SpaceFixture>(`/api/spaces/fixtures/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    // Se mueve arrastrando, así que el caché se actualiza al vuelo para que el
+    // elemento no vuelva de un salto a su sitio anterior.
+    onMutate: async ({ id, x, y }) => {
+      await qc.cancelQueries({ queryKey: ["space-fixtures"] });
+      const previous = qc.getQueriesData({ queryKey: ["space-fixtures"] });
+      if (x !== undefined || y !== undefined) {
+        qc.setQueriesData({ queryKey: ["space-fixtures"] }, (old: any) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((f: SpaceFixture) =>
+            f.id === id
+              ? {
+                  ...f,
+                  ...(x !== undefined ? { position_x: x } : {}),
+                  ...(y !== undefined ? { position_y: y } : {}),
+                }
+              : f,
+          );
+        });
+      }
+      return { previous };
+    },
+    onError: (err, _vars, context: any) => {
+      context?.previous?.forEach(([key, data]: [readonly unknown[], unknown]) => {
+        qc.setQueryData(key, data);
+      });
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : "No se pudo mover el elemento del plano",
+      );
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["space-fixtures"] }),
+  });
+}
+
+export function useDeleteFixture() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/spaces/fixtures/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["space-fixtures"] }),
+    onError: notifyError("No se pudo eliminar el elemento del plano"),
   });
 }
