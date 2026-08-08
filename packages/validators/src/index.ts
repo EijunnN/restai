@@ -106,6 +106,12 @@ export const updateTableStatusSchema = z.object({
 export const startSessionSchema = z.object({
   customerName: z.string().min(1, "Ingresa tu nombre").max(255),
   customerPhone: z.string().max(20).optional(),
+  /**
+   * Comensales sentados. Opcional: el comensal que escanea el QR no lo declara
+   * y el mozo tampoco debería quedarse bloqueado por él en hora punta. El tope
+   * es una defensa contra el tecleo, no una regla de negocio.
+   */
+  guests: z.number().int().min(1).max(200).optional(),
 });
 
 // Customer email-code (OTP) login

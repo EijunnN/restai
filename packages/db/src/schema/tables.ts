@@ -102,6 +102,16 @@ export const tableSessions = pgTable("table_sessions", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   customer_name: varchar("customer_name", { length: 255 }).notNull(),
   customer_phone: varchar("customer_phone", { length: 20 }),
+  /**
+   * Comensales sentados (migración 0016). NULO = no se declaró.
+   *
+   * `tables.capacity` es aforo de mobiliario; esto es gente real. La distinción
+   * importa: una mesa de seis con dos personas no está llena, y el ticket por
+   * persona sale mal si se divide entre las sillas. El comensal que entra por
+   * QR nunca lo declara, así que el nulo es el caso normal y la pantalla no
+   * puede tratarlo como cero.
+   */
+  guest_count: integer("guest_count"),
   token: text("token").notNull(),
   status: sessionStatusEnum("status").default("active").notNull(),
   started_at: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),

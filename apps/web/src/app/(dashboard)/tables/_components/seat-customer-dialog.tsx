@@ -33,12 +33,14 @@ export function SeatCustomerDialog({ table, onClose }: SeatCustomerDialogProps) 
   const seatCustomer = useSeatCustomer();
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [guests, setGuests] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (table) {
       setName("");
       setPhone("");
+      setGuests("");
       setError(null);
     }
   }, [table]);
@@ -46,6 +48,13 @@ export function SeatCustomerDialog({ table, onClose }: SeatCustomerDialogProps) 
   if (!table) return null;
 
   const trimmedName = name.trim();
+  // Se acepta vacío: en hora punta nadie va a contar cabezas antes de abrir la
+  // cuenta. Un valor fuera de rango se descarta en vez de bloquear el alta.
+  const comensalesRaw = Number.parseInt(guests, 10);
+  const comensales =
+    Number.isFinite(comensalesRaw) && comensalesRaw > 0 && comensalesRaw <= 200
+      ? comensalesRaw
+      : null;
 
   const submit = async () => {
     if (!trimmedName) {
@@ -58,6 +67,7 @@ export function SeatCustomerDialog({ table, onClose }: SeatCustomerDialogProps) 
         tableId: table.id,
         customerName: trimmedName,
         customerPhone: phone.trim() || undefined,
+        guests: comensales ?? undefined,
       });
       toast.success(`Mesa ${table.number} abierta a nombre de ${trimmedName}`);
       onClose();
@@ -103,6 +113,25 @@ export function SeatCustomerDialog({ table, onClose }: SeatCustomerDialogProps) 
             />
             <p className="text-xs text-muted-foreground">
               Es el nombre con el que verás la mesa en cocina, pedidos y cobros.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="seat-guests">Comensales (opcional)</Label>
+            <Input
+              id="seat-guests"
+              className="h-10"
+              inputMode="numeric"
+              min={1}
+              max={200}
+              type="number"
+              placeholder={String(table.capacity)}
+              value={guests}
+              onChange={(e) => setGuests(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Cuántas personas se sientan de verdad. Es lo que hace que la sala
+              muestre el aforo real y no el número de sillas.
             </p>
           </div>
 

@@ -113,6 +113,13 @@
       "when": 1785010800000,
       "tag": "0015_loyalty_earned_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785014400000,
+      "tag": "0016_table_sessions_guest_count",
+      "breakpoints": true
     }
   ]
 }

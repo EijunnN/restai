@@ -4,6 +4,27 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/fetcher";
 
 /** Mesa tal como la devuelve `GET /api/tables`. El dinero nunca vive aquí. */
+/**
+ * Resumen de la visita viva de una mesa (lo agrega `GET /api/tables`).
+ *
+ * Todos los importes en CÉNTIMOS enteros. Llega ya calculado por el servidor
+ * para que el plano no tenga que pedir la cuenta mesa por mesa.
+ */
+export interface TableSessionSummary {
+  session_id: string;
+  customer_name: string;
+  status: "active" | "pending";
+  started_at: string;
+  /** Comensales declarados por el mozo. NULO = nadie lo dijo, no es cero. */
+  guest_count: number | null;
+  elapsed_minutes: number;
+  order_count: number;
+  billed: number;
+  paid: number;
+  /** Lo que falta por cobrar, con suelo en 0. */
+  remaining: number;
+}
+
 export interface TableRow {
   id: string;
   branch_id: string;
@@ -18,6 +39,14 @@ export interface TableRow {
   position_x: number;
   position_y: number;
   created_at: string;
+  /**
+   * Visita viva de la mesa, o `null` si no hay ninguna.
+   *
+   * Ojo: una mesa puede figurar `occupied` y traer `null` aquí si alguien forzó
+   * el estado sin abrir cuenta. La pantalla trata ese caso como "ocupada sin
+   * cuenta" en vez de inventar importes.
+   */
+  active_session?: TableSessionSummary | null;
 }
 
 export interface TablesResponse {
@@ -316,7 +345,13 @@ export function useSeatCustomer() {
   return useMutation<
     SeatCustomerResult,
     unknown,
-    { tableId: string; customerName: string; customerPhone?: string }
+    {
+      tableId: string;
+      customerName: string;
+      customerPhone?: string;
+      /** Comensales sentados. Se omite cuando el mozo no los declaró. */
+      guests?: number;
+    }
   >({
     mutationFn: (data) =>
       apiFetch<SeatCustomerResult>("/api/tables/sessions", {

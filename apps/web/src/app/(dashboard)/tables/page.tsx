@@ -1,48 +1,45 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
-import Link from "next/link";
-import { useQueryClient } from "@tanstack/react-query";
-import { Button, buttonVariants } from "@restai/ui/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@restai/ui/components/card";
-import { Tabs, TabsList, TabsTrigger } from "@restai/ui/components/tabs";
+import { useState } from "react";
+import { Button } from "@restai/ui/components/button";
 import {
-  Plus,
-  RefreshCw,
-  Check,
-  X,
-  Bell,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@restai/ui/components/sheet";
+import {
+  AlertCircle,
   LayoutGrid,
   Map as MapIcon,
-  Loader2,
+  Plus,
+  RefreshCw,
+  Users,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useWebSocket } from "@/hooks/use-websocket";
-import { useAuthStore } from "@/stores/auth-store";
-import type { WsMessage } from "@restai/types";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth-store";
+import { hasPermission } from "@/lib/permissions";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
-  useTables,
   useUpdateTableStatus,
   useDeleteTable,
-  useSpaces,
   useDeleteSpace,
-  usePendingSessions,
-  useApproveSession,
-  useRejectSession,
-  useMyAssignedTables,
   type TableRow,
 } from "@/hooks/use-tables";
-import { useServiceRequests } from "@/hooks/use-service-requests";
-import { useBranchSettings } from "@/hooks/use-settings";
-import { hasPermission } from "@/lib/permissions";
-import { PageHeader } from "@/components/page-header";
-import { ConfirmDialog } from "@/components/confirm-dialog";
+import {
+  TablesProvider,
+  useTablesContext,
+  ALL_SPACES,
+  UNASSIGNED_SPACE,
+  type StateFilter,
+} from "./_components/tables-context";
+import { TableTile, TableTileSkeleton } from "./_components/table-tile";
+import { SidePanel } from "./_components/side-panel";
 import { FloorPlannerView } from "./_components/floor-planner-view";
-import { GridView } from "./_components/grid-view";
 import { QrDialog } from "./_components/qr-dialog";
 import { CreateTableDialog } from "./_components/create-table-dialog";
-import { CreateSpaceDialog, EditSpaceDialog, SpaceInfoCard } from "./_components/space-management";
+import { CreateSpaceDialog, EditSpaceDialog } from "./_components/space-management";
 import { HistoryDialog } from "./_components/history-dialog";
 import { AssignmentDialog } from "./_components/assignment-dialog";
 import { CobrarDialog } from "./_components/cobrar-dialog";
@@ -51,32 +48,53 @@ import { SeatCustomerDialog } from "./_components/seat-customer-dialog";
 import { MoveSessionDialog } from "./_components/move-session-dialog";
 import { MergeTablesDialog } from "./_components/merge-tables-dialog";
 
-interface TableServiceRequestIndicator {
-  type: "request_bill" | "call_waiter";
-  customerName: string;
-}
+/** Filtros por estado, con el color del punto que los identifica. */
+const FILTROS: { key: StateFilter; label: string; dot?: string }[] = [
+  { key: "all", label: "Todas" },
+  { key: "available", label: "Libres", dot: "bg-muted-foreground/60" },
+  { key: "occupied", label: "Ocupadas", dot: "bg-blue-600 dark:bg-blue-500" },
+  { key: "reserved", label: "Reservadas", dot: "bg-amber-500" },
+  { key: "alerts", label: "Con aviso", dot: "bg-violet-600 dark:bg-violet-500" },
+];
 
-interface PendingSessionRequest {
-  id: string;
-  customer_name: string;
-  customer_phone: string | null;
-  started_at: string;
-  table_id: string;
-  table_number: number;
-}
+function TablesContent() {
+  const {
+    allTables,
+    tables,
+    spaces,
+    branchSlug,
+    isLoading,
+    error,
+    refetch,
+    space,
+    setSpace,
+    stateFilter,
+    setStateFilter,
+    onlyMine,
+    setOnlyMine,
+    canFilterMine,
+    selected,
+    selectTable,
+    counts,
+    requestByTableId,
+    pendingSessions,
+    canCreateLayout,
+    canOperateTables,
+    emptyMessage,
+  } = useTablesContext();
 
-/** Avisos que siguen sin resolverse: son los que pintan la mesa. */
-const OPEN_REQUEST_STATUSES = new Set(["pending", "acknowledged"]);
+  const user = useAuthStore((s) => s.user);
+  const canDelete = hasPermission(user?.role, "tables:delete");
+  const canCharge = hasPermission(user?.role, "payments:create");
 
-export default function TablesPage() {
-  const [activeTab, setActiveTab] = useState("all");
   const [viewMode, setViewMode] = useState<"grid" | "planner">("grid");
-  const [onlyMine, setOnlyMine] = useState(false);
   const [qrDialog, setQrDialog] = useState<TableRow | null>(null);
   const [createTableDialog, setCreateTableDialog] = useState(false);
   const [createSpaceDialog, setCreateSpaceDialog] = useState(false);
   const [editSpaceDialog, setEditSpaceDialog] = useState<any>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<{ type: "table" | "space"; id: string; name: string } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<
+    { type: "table" | "space"; id: string; name: string } | null
+  >(null);
   const [historyDialog, setHistoryDialog] = useState<TableRow | null>(null);
   const [assignDialog, setAssignDialog] = useState<TableRow | null>(null);
   const [chargeTable, setChargeTable] = useState<TableRow | null>(null);
@@ -84,204 +102,33 @@ export default function TablesPage() {
   const [seatTarget, setSeatTarget] = useState<TableRow | null>(null);
   const [moveTarget, setMoveTarget] = useState<TableRow | null>(null);
   const [mergeTarget, setMergeTarget] = useState<TableRow | null>(null);
-  const [pendingSessions, setPendingSessions] = useState<PendingSessionRequest[]>([]);
-  const [mutatingSessionId, setMutatingSessionId] = useState<string | null>(null);
-  const { accessToken, selectedBranchId, user } = useAuthStore();
-  const queryClient = useQueryClient();
 
-  // Crear mesas y espacios es configurar el local (`tables:create`): el mozo y
-  // el cajero entran aquí a trabajar la sala, no a montarla. Enseñarles los
-  // botones solo servía para que la API les respondiera 403.
-  const canCreateLayout = hasPermission(user?.role, "tables:create");
-  /** Aprobar o rechazar una solicitud de ingreso exige `tables:update`. */
-  const canOperateTables = hasPermission(user?.role, "tables:update");
-
-  // Data hooks
-  const { data: spacesData, isLoading: spacesLoading } = useSpaces();
-  const { data: tablesData, isLoading: tablesLoading, error, refetch } = useTables();
   const updateTableStatus = useUpdateTableStatus();
   const deleteTable = useDeleteTable();
   const deleteSpace = useDeleteSpace();
-  const { data: pendingData, refetch: refetchPendingSessions } = usePendingSessions();
-  const approveSession = useApproveSession();
-  const rejectSession = useRejectSession();
-  const { data: branchSettingsData } = useBranchSettings();
-  // Los avisos ahora persisten: la mesa sigue marcada aunque el mozo entre a la
-  // pantalla media hora después de que el comensal levantara la mano.
-  const { data: serviceRequestsData } = useServiceRequests();
 
-  const waiterAssignmentEnabled = (branchSettingsData as any)?.settings?.waiter_table_assignment_enabled ?? false;
-  const { data: myAssignedTables } = useMyAssignedTables({ enabled: waiterAssignmentEnabled });
-  const spaces: any[] = spacesData ?? [];
-  const allTables: TableRow[] = tablesData?.tables ?? [];
-  const branchSlug: string = tablesData?.branchSlug ?? "";
-  const isLoading = spacesLoading || tablesLoading;
-  const currentTableIds = useMemo(
-    () => new Set(allTables.map((table) => String(table.id))),
-    [allTables]
-  );
+  /** Mesas donde alguien escaneó el QR y espera aprobación. */
+  const wantsToJoin = new Set(pendingSessions.map((s) => s.table_id));
 
-  const assignedTableIds = useMemo(
-    () => new Set((myAssignedTables ?? []).map((a) => a.table_id)),
-    [myAssignedTables]
-  );
 
-  // El interruptor solo tiene sentido si la sede usa asignación de mozos y este
-  // usuario tiene mesas asignadas; si no, filtraría la sala hasta dejarla vacía.
-  const canFilterMine = waiterAssignmentEnabled && assignedTableIds.size > 0;
-
-  useEffect(() => {
-    if (!canFilterMine && onlyMine) setOnlyMine(false);
-  }, [canFilterMine, onlyMine]);
-
-  useEffect(() => {
-    setPendingSessions((pendingData ?? []) as PendingSessionRequest[]);
-  }, [pendingData]);
-
-  const filteredTables = useMemo(() => {
-    let list = allTables;
-    if (activeTab === "unassigned") list = list.filter((t) => !t.space_id);
-    else if (activeTab !== "all") list = list.filter((t) => t.space_id === activeTab);
-    if (onlyMine && canFilterMine) list = list.filter((t) => assignedTableIds.has(t.id));
-    return list;
-  }, [allTables, activeTab, onlyMine, canFilterMine, assignedTableIds]);
-
-  const counts = {
-    total: allTables.length,
-    available: allTables.filter((t) => t.status === "available").length,
-    occupied: allTables.filter((t) => t.status === "occupied").length,
-    reserved: allTables.filter((t) => t.status === "reserved").length,
-  };
-
-  const requestByTableId = useMemo<Record<string, TableServiceRequestIndicator>>(() => {
-    const result: Record<string, TableServiceRequestIndicator> = {};
-    for (const request of serviceRequestsData ?? []) {
-      if (!request.table_id || !OPEN_REQUEST_STATUSES.has(request.status)) continue;
-      // La lista llega ordenada con los más antiguos primero dentro de cada
-      // grupo: nos quedamos con el primero que veamos, que es el que más espera.
-      if (result[request.table_id]) continue;
-      result[request.table_id] = {
-        type: request.type,
-        customerName:
-          (request as { customer_name?: string | null }).customer_name || "Cliente",
-      };
-    }
-    return result;
-  }, [serviceRequestsData]);
-
-  const openRequestCount = Object.keys(requestByTableId).length;
-
-  const handleWsMessage = useCallback((msg: WsMessage) => {
-    // El tipado de WsMessageType aún no incluye los eventos nuevos de sala.
-    const type = msg.type as string;
-
-    if (type === "auth:success") {
-      void refetchPendingSessions();
-      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
-      return;
-    }
-
-    if (type === "session:pending") {
-      const payload = msg.payload as {
-        sessionId: string;
-        tableId: string;
-        tableNumber: number;
-        customerName?: string;
-      };
-
-      if (!currentTableIds.has(String(payload.tableId))) {
-        return;
-      }
-
-      setPendingSessions((prev) => {
-        if (prev.some((session) => session.id === payload.sessionId)) {
-          return prev;
-        }
-        return [
-          {
-            id: payload.sessionId,
-            customer_name: payload.customerName || "Cliente",
-            customer_phone: null,
-            started_at: new Date(msg.timestamp).toISOString(),
-            table_id: payload.tableId,
-            table_number: payload.tableNumber,
-          },
-          ...prev,
-        ];
-      });
-      return;
-    }
-
-    if (type === "session:approved" || type === "session:rejected") {
-      const payload = msg.payload as { sessionId: string };
-      setPendingSessions((prev) =>
-        prev.filter((session) => session.id !== payload.sessionId)
-      );
-      void queryClient.invalidateQueries({ queryKey: ["tables"] });
-      return;
-    }
-
-    // Mover, juntar, liberar o cambiar el estado de una mesa reordena el plano
-    // entero: se relee en vez de intentar parchear el caché a mano.
-    if (
-      type === "table:status" ||
-      type === "session:started" ||
-      type === "session:ended" ||
-      type === "session:moved" ||
-      type === "session:merged"
-    ) {
-      void queryClient.invalidateQueries({ queryKey: ["tables"] });
-      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
-      return;
-    }
-
-    if (
-      type === "service_request:acknowledged" ||
-      type === "service_request:resolved"
-    ) {
-      void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
-      return;
-    }
-
-    if (type !== "table:request_bill" && type !== "table:call_waiter") {
-      return;
-    }
-
-    const payload = msg.payload as {
-      tableId: string;
-      tableNumber: number;
-      customerName?: string;
-    };
-
-    void queryClient.invalidateQueries({ queryKey: ["service-requests"] });
-
-    toast.info(
-      type === "table:request_bill"
-        ? `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita la cuenta`
-        : `Mesa ${payload.tableNumber}: ${payload.customerName || "Cliente"} solicita mozo`
-    );
-  }, [currentTableIds, queryClient, refetchPendingSessions]);
-
-  useWebSocket(
-    selectedBranchId ? [`branch:${selectedBranchId}`] : [],
-    handleWsMessage,
-    accessToken || undefined
-  );
-
+  /**
+   * Cambio de estado desde los chips de la ficha.
+   *
+   * Dos de los cuatro valores NO son un cambio de columna y por eso se
+   * interceptan: "ocupada" sin abrir cuenta deja una mesa a la que no se le
+   * puede colgar un pedido y con el QR libre para cualquiera, y "libre" sin
+   * cerrar la visita deja la sesión huérfana con sus pedidos sin cobrar. Cada
+   * uno abre el diálogo que hace el trabajo de verdad.
+   */
   const handleStatusChange = (tableId: string, newStatus: string) => {
     const table = allTables.find((t) => t.id === tableId);
     if (!table) return;
 
-    // Liberar cierra la visita y finaliza pedidos: pasa por su propio diálogo,
-    // que además enseña el saldo pendiente si lo hay.
     if (newStatus === "available") {
       if (table.status === "available") return;
       setFreeTarget(table);
       return;
     }
-
-    // "Ocupar" sin abrir cuenta dejaba la mesa sin sesión: no se le podía cobrar
-    // y su QR seguía libre para cualquiera. Se sienta al cliente de verdad.
     if (newStatus === "occupied") {
       if (table.status === "occupied") return;
       setSeatTarget(table);
@@ -293,9 +140,9 @@ export default function TablesPage() {
       {
         onError: (err) =>
           toast.error(
-            err instanceof Error ? err.message : "No se pudo cambiar el estado de la mesa"
+            err instanceof Error ? err.message : "No se pudo cambiar el estado de la mesa",
           ),
-      }
+      },
     );
   };
 
@@ -306,6 +153,7 @@ export default function TablesPage() {
         onSuccess: () => {
           toast.success(`${deleteConfirm.name} eliminada`);
           setDeleteConfirm(null);
+          selectTable(null);
         },
         onError: (err) =>
           toast.error(err instanceof Error ? err.message : "No se pudo eliminar la mesa"),
@@ -315,40 +163,48 @@ export default function TablesPage() {
         onSuccess: () => {
           toast.success(`Espacio "${deleteConfirm.name}" eliminado`);
           setDeleteConfirm(null);
-          if (activeTab === deleteConfirm.id) setActiveTab("all");
+          if (space === deleteConfirm.id) setSpace(ALL_SPACES);
         },
         onError: (err) =>
-          toast.error(
-            err instanceof Error ? err.message : "No se pudo eliminar el espacio"
-          ),
+          toast.error(err instanceof Error ? err.message : "No se pudo eliminar el espacio"),
       });
     }
   };
 
-  const emptyMessage =
-    onlyMine && canFilterMine
-      ? "No tienes mesas asignadas en esta vista. Desactiva «Solo mis mesas» para ver toda la sala."
-      : activeTab === "unassigned"
-        ? "Todas las mesas están asignadas a un espacio."
-        : canCreateLayout
-          ? "No hay mesas aquí todavía. Crea la primera con «Nueva Mesa»."
-          : "No hay mesas aquí todavía. Pídele a un responsable que dé de alta las mesas del salón.";
+  /** La ficha es la misma en la columna fija y en el panel deslizante. */
+  const panelProps = {
+    onCharge: setChargeTable,
+    onSeat: setSeatTarget,
+    onFree: setFreeTarget,
+    onMove: setMoveTarget,
+    onMerge: setMergeTarget,
+    onQr: setQrDialog,
+    onHistory: setHistoryDialog,
+    onAssign: setAssignDialog,
+    onDelete: (t: TableRow) =>
+      setDeleteConfirm({ type: "table", id: t.id, name: `Mesa ${t.number}` }),
+    onStatusChange: handleStatusChange,
+    statusChangePending: updateTableStatus.isPending,
+    canDelete,
+    canCharge,
+  };
 
   if (error) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">Mesas</h1>
-        </div>
+        <h1 className="text-2xl font-bold">Mesas</h1>
         <div
-          className="p-4 rounded-lg border border-destructive/50 bg-destructive/5 flex flex-wrap items-center justify-between gap-3"
           role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/50 bg-destructive/5 p-4"
         >
-          <p className="text-sm text-destructive">
-            No se pudieron cargar las mesas: {(error as Error).message}
-          </p>
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" aria-hidden="true" />
+            <p className="text-sm text-destructive">
+              No se pudieron cargar las mesas: {error.message}
+            </p>
+          </div>
           <Button variant="outline" className="h-10" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" aria-hidden="true" />
+            <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
             Reintentar
           </Button>
         </div>
@@ -356,266 +212,261 @@ export default function TablesPage() {
     );
   }
 
+  const espacioActivo = spaces.find((s: any) => s.id === space);
+
   return (
-    <div className="space-y-6">
-      {/* Cabecera */}
-      <PageHeader
-        title="Mesas y Espacios"
-        description={
-          isLoading
-            ? "Cargando..."
-            : `${counts.available} disponibles, ${counts.occupied} ocupadas de ${counts.total} mesas`
-        }
-        actions={
+    /*
+      La sala ocupa el alto completo en escritorio: cada franja recuperada son
+      dos filas más de mesas sin desplazar. En móvil NO se anula el relleno,
+      porque el layout reserva ahí la barra de navegación inferior.
+    */
+    <div className="flex h-[calc(100vh-11rem)] flex-col overflow-hidden rounded-lg border border-border bg-background md:-m-6 md:h-[calc(100vh-3.5rem)] md:rounded-none md:border-0">
+      <style>{`
+        @keyframes mesa-pulse { 0% { transform: scale(1); opacity: .5 } 70% { transform: scale(2.2); opacity: 0 } 100% { opacity: 0 } }
+        .animate-mesa-pulse { animation: mesa-pulse 2.4s ease-out infinite }
+        @media (prefers-reduced-motion: reduce) { .animate-mesa-pulse { animation: none } }
+      `}</style>
+
+      {/* ── Cabecera ───────────────────────────────────────────────────── */}
+      <header className="flex h-[60px] flex-none items-center gap-3 border-b border-border bg-card px-4">
+        <div className="flex items-baseline gap-2.5">
+          <h1 className="text-[24px] font-bold leading-none tracking-[-0.03em] text-foreground">
+            Sala
+          </h1>
+          <span className="hidden text-[12px] text-muted-foreground sm:inline">
+            {isLoading
+              ? "Cargando…"
+              : `${counts.occupied} de ${counts.total} ocupadas`}
+          </span>
+        </div>
+
+        <div className="hidden h-6 w-px bg-border lg:block" />
+
+        {/* Espacios. Solo aparecen si el local tiene más de un ambiente. */}
+        {spaces.length > 0 && (
+          <div className="hidden items-center gap-1 overflow-x-auto lg:flex">
+            <SpaceChip
+              label="Todas"
+              active={space === ALL_SPACES}
+              onClick={() => setSpace(ALL_SPACES)}
+            />
+            {spaces.map((s: any) => (
+              <SpaceChip
+                key={s.id}
+                label={s.name}
+                active={space === s.id}
+                onClick={() => setSpace(s.id)}
+              />
+            ))}
+            <SpaceChip
+              label="Sin espacio"
+              active={space === UNASSIGNED_SPACE}
+              onClick={() => setSpace(UNASSIGNED_SPACE)}
+            />
+          </div>
+        )}
+
+        <span className="flex-1" />
+
+        <div className="hidden rounded-lg bg-muted p-[3px] sm:flex">
+          <ViewToggle
+            active={viewMode === "grid"}
+            icon={LayoutGrid}
+            label="Lista"
+            onClick={() => setViewMode("grid")}
+          />
+          <ViewToggle
+            active={viewMode === "planner"}
+            icon={MapIcon}
+            label="Plano"
+            onClick={() => setViewMode("planner")}
+          />
+        </div>
+
+        {canCreateLayout && (
           <>
-            <div className="flex border rounded-md">
-              <Button
-                variant={viewMode === "grid" ? "default" : "ghost"}
-                className="h-10 rounded-r-none"
-                aria-label="Ver las mesas en cuadrícula"
-                aria-pressed={viewMode === "grid"}
-                onClick={() => setViewMode("grid")}
-              >
-                <LayoutGrid className="h-4 w-4" aria-hidden="true" />
-              </Button>
-              <Button
-                variant={viewMode === "planner" ? "default" : "ghost"}
-                className="h-10 rounded-l-none"
-                aria-label="Ver el plano del local"
-                aria-pressed={viewMode === "planner"}
-                onClick={() => setViewMode("planner")}
-              >
-                <MapIcon className="h-4 w-4" aria-hidden="true" />
-              </Button>
-            </div>
-            {canCreateLayout && (
-              <>
-                <Button variant="outline" className="h-10" onClick={() => setCreateSpaceDialog(true)}>
-                  <LayoutGrid className="h-4 w-4 mr-2" aria-hidden="true" />
-                  Nuevo Espacio
-                </Button>
-                <Button className="h-10" onClick={() => setCreateTableDialog(true)}>
-                  <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
-                  Nueva Mesa
-                </Button>
-              </>
-            )}
+            <Button
+              variant="outline"
+              className="hidden h-9 md:inline-flex"
+              onClick={() => setCreateSpaceDialog(true)}
+            >
+              Nuevo espacio
+            </Button>
+            <Button className="h-9" onClick={() => setCreateTableDialog(true)}>
+              <Plus className="mr-1.5 h-[15px] w-[15px]" aria-hidden="true" />
+              Nueva mesa
+            </Button>
           </>
-        }
-      />
+        )}
 
-      {/* Resumen */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: "Total", value: counts.total, color: "text-foreground" },
-          { label: "Disponibles", value: counts.available, color: "text-green-600 dark:text-green-400" },
-          { label: "Ocupadas", value: counts.occupied, color: "text-blue-600 dark:text-blue-400" },
-          { label: "Reservadas", value: counts.reserved, color: "text-orange-600 dark:text-orange-400" },
-        ].map((stat) => (
-          <Card key={stat.label}>
-            <CardContent className="p-4">
-              <p className="text-sm text-muted-foreground">{stat.label}</p>
-              <p className={cn("text-2xl font-bold", stat.color)}>
-                {isLoading ? "-" : stat.value}
-              </p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          title="Actualizar la sala"
+          aria-label="Actualizar la sala"
+          className="flex h-9 w-9 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <RefreshCw className="h-[18px] w-[18px]" aria-hidden="true" />
+        </button>
+      </header>
 
-      {/* Solicitudes de ingreso pendientes de aprobar */}
-      {pendingSessions.length > 0 && canOperateTables && (
-        <Card className="border-2 border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/20">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Bell className="h-4 w-4 text-amber-600" aria-hidden="true" />
-              Solicitudes de ingreso ({pendingSessions.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {pendingSessions.map((session) => {
-                const busy = mutatingSessionId === session.id;
-                return (
-                  <div
-                    key={session.id}
-                    className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-background border"
-                  >
-                    <div>
-                      <p className="font-medium">{session.customer_name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        Mesa {session.table_number}
-                        {session.customer_phone && ` · ${session.customer_phone}`}
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        className="h-10 text-destructive hover:text-destructive"
-                        aria-label={`Rechazar el ingreso de ${session.customer_name} en la mesa ${session.table_number}`}
-                        disabled={busy}
-                        onClick={() => {
-                          setMutatingSessionId(session.id);
-                          rejectSession.mutate(session.id, {
-                            onSuccess: () => toast.success("Solicitud rechazada"),
-                            onError: (err) =>
-                              toast.error(
-                                err instanceof Error
-                                  ? err.message
-                                  : "No se pudo rechazar la solicitud"
-                              ),
-                            onSettled: () => setMutatingSessionId(null),
-                          });
-                        }}
-                      >
-                        {busy && rejectSession.isPending ? (
-                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <X className="h-4 w-4" aria-hidden="true" />
-                        )}
-                      </Button>
-                      <Button
-                        className="h-10"
-                        disabled={busy}
-                        onClick={() => {
-                          setMutatingSessionId(session.id);
-                          approveSession.mutate(session.id, {
-                            onSuccess: () =>
-                              toast.success(
-                                `${session.customer_name} ya puede pedir en la mesa ${session.table_number}`
-                              ),
-                            onError: (err) =>
-                              toast.error(
-                                err instanceof Error
-                                  ? err.message
-                                  : "No se pudo aceptar la solicitud"
-                              ),
-                            onSettled: () => setMutatingSessionId(null),
-                          });
-                        }}
-                      >
-                        {busy && approveSession.isPending ? (
-                          <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
-                        ) : (
-                          <Check className="h-4 w-4 mr-1" aria-hidden="true" />
-                        )}
-                        Aceptar
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Avisos de mesa sin resolver: el detalle vive en la bandeja */}
-      {openRequestCount > 0 && (
-        <Card className="border-2 border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-950/20">
-          <CardContent className="p-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Bell className="h-4 w-4 text-blue-600" aria-hidden="true" />
-              <p className="text-sm font-medium">
-                {openRequestCount === 1
-                  ? "1 mesa está esperando atención"
-                  : `${openRequestCount} mesas están esperando atención`}
-              </p>
-            </div>
-            <Link
-              href="/connections"
+      {/* ── Filtros por estado ─────────────────────────────────────────── */}
+      <div className="flex flex-none items-center gap-1.5 overflow-x-auto border-b border-border bg-card px-4 py-2.5">
+        {FILTROS.map((f) => {
+          const n =
+            f.key === "all"
+              ? counts.total
+              : f.key === "alerts"
+                ? counts.alerts
+                : counts[f.key];
+          const active = stateFilter === f.key;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              aria-pressed={active}
+              onClick={() => setStateFilter(f.key)}
               className={cn(
-                buttonVariants({ variant: "default" }),
-                "h-10 px-4"
+                "inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-foreground/[0.05] text-muted-foreground hover:text-foreground dark:bg-white/[0.06]",
               )}
             >
-              Ver bandeja de avisos
-            </Link>
-          </CardContent>
-        </Card>
-      )}
+              {f.dot && <span className={cn("h-[7px] w-[7px] rounded-full", f.dot)} />}
+              {f.label}
+              <span className="text-[11px] font-extrabold tabular-nums opacity-60">{n}</span>
+            </button>
+          );
+        })}
 
-      {/* Espacios */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="overflow-x-auto">
-            <TabsList>
-              <TabsTrigger value="all">Todas</TabsTrigger>
-              {spaces.map((space: any) => (
-                <TabsTrigger key={space.id} value={space.id}>
-                  {space.name}
-                </TabsTrigger>
+        <span className="flex-1" />
+
+        {/* El interruptor solo existe si la sede asigna mozos y este tiene mesas:
+            en cualquier otro caso filtraría la sala hasta dejarla vacía. */}
+        {canFilterMine && (
+          <button
+            type="button"
+            aria-pressed={onlyMine}
+            onClick={() => setOnlyMine(!onlyMine)}
+            className={cn(
+              "inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors",
+              onlyMine
+                ? "bg-primary text-primary-foreground"
+                : "bg-foreground/[0.05] text-muted-foreground hover:text-foreground dark:bg-white/[0.06]",
+            )}
+          >
+            <Users className="h-[15px] w-[15px]" aria-hidden="true" />
+            Solo mis mesas
+          </button>
+        )}
+      </div>
+
+      {/* ── Sala + panel ───────────────────────────────────────────────── */}
+      <div className="flex min-h-0 flex-1 gap-4 p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {viewMode === "planner" ? (
+            <FloorPlannerView tables={tables} requestByTableId={requestByTableId} />
+          ) : isLoading ? (
+            <div className="grid grid-cols-2 gap-3.5 md:grid-cols-3 2xl:grid-cols-4">
+              {Array.from({ length: 12 }).map((_, i) => (
+                <TableTileSkeleton key={i} />
               ))}
-              <TabsTrigger value="unassigned">Sin espacio</TabsTrigger>
-            </TabsList>
-          </div>
+            </div>
+          ) : tables.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-20 text-center">
+              <LayoutGrid className="h-7 w-7 text-muted-foreground/40" aria-hidden="true" />
+              <p className="max-w-sm text-[13.5px] text-muted-foreground">{emptyMessage}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3.5 md:grid-cols-3 2xl:grid-cols-4">
+              {tables.map((t) => (
+                <TableTile
+                  key={t.id}
+                  table={t}
+                  selected={selected?.id === t.id}
+                  serviceRequest={requestByTableId[t.id]}
+                  wantsToJoin={wantsToJoin.has(t.id)}
+                  canCharge={canCharge}
+                  canOperate={canOperateTables}
+                  onSelect={selectTable}
+                  onPrimary={(table) =>
+                    table.status === "occupied" ? setChargeTable(table) : setSeatTarget(table)
+                  }
+                />
+              ))}
+            </div>
+          )}
 
-          {canFilterMine && (
-            <Button
-              variant={onlyMine ? "default" : "outline"}
-              className="h-10 ml-auto"
-              aria-pressed={onlyMine}
-              onClick={() => setOnlyMine((v) => !v)}
-            >
-              {onlyMine ? "Solo mis mesas" : "Ver solo mis mesas"}
-            </Button>
+          {/* Ficha del espacio activo: editar y borrar viven aquí abajo, fuera
+              del camino de quien solo está trabajando la sala. */}
+          {espacioActivo && canCreateLayout && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-3">
+              <p className="text-[13px] text-muted-foreground">
+                <span className="font-semibold text-foreground">{espacioActivo.name}</span>
+                {" · "}
+                {tables.length} {tables.length === 1 ? "mesa" : "mesas"}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="h-9"
+                  onClick={() => setEditSpaceDialog(espacioActivo)}
+                >
+                  Editar espacio
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-9 text-destructive hover:text-destructive"
+                  onClick={() =>
+                    setDeleteConfirm({
+                      type: "space",
+                      id: espacioActivo.id,
+                      name: espacioActivo.name,
+                    })
+                  }
+                >
+                  Eliminar
+                </Button>
+              </div>
+            </div>
           )}
         </div>
 
-        {/* Ficha del espacio activo */}
-        {activeTab !== "all" && activeTab !== "unassigned" && (() => {
-          const currentSpace = spaces.find((s: any) => s.id === activeTab);
-          if (!currentSpace) return null;
-          return (
-            <SpaceInfoCard
-              space={currentSpace}
-              tableCount={filteredTables.length}
-              onEdit={() => setEditSpaceDialog(currentSpace)}
-              onDelete={() =>
-                setDeleteConfirm({
-                  type: "space",
-                  id: currentSpace.id,
-                  name: currentSpace.name,
-                })
-              }
-            />
-          );
-        })()}
+        {/* En pantalla ancha el panel vive fijo al lado de la sala. */}
+        <div className="hidden w-[344px] flex-none xl:block">
+          <SidePanel {...panelProps} />
+        </div>
+      </div>
 
-        {/* Vista: cuadrícula o plano */}
-        {viewMode === "planner" ? (
-          <div className="mt-4">
-            <FloorPlannerView
-              tables={filteredTables}
-              requestByTableId={requestByTableId}
-            />
-          </div>
-        ) : (
-          <GridView
-            tables={filteredTables}
-            isLoading={isLoading}
-            waiterAssignmentEnabled={waiterAssignmentEnabled}
-            statusChangePending={updateTableStatus.isPending}
-            requestByTableId={requestByTableId}
-            emptyMessage={emptyMessage}
-            onQr={setQrDialog}
-            onHistory={setHistoryDialog}
-            onAssign={setAssignDialog}
-            onDelete={(table) =>
-              setDeleteConfirm({ type: "table", id: table.id, name: `Mesa ${table.number}` })
-            }
-            onStatusChange={handleStatusChange}
-            onCharge={setChargeTable}
-            onSeat={setSeatTarget}
-            onMove={setMoveTarget}
-            onMerge={setMergeTarget}
-          />
-        )}
-      </Tabs>
+      {/*
+        Por debajo de `xl` no cabe la columna, pero la ficha NO puede
+        desaparecer: es el único sitio desde donde se llega al QR, al historial,
+        a mover, juntar o liberar. En la tablet del mozo —que es justo este
+        ancho— quedarse sin esas acciones sería perder media pantalla de
+        trabajo, así que la misma ficha se abre como panel deslizante.
+      */}
+      <Sheet
+        open={!!selected}
+        onOpenChange={(open) => {
+          if (!open) selectTable(null);
+        }}
+      >
+        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[380px] xl:hidden">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Ficha de la mesa {selected?.number}</SheetTitle>
+          </SheetHeader>
+          <SidePanel {...panelProps} />
+        </SheetContent>
+      </Sheet>
 
-      {/* Diálogos */}
+      {/* ── Diálogos ───────────────────────────────────────────────────── */}
       <QrDialog table={qrDialog} branchSlug={branchSlug} onClose={() => setQrDialog(null)} />
-      <CreateTableDialog open={createTableDialog} onOpenChange={setCreateTableDialog} spaces={spaces} />
+      <CreateTableDialog
+        open={createTableDialog}
+        onOpenChange={setCreateTableDialog}
+        spaces={spaces}
+      />
       <CreateSpaceDialog open={createSpaceDialog} onOpenChange={setCreateSpaceDialog} />
       <EditSpaceDialog space={editSpaceDialog} onClose={() => setEditSpaceDialog(null)} />
       <ConfirmDialog
@@ -639,6 +490,9 @@ export default function TablesPage() {
         onGoCharge={(table) => setChargeTable(table)}
       />
       <SeatCustomerDialog table={seatTarget} onClose={() => setSeatTarget(null)} />
+      {/* Mover y juntar reciben la sala ENTERA, no la filtrada: si no,
+          desaparecerían mesas destino por estar en otro espacio o fuera del
+          filtro activo. */}
       <MoveSessionDialog
         table={moveTarget}
         tables={allTables}
@@ -650,5 +504,66 @@ export default function TablesPage() {
         onClose={() => setMergeTarget(null)}
       />
     </div>
+  );
+}
+
+function SpaceChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "h-8 shrink-0 rounded-lg px-3 text-[13px] font-semibold transition-colors",
+        active
+          ? "bg-foreground/[0.10] text-foreground dark:bg-white/[0.12]"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ViewToggle({
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: typeof LayoutGrid;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-[30px] items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold transition-colors",
+        active ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <Icon className="h-[15px] w-[15px]" aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
+export default function TablesPage() {
+  return (
+    <TablesProvider>
+      <TablesContent />
+    </TablesProvider>
   );
 }
