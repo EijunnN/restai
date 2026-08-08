@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { useHydrated } from "@/hooks/use-hydrated";
 import { useCustomerStore } from "@/stores/customer-store";
 import { useCartStore } from "@/stores/cart-store";
 import type { WsMessage } from "@restai/types";
@@ -28,7 +29,20 @@ export default function CustomerLayout({
   const clearSession = useCustomerStore((s) => s.clear);
   const bindCartToTable = useCartStore((s) => s.bindToTable);
   const router = useRouter();
+  // La cabecera lee datos de sessionStorage, que no existe en el servidor: sin
+  // esperar a la hidratación, servidor y cliente pintan cosas distintas aquí.
+  const hydrated = useHydrated();
   const hasHandledSessionEndRef = useRef(false);
+
+  /*
+    La carta y la ficha de un plato traen SU PROPIA barra superior, con la mesa,
+    el buscador y las categorías dentro. Si además se pintara esta, el comensal
+    tendría dos cabeceras fijas comiéndose la pantalla justo donde tiene que
+    leer la carta. El resto de pantallas del comensal —carrito, estado, perfil—
+    sí la usan.
+  */
+  const pathname = usePathname();
+  const ownsItsHeader = /\/menu(\/|$)/.test(pathname ?? "");
 
   useEffect(() => {
     hasHandledSessionEndRef.current = false;
@@ -78,6 +92,7 @@ export default function CustomerLayout({
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {!ownsItsHeader && (
       <header className="sticky top-0 z-50 bg-background/95 backdrop-blur-sm border-b border-border shadow-sm pt-4 pb-2 px-4">
         <div className="flex items-center justify-between max-w-lg mx-auto">
           <div className="w-8" />
@@ -88,9 +103,13 @@ export default function CustomerLayout({
             Mientras carga se muestra un hueco, nunca otra marca.
           */}
           <h1 className="text-lg font-semibold tracking-wide text-foreground truncate">
-            {branchName || <span className="inline-block h-5 w-32 rounded bg-muted animate-pulse" />}
+            {hydrated && branchName ? (
+              branchName
+            ) : (
+              <span className="inline-block h-5 w-32 rounded bg-muted animate-pulse" />
+            )}
           </h1>
-          {token && branchSlug && tableCode ? (
+          {hydrated && token && branchSlug && tableCode ? (
             <Link
               href={`/${branchSlug}/${tableCode}/profile`}
               className="flex items-center justify-center w-8 h-8 rounded-full bg-muted-foreground/30 overflow-hidden border border-border transition-colors hover:bg-muted-foreground/40"
@@ -102,6 +121,7 @@ export default function CustomerLayout({
           )}
         </div>
       </header>
+      )}
       <main className="max-w-lg mx-auto">{children}</main>
     </div>
   );

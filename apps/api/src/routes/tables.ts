@@ -28,6 +28,29 @@ tables.use("*", authMiddleware);
 tables.use("*", tenantMiddleware);
 tables.use("*", requireBranch);
 
+/**
+ * Resumen de la visita viva de una mesa, tal y como viaja en `GET /tables`.
+ *
+ * Todos los importes van en CÉNTIMOS enteros, como el resto de la API.
+ */
+export interface TableSessionSummary {
+  session_id: string;
+  customer_name: string;
+  status: "active" | "pending";
+  started_at: string;
+  /** Comensales declarados por el mozo. Nulo cuando nadie lo dijo. */
+  guest_count: number | null;
+  /** Minutos desde que se sentaron. */
+  elapsed_minutes: number;
+  order_count: number;
+  /** Suma de los totales de las órdenes vivas. */
+  billed: number;
+  /** Cobrado de verdad: solo pagos completados y sin anular. */
+  paid: number;
+  /** Lo que falta por cobrar, con suelo en 0. */
+  remaining: number;
+}
+
 // ── Esquemas propios de este módulo ─────────────────────────────────
 // Definidos aquí a propósito: son contratos que solo usa esta ruta.
 
@@ -98,7 +121,86 @@ tables.get("/", requirePermission("tables:read"), async (c) => {
       status: schema.tables.status,
       position_x: schema.tables.position_x,
       position_y: schema.tables.position_y,
+      shape: schema.tables.shape,
+      rotation: schema.tables.rotation,
       created_at: schema.tables.created_at,
+      /**
+       * Resumen de la visita viva de la mesa, o NULL si no hay ninguna.
+       *
+       * Sin esto, el plano de sala solo sabía pintar el color del estado: para
+       * responder "cuánto lleva sentada, cuánto debe, cuántos son" había que
+       * abrir la mesa una por una. Un salón de cuarenta mesas son cuarenta
+       * peticiones, así que va agregado aquí.
+       *
+       * Decisiones que NO son arbitrarias:
+       * - Sesiones vivas = `active` + `pending`, el mismo conjunto que usan
+       *   `getLiveTableSessions` y `freeTable`. Si aquí se contara distinto, la
+       *   pantalla mostraría un saldo y el guard de "Liberar" otro.
+       * - El saldo replica `computeOutstanding`: solo cobros `completed` y sin
+       *   anular restan deuda, y las órdenes canceladas no suman. Un cobro
+       *   anulado que siguiera descontando escondería dinero por cobrar.
+       * - `remaining` lleva suelo en 0 sobre el TOTAL de la visita, no orden a
+       *   orden: una propina de más en una orden no puede tapar la deuda de otra.
+       * - La prioridad `active` sobre `pending` decide qué visita manda cuando
+       *   una mesa tiene un ingreso pendiente de aprobar encima de una cuenta
+       *   abierta.
+       *
+       * La correlación con la mesa va escrita a mano como `"tables"."id"`, y no
+       * con `${schema.tables.id}`: el interpolador de Drizzle renderiza esa
+       * columna como `"id"` a secas, que dentro del subselect resuelve contra
+       * `table_sessions` en vez de contra la tabla de fuera. El resultado era un
+       * `active_session` nulo en TODAS las mesas, incluidas las ocupadas. Es la
+       * misma cautela que ya lleva `total_paid` en `GET /:id/active-session`.
+       */
+      active_session: sql<TableSessionSummary | null>`(
+        SELECT json_build_object(
+          'session_id',      (array_agg(x.id            ORDER BY x.prio, x.started_at DESC))[1],
+          'customer_name',   (array_agg(x.customer_name ORDER BY x.prio, x.started_at DESC))[1],
+          'status',          (array_agg(x.status        ORDER BY x.prio, x.started_at DESC))[1],
+          'started_at',      (array_agg(x.started_at    ORDER BY x.prio, x.started_at DESC))[1],
+          'guest_count',     (array_agg(x.guest_count   ORDER BY x.prio, x.started_at DESC))[1],
+          'elapsed_minutes', FLOOR(EXTRACT(EPOCH FROM (
+                               now() - (array_agg(x.started_at ORDER BY x.prio, x.started_at DESC))[1]
+                             )) / 60)::int,
+          'order_count',     COALESCE(SUM(x.order_count), 0)::int,
+          'billed',          COALESCE(SUM(x.billed), 0)::int,
+          'paid',            COALESCE(SUM(x.paid), 0)::int,
+          'remaining',       GREATEST(COALESCE(SUM(x.billed), 0) - COALESCE(SUM(x.paid), 0), 0)::int
+        )
+        FROM (
+          SELECT
+            ls.id, ls.customer_name, ls.status, ls.started_at, ls.guest_count,
+            CASE WHEN ls.status = 'active' THEN 0 ELSE 1 END AS prio,
+            COALESCE(o.order_count, 0) AS order_count,
+            COALESCE(o.billed, 0)      AS billed,
+            COALESCE(o.paid, 0)        AS paid
+          FROM table_sessions ls
+          LEFT JOIN LATERAL (
+            SELECT
+              COUNT(*)::int AS order_count,
+              COALESCE(SUM(ord.total), 0)::int AS billed,
+              COALESCE((
+                SELECT SUM(pay.amount)
+                FROM payments pay
+                WHERE pay.order_id IN (
+                        SELECT o2.id FROM orders o2
+                        WHERE o2.table_session_id = ls.id
+                          AND o2.branch_id = ${tenant.branchId}
+                          AND o2.status <> 'cancelled'
+                      )
+                  AND pay.status = 'completed'
+                  AND pay.voided_at IS NULL
+              ), 0)::int AS paid
+            FROM orders ord
+            WHERE ord.table_session_id = ls.id
+              AND ord.branch_id = ${tenant.branchId}
+              AND ord.status <> 'cancelled'
+          ) o ON true
+          WHERE ls.table_id = "tables"."id"
+            AND ls.status IN ('active', 'pending')
+        ) x
+        HAVING COUNT(*) > 0
+      )`,
     })
     .from(schema.tables)
     .where(and(...conditions));
@@ -249,19 +351,47 @@ tables.patch(
 // Exige `tables:layout` y no `tables:update`: mover el plano es configurar el
 // local, no operar una mesa. El mozo arrastra mesas en su pantalla, pero no
 // puede rehacer la distribución del salón para todos.
+/**
+ * Coloca la mesa en el plano: posición y, opcionalmente, forma y giro.
+ *
+ * Las tres cosas son lo mismo —dibujar la sala— y por eso comparten endpoint y
+ * permiso (`tables:layout`). Separar la forma en `PATCH /:id`, que solo exige
+ * `tables:update`, dejaría a cualquier mozo reconfigurando el plano del local
+ * desde la ficha de la mesa.
+ *
+ * `shape` y `rotation` son opcionales: el arrastre, que es la operación
+ * frecuente, sigue enviando solo `x` e `y`.
+ */
 tables.patch(
   "/:id/position",
   requirePermission("tables:layout"),
   zValidator("param", idParamSchema),
-  zValidator("json", z.object({ x: z.number(), y: z.number() })),
+  zValidator(
+    "json",
+    z.object({
+      x: z.number(),
+      y: z.number(),
+      shape: z.enum(["round", "square", "rect", "bar"]).optional(),
+      // Se normaliza a [0, 360) antes de escribir: la interfaz gira en pasos de
+      // 15° y acaba mandando 360 o -15 con toda naturalidad.
+      rotation: z.number().int().optional(),
+    }),
+  ),
   async (c) => {
     const { id } = c.req.valid("param");
-    const { x, y } = c.req.valid("json");
+    const { x, y, shape, rotation } = c.req.valid("json");
     const tenant = c.get("tenant") as any;
 
     const [updated] = await db
       .update(schema.tables)
-      .set({ position_x: x, position_y: y })
+      .set({
+        position_x: Math.round(x),
+        position_y: Math.round(y),
+        ...(shape ? { shape } : {}),
+        ...(rotation !== undefined
+          ? { rotation: ((Math.round(rotation) % 360) + 360) % 360 }
+          : {}),
+      })
       .where(
         and(
           eq(schema.tables.id, id),
@@ -623,6 +753,7 @@ tables.post(
             organizationId: tenant.organizationId,
             customerName: body.customerName,
             customerPhone: body.customerPhone,
+            guests: body.guests,
             token: customerToken,
             status: "active",
           },

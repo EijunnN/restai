@@ -134,6 +134,8 @@ export async function createSession(params: {
   organizationId: string;
   customerName: string;
   customerPhone?: string;
+  /** Comensales sentados. Solo lo sabe el mozo; el flujo por QR lo deja sin declarar. */
+  guests?: number;
   token: string;
   status?: "active" | "pending";
 },
@@ -158,6 +160,7 @@ txOrDb: DbOrTx = db) {
       organization_id: params.organizationId,
       customer_name: params.customerName,
       customer_phone: params.customerPhone,
+      guest_count: params.guests ?? null,
       token: params.token,
       status,
       expires_at,
