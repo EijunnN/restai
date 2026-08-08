@@ -250,11 +250,7 @@ export default function ProductDetailPage({
       </div>
 
       {/* ── Cabecera del plato ───────────────────────────────────────────── */}
-      <div className="relative -mt-7 rounded-t-[28px] bg-background px-5 pb-2 pt-7">
-        <span
-          aria-hidden="true"
-          className="absolute left-1/2 top-2.5 h-1 w-10 -translate-x-1/2 rounded-full bg-border"
-        />
+      <div className="relative -mt-7 rounded-t-[28px] bg-background px-5 pb-2 pt-6">
         <div className="flex items-start justify-between gap-4">
           <h1 className="text-[26px] font-medium leading-tight">{item.name}</h1>
           <span className="whitespace-nowrap pt-1 text-[18px] font-semibold">
