@@ -1,239 +1,57 @@
 "use client";
-/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
+/* eslint-disable react-hooks/set-state-in-effect */
 
-import { use, useState, useEffect, useCallback } from "react";
-import Image from "next/image";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { redirect, useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
-import { Badge } from "@restai/ui/components/badge";
+import {
+  Bell,
+  ChevronRight,
+  Loader2,
+  Search,
+  User,
+  UtensilsCrossed,
+  X,
+} from "lucide-react";
+import { cn, formatCurrency } from "@/lib/utils";
 import { useCartStore } from "@/stores/cart-store";
 import { useCustomerStore } from "@/stores/customer-store";
-import { formatCurrency, cn } from "@/lib/utils";
-import { ShoppingCart, Plus, Minus, Loader2, UtensilsCrossed, ClipboardList, Search, X } from "lucide-react";
-import { TableActionButtons } from "@/components/customer/table-action-buttons";
+import { summarizeVariants, unitsInCart, variantsInCart } from "@/lib/menu-options";
+import { TableSheet } from "@/components/customer/table-sheet";
+import { VariantsSheet } from "@/components/customer/variants-sheet";
+import { VoiceEntryButton } from "@/components/customer/voice-entry-button";
+import { KIOSK_INTENT_KEY } from "@/hooks/use-kiosk";
+import { DishRow, type DishRowItem } from "./_components/dish-row";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
-interface MenuItem {
+interface MenuCategory {
   id: string;
   name: string;
-  description: string | null;
-  price: number;
-  image_url?: string | null;
-  is_available: boolean;
-  category_id: string;
-  // True when the item has modifier groups: quick-add must route to the detail
-  // page so required options are chosen (otherwise the order fails at checkout).
-  has_modifiers?: boolean;
-  allergens?: string[];
-  dietary_tags?: string[];
-  spice_level?: number | null;
-  preparation_time_min?: number | null;
-}
-
-/** Etiquetas legibles de alérgenos (los valores que guarda menu_items.allergens). */
-const ALLERGEN_LABELS: Record<string, string> = {
-  gluten: "gluten",
-  lacteos: "lácteos",
-  huevo: "huevo",
-  pescado: "pescado",
-  mariscos: "mariscos",
-  mani: "maní",
-  frutos_secos: "frutos secos",
-  soya: "soya",
-  sesamo: "sésamo",
-  sulfitos: "sulfitos",
-  mostaza: "mostaza",
-  apio: "apio",
-};
-
-const DIETARY_LABELS: Record<string, string> = {
-  vegetariano: "Vegetariano",
-  vegano: "Vegano",
-  sin_gluten: "Sin gluten",
-  sin_lactosa: "Sin lactosa",
-  keto: "Keto",
-  bajo_en_calorias: "Bajo en calorías",
-};
-
-interface Category {
-  id: string;
-  name: string;
-  sort_order: number;
 }
 
 interface MenuData {
-  branch: { id: string; name: string; slug: string; currency: string; tax_rate?: number };
-  table: { id: string; number: number; short_code?: string | null };
-  categories: Category[];
-  items: MenuItem[];
+  branch: { id: string; name: string; currency?: string };
+  table?: { id: string; number?: number; short_code?: string } | null;
+  categories: MenuCategory[];
+  items: (DishRowItem & { category_id: string })[];
 }
 
 /**
- * Tarjeta de plato. Vive FUERA del componente de página: definida dentro, React
- * la trataba como un tipo nuevo en cada pulsación del buscador y desmontaba y
- * volvía a montar toda la cuadrícula, con el consiguiente parpadeo de imágenes.
+ * La carta del comensal.
+ *
+ * El rediseño responde a un problema de sitio: había TRES barras fijas —la
+ * cabecera del local, el buscador y las pestañas de categoría— más un pie que
+ * apilaba los avisos de mesa, el enlace a los pedidos y el carrito. En un móvil
+ * pequeño quedaba una ventana de carta de unos pocos centímetros, y los
+ * offsets de las barras estaban calculados a mano (`top-[49px]`, `top-[110px]`)
+ * contra la altura de la anterior.
+ *
+ * Ahora hay UNA barra arriba, que agrupa el local, la mesa, el buscador y las
+ * categorías; el pie es solo el carrito; y los avisos de mesa viven en una hoja
+ * que se abre cuando hacen falta. Las categorías dejan de filtrar y pasan a
+ * llevar a su sección: la carta se lee de corrido, como la de papel.
  */
-function MenuItemCard({
-  item,
-  qty,
-  onOpenDetail,
-  onAdd,
-  onRemoveOne,
-}: {
-  item: MenuItem;
-  qty: number;
-  onOpenDetail: () => void;
-  onAdd: () => void;
-  onRemoveOne: () => void;
-}) {
-  const soldOut = !item.is_available;
-
-  return (
-    <div
-      className={cn(
-        "rounded-2xl bg-secondary overflow-hidden shadow-lg flex flex-col",
-        soldOut && "opacity-60",
-      )}
-    >
-      <div className="relative w-full h-40">
-        <button
-          type="button"
-          className="w-full h-full cursor-pointer"
-          onClick={onOpenDetail}
-          aria-label={`Ver ${item.name}`}
-        >
-          {item.image_url ? (
-            <Image
-              src={item.image_url}
-              alt={item.name}
-              fill
-              sizes="(max-width: 768px) 50vw, 200px"
-              unoptimized
-              className={cn("object-contain", soldOut && "grayscale")}
-            />
-          ) : (
-            <div className="w-full h-full bg-muted flex items-center justify-center">
-              <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" />
-            </div>
-          )}
-        </button>
-
-        {soldOut ? (
-          <span className="absolute bottom-2 right-2 rounded-lg bg-black/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">
-            Agotado
-          </span>
-        ) : qty > 0 ? (
-          <div className="absolute bottom-2 right-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm rounded-lg border border-white/10 px-1.5 py-1">
-            <button
-              type="button"
-              aria-label={`Quitar una unidad de ${item.name}`}
-              className="w-10 h-10 flex items-center justify-center text-foreground hover:text-primary transition-colors"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemoveOne();
-              }}
-            >
-              <Minus className="h-4 w-4" />
-            </button>
-            <span className="w-5 text-center text-xs font-bold text-foreground">{qty}</span>
-            <button
-              type="button"
-              aria-label={`Añadir una unidad de ${item.name}`}
-              className="w-10 h-10 flex items-center justify-center text-foreground hover:text-primary transition-colors"
-              onClick={(e) => {
-                e.stopPropagation();
-                onAdd();
-              }}
-            >
-              <Plus className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            aria-label={`Añadir ${item.name} al carrito`}
-            className="absolute bottom-2 right-2 w-12 h-12 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm rounded-lg border border-white/10 text-foreground hover:bg-black/70 transition-colors"
-            onClick={(e) => {
-              e.stopPropagation();
-              onAdd();
-            }}
-          >
-            <Plus className="h-4 w-4" />
-            <span className="text-[9px] font-medium leading-none mt-0.5">Agregar</span>
-          </button>
-        )}
-      </div>
-
-      <button
-        type="button"
-        className="p-3 flex flex-col flex-1 text-left cursor-pointer"
-        onClick={onOpenDetail}
-      >
-        <h3 className="text-sm font-bold text-foreground leading-tight line-clamp-2">
-          {item.name}
-        </h3>
-        {item.description && (
-          <p className="text-xs text-muted-foreground leading-snug line-clamp-2 mt-1">
-            {item.description}
-          </p>
-        )}
-
-        {/* Alérgenos y etiquetas dietéticas: información que puede evitar un
-            incidente serio, y que hasta ahora no existía en la carta. */}
-        {(item.allergens?.length || item.dietary_tags?.length) ? (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {item.dietary_tags?.map((tag) => (
-              <span
-                key={tag}
-                className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-300"
-              >
-                {DIETARY_LABELS[tag] ?? tag}
-              </span>
-            ))}
-            {item.allergens?.length ? (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
-                Contiene: {item.allergens.map((a) => ALLERGEN_LABELS[a] ?? a).join(", ")}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-
-        <p className="text-sm font-bold text-foreground mt-3">{formatCurrency(item.price)}</p>
-        {item.preparation_time_min ? (
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            ~{item.preparation_time_min} min
-          </p>
-        ) : null}
-      </button>
-    </div>
-  );
-}
-
-function useCustomerMenuLocalState() {
-  const [menuData, setMenuData] = useState<MenuData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [sessionValid, setSessionValid] = useState<boolean | null>(null);
-  const [search, setSearch] = useState("");
-
-  return {
-    search,
-    setSearch,
-    menuData,
-    setMenuData,
-    loading,
-    setLoading,
-    error,
-    setError,
-    activeCategory,
-    setActiveCategory,
-    sessionValid,
-    setSessionValid,
-  };
-}
-
 export default function CustomerMenuPage({
   params,
 }: {
@@ -242,23 +60,23 @@ export default function CustomerMenuPage({
   "use no memo";
   const { branchSlug, tableCode } = use(params);
   const router = useRouter();
-  const { addItem, getItemCount, items, updateLineQuantity, getItemQty } = useCartStore();
+
+  const addItem = useCartStore((s) => s.addItem);
+  const getItemCount = useCartStore((s) => s.getItemCount);
+  const cartItems = useCartStore((s) => s.items);
   const setSession = useCustomerStore((s) => s.setSession);
-  const {
-    menuData,
-    setMenuData,
-    loading,
-    setLoading,
-    error,
-    setError,
-    activeCategory,
-    setActiveCategory,
-    sessionValid,
-    setSessionValid,
-    search,
-    setSearch,
-  } = useCustomerMenuLocalState();
   const clearSession = useCustomerStore((s) => s.clear);
+
+  const [menuData, setMenuData] = useState<MenuData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionValid, setSessionValid] = useState<boolean | null>(null);
+  const [search, setSearch] = useState("");
+  const [tableSheet, setTableSheet] = useState(false);
+  const [variantsFor, setVariantsFor] = useState<DishRowItem | null>(null);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const getToken = () => {
     const storeToken = useCustomerStore.getState().token;
@@ -273,11 +91,10 @@ export default function CustomerMenuPage({
       setSessionValid(false);
       return;
     }
-
     void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/check-session`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((response) => response.json())
+      .then((r) => r.json())
       .then((result) => {
         if (result.success && result.data.hasSession && result.data.status === "active") {
           setSessionValid(true);
@@ -290,7 +107,7 @@ export default function CustomerMenuPage({
         setSessionValid(false);
         clearSession();
       });
-  }, [branchSlug, tableCode, clearSession, setSessionValid]);
+  }, [branchSlug, tableCode, clearSession]);
 
   const loadMenu = useCallback(() => {
     setLoading(true);
@@ -304,9 +121,7 @@ export default function CustomerMenuPage({
           return;
         }
         setMenuData(result.data);
-        if (result.data.categories.length > 0) {
-          setActiveCategory(result.data.categories[0].id);
-        }
+        if (result.data.categories?.length) setActiveCategory(result.data.categories[0].id);
         if (result.data.branch?.name) {
           const existing = useCustomerStore.getState();
           if (existing.token) {
@@ -325,40 +140,65 @@ export default function CustomerMenuPage({
         setError("No hay conexión con el restaurante. Revisa tu red e inténtalo de nuevo.");
         setLoading(false);
       });
-  }, [branchSlug, tableCode, setSession, setLoading, setError, setMenuData, setActiveCategory]);
+  }, [branchSlug, tableCode, setSession]);
 
-  // Validate session is still active on mount
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      validateSession();
-    }, 0);
-    return () => clearTimeout(timeout);
+    const t = setTimeout(() => validateSession(), 0);
+    return () => clearTimeout(t);
   }, [validateSession]);
 
+  /*
+    Llegada desde una tablet de pared: el comensal tecleó su mesa PARA hablar,
+    así que la carta táctil no es su destino, solo el sitio por donde pasa el
+    flujo de sesión. La intención se consume aquí y solo una vez: si más tarde
+    vuelve a la carta por su propio pie, la pantalla ya no se le mueve.
+  */
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      void loadMenu();
-    }, 0);
-    return () => clearTimeout(timeout);
+    if (sessionValid !== true) return;
+    if (typeof window === "undefined") return;
+    if (sessionStorage.getItem(KIOSK_INTENT_KEY) !== "1") return;
+    sessionStorage.removeItem(KIOSK_INTENT_KEY);
+    router.replace(`/${branchSlug}/${tableCode}/voz`);
+  }, [sessionValid, branchSlug, tableCode, router]);
+
+  useEffect(() => {
+    const t = setTimeout(() => void loadMenu(), 0);
+    return () => clearTimeout(t);
   }, [loadMenu]);
 
   if (sessionValid === false) {
     redirect(`/${branchSlug}/${tableCode}`);
   }
 
+  const currency = menuData?.branch?.currency;
   const itemCount = getItemCount();
-  // Modifier-inclusive total so the floating bar matches the cart estimate.
-  const cartTotal = items.reduce(
-    (sum, i) => sum + (i.unitPrice + i.modifiers.reduce((m, x) => m + x.price, 0)) * i.quantity,
-    0,
+  const cartTotal = useMemo(
+    () =>
+      cartItems.reduce(
+        (sum, i) =>
+          sum + (i.unitPrice + i.modifiers.reduce((m, x) => m + x.price, 0)) * i.quantity,
+        0,
+      ),
+    [cartItems],
   );
 
-  // Quick-add from the grid targets the plain (no-modifier) line of a product.
-  // Items WITH modifier groups must be configured on the detail page, otherwise
-  // a required-modifier order would be rejected by the server at checkout.
-  const handleAddItem = (item: MenuItem) => {
+  // Sin tildes ni mayúsculas: quien busca "pure" debe encontrar "Puré".
+  const normalize = (s: string) =>
+    s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const query = normalize(search.trim());
+
+  const openDetail = (id: string) => router.push(`/${branchSlug}/${tableCode}/menu/${id}`);
+
+  /**
+   * Añadir desde la carta.
+   *
+   * Un plato con opciones NO se añade a ciegas: pasa por su pantalla. Si no, el
+   * servidor rechaza el pedido entero al confirmar por faltar un modificador
+   * obligatorio, y el comensal se entera al final, lejos de donde podía elegir.
+   */
+  const quickAdd = (item: DishRowItem) => {
     if (item.has_modifiers) {
-      router.push(`/${branchSlug}/${tableCode}/menu/${item.id}`);
+      openDetail(item.id);
       return;
     }
     addItem({
@@ -370,32 +210,32 @@ export default function CustomerMenuPage({
     });
   };
 
+  const goToSection = (categoryId: string) => {
+    setActiveCategory(categoryId);
+    sectionRefs.current[categoryId]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   if (loading || sessionValid === null) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Cargando la carta...</p>
+      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
+        <p className="text-sm text-muted-foreground">Cargando la carta…</p>
       </div>
     );
   }
 
   if (error || !menuData) {
     return (
-      <div className="p-6 mt-12 text-center">
+      <div className="mt-12 p-6 text-center">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
-          <UtensilsCrossed className="h-8 w-8 text-destructive" />
+          <UtensilsCrossed className="h-8 w-8 text-destructive" aria-hidden="true" />
         </div>
-        <p role="alert" className="text-destructive font-medium mb-2">
+        <p role="alert" className="mb-2 font-medium text-destructive">
           No pudimos cargar la carta
         </p>
-        <p className="text-sm text-muted-foreground mb-4">
+        <p className="mb-4 text-sm text-muted-foreground">
           {error || "Vuelve a intentarlo en un momento."}
         </p>
-        {/*
-          Reintenta la carga de la carta, no recarga la página: `location.reload()`
-          descartaba el estado en memoria y hacía parpadear toda la app cuando
-          bastaba con repetir una petición.
-        */}
         <Button variant="outline" className="h-11 w-full max-w-xs" onClick={loadMenu}>
           Reintentar
         </Button>
@@ -404,194 +244,210 @@ export default function CustomerMenuPage({
   }
 
   const { categories, items: menuItems } = menuData;
-
-  // Los platos agotados YA NO se ocultan: se muestran atenuados y marcados.
-  // Al desaparecer, la carta cambiaba de tamaño sin explicación y el comensal
-  // buscaba una y otra vez el plato que venía a comer.
-  const itemsByCategory = (catId: string) => menuItems.filter((i) => i.category_id === catId);
-
-  // Sin tildes ni mayúsculas: quien busca "pure" debe encontrar "Puré", y quien
-  // busca "cafe" debe encontrar "Café". ̀-ͯ es el bloque de marcas
-  // diacríticas que deja NFD tras separar la letra de su acento.
-  const normalize = (s: string) =>
-    s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-
-  /** Tarjeta con los manejadores ya atados: el componente vive a nivel de módulo. */
-  const renderCard = (item: MenuItem) => (
-    <MenuItemCard
-      key={item.id}
-      item={item}
-      qty={getItemQty(item.id)}
-      onOpenDetail={() => router.push(`/${branchSlug}/${tableCode}/menu/${item.id}`)}
-      onAdd={() => handleAddItem(item)}
-      onRemoveOne={() => updateLineQuantity(item.id, getItemQty(item.id) - 1)}
-    />
-  );
-
-  const query = normalize(search.trim());
-  // Con 60–80 platos, ir pestaña por pestaña es más lento que la carta de papel.
-  // La búsqueda ignora tildes y mira nombre y descripción.
   const searchResults = query
-    ? menuItems.filter((i) => {
-        const haystack = normalize(`${i.name} ${i.description ?? ""}`);
-        return haystack.includes(query);
-      })
+    ? menuItems.filter((i) => normalize(`${i.name} ${i.description ?? ""}`).includes(query))
     : [];
 
+  const renderRow = (item: DishRowItem) => {
+    const units = unitsInCart(cartItems, item.id);
+    const variants = variantsInCart(cartItems, item.id);
+    return (
+      <DishRow
+        key={item.id}
+        item={item}
+        currency={currency}
+        units={units}
+        variantSummary={variants.length > 1 ? summarizeVariants(cartItems, item.id) : null}
+        onOpen={() => openDetail(item.id)}
+        onAdd={() => quickAdd(item)}
+        onOpenVariants={() => setVariantsFor(item)}
+      />
+    );
+  };
+
   return (
-    // El hueco inferior tiene que cubrir de verdad la barra fija: con el carrito
-    // lleno mide ~190 px y `pb-40` (160 px) tapaba el último plato de la carta.
-    <div className={cn("relative", itemCount > 0 ? "pb-56" : "pb-36")}>
-      {/* Buscador */}
-      <div className="sticky top-[49px] z-40 bg-background/95 backdrop-blur px-4 pt-3 pb-2 border-b border-border">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar en la carta..."
-            aria-label="Buscar platos en la carta"
-            className="h-11 w-full rounded-xl border border-border bg-secondary pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          />
-          {search && (
+    // El hueco inferior solo tiene que cubrir el carrito: los avisos de mesa se
+    // fueron a su hoja y el pie dejó de ser una pila de tres bloques.
+    <div className={cn("relative", itemCount > 0 ? "pb-28" : "pb-8")}>
+      {/* ── Única barra fija ─────────────────────────────────────────────── */}
+      <div className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
+        <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-3">
+          <div className="min-w-0">
+            <p className="truncate text-[21px] font-medium leading-tight">
+              {menuData.branch.name}
+            </p>
+            <p className="truncate text-[12px] text-muted-foreground">
+              {menuData.table?.number ? `Mesa ${menuData.table.number}` : "Tu mesa"}
+              {itemCount > 0 ? " · pedido abierto" : ""}
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
             <button
               type="button"
-              onClick={() => setSearch("")}
-              aria-label="Borrar búsqueda"
-              className="absolute right-1.5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground"
+              onClick={() => setTableSheet(true)}
+              aria-label="Llamar al mozo o pedir la cuenta"
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-border"
             >
-              <X className="h-4 w-4" />
+              <Bell className="h-[18px] w-[18px]" aria-hidden="true" />
             </button>
-          )}
-        </div>
-      </div>
-
-      {/* Category tabs — sticky underline style */}
-      <div
-        className={cn(
-          "sticky top-[110px] z-30 bg-background/95 backdrop-blur border-b border-border",
-          query && "hidden",
-        )}
-      >
-        <div className="flex gap-1 overflow-x-auto px-2 no-scrollbar">
-          {categories.map((cat) => (
             <button
-              key={cat.id}
-              onClick={() => setActiveCategory(cat.id)}
-              title={cat.name}
-              className={cn(
-                "shrink-0 max-w-[12rem] truncate px-4 py-3 text-xs font-medium uppercase tracking-wider whitespace-nowrap text-center transition-colors border-b-2",
-                activeCategory === cat.id
-                  ? "text-foreground border-foreground"
-                  : "text-muted-foreground border-transparent hover:text-foreground/70",
-              )}
+              type="button"
+              onClick={() => router.push(`/${branchSlug}/${tableCode}/profile`)}
+              aria-label="Tu perfil"
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-border"
             >
-              {cat.name}
+              <User className="h-[18px] w-[18px]" aria-hidden="true" />
             </button>
-          ))}
+          </div>
         </div>
+
+        <div className="px-4 pb-2">
+          <div className="relative">
+            <Search
+              className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar en la carta"
+              aria-label="Buscar platos en la carta"
+              className="h-11 w-full rounded-full border border-border bg-card pl-10 pr-10 text-[14px] outline-none focus:ring-2 focus:ring-ring"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Borrar la búsqueda"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Las categorías dejan de filtrar: llevan a su sección. Filtrando, el
+            comensal no podía ojear la carta de corrido como la de papel. */}
+        {!query && categories.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto px-4 pb-3">
+            {categories.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => goToSection(c.id)}
+                aria-pressed={activeCategory === c.id}
+                className={cn(
+                  "shrink-0 rounded-full px-3.5 py-2 text-[13px] transition-colors",
+                  activeCategory === c.id
+                    ? "bg-primary font-medium text-primary-foreground"
+                    : "border border-border text-muted-foreground",
+                )}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Product grid */}
-      <div className="p-4">
+      {/* Mesero por voz. Va aquí —sobre la carta y bajo el buscador— y no
+          flotando: es una alternativa a la carta, no una acción sobre ella. Se
+          oculta al buscar, cuando el comensal ya sabe lo que quiere. */}
+      {!query && (
+        <div className="px-4 pt-4">
+          <VoiceEntryButton branchSlug={branchSlug} tableCode={tableCode} />
+        </div>
+      )}
+
+      {/* ── Carta ────────────────────────────────────────────────────────── */}
+      <div className="px-4">
         {query ? (
           searchResults.length === 0 ? (
-            <div className="py-16 text-center">
-              <Search className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground">
-                No encontramos nada para “{search.trim()}”.
-              </p>
-              <Button variant="outline" className="mt-4 h-11" onClick={() => setSearch("")}>
-                Ver toda la carta
-              </Button>
-            </div>
+            <p className="py-16 text-center text-[13.5px] text-muted-foreground">
+              No encontramos nada con «{search.trim()}».
+            </p>
           ) : (
             <>
-              <p className="mb-3 text-xs text-muted-foreground">
+              <p className="pb-1 pt-4 text-[12px] text-muted-foreground">
                 {searchResults.length}{" "}
                 {searchResults.length === 1 ? "resultado" : "resultados"}
               </p>
-              <div className="grid grid-cols-2 gap-4">
-                {searchResults.map((item) => renderCard(item))}
-              </div>
+              {searchResults.map(renderRow)}
             </>
           )
-        ) : categories.length === 0 ? (
-          // La sede puede no tener ninguna categoría activa: el servidor devuelve
-          // items vacío y antes quedaba una pantalla en blanco bajo el buscador.
-          <div className="py-16 text-center">
-            <UtensilsCrossed className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
-            <p className="text-sm font-medium">La carta aún no está publicada</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              El restaurante todavía no ha activado ninguna categoría. Avisa al mozo y te
-              tomará el pedido en persona.
-            </p>
-          </div>
         ) : (
-          categories.map((category) => (
-            <div
-              key={category.id}
-              className={cn(activeCategory !== category.id && "hidden")}
-            >
-              {itemsByCategory(category.id).length === 0 ? (
-                <p className="text-sm text-muted-foreground py-12 text-center">
-                  No hay productos en esta categoría
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  {itemsByCategory(category.id).map((item) => renderCard(item))}
+          categories.map((cat) => {
+            const items = menuItems.filter((i) => i.category_id === cat.id);
+            if (items.length === 0) return null;
+            return (
+              <section
+                key={cat.id}
+                ref={(el) => {
+                  sectionRefs.current[cat.id] = el;
+                }}
+                // Deja sitio bajo la barra fija al saltar a la sección.
+                className="scroll-mt-[188px]"
+              >
+                <div className="flex items-baseline gap-2.5 pb-1 pt-6">
+                  <h2 className="text-[22px] font-medium">{cat.name}</h2>
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="text-[12px] text-muted-foreground">
+                    {items.length} {items.length === 1 ? "plato" : "platos"}
+                  </span>
                 </div>
-              )}
-            </div>
-          ))
+                {items.map(renderRow)}
+              </section>
+            );
+          })
         )}
       </div>
 
-      {/* Floating action bar + cart */}
-      {/* pb con safe-area: sin esto, en iPhone el botón del carrito queda debajo
-          de la barra del sistema y no se puede pulsar. */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-card/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-        {/*
-          Los mismos avisos que en el estado del pedido, con el mismo
-          comportamiento: enfriamiento visible, mensaje en línea y respuesta
-          honesta cuando el aviso ya estaba en curso.
-        */}
-        <div className="max-w-lg mx-auto px-4 pt-3 pb-2 space-y-2">
-          <TableActionButtons branchSlug={branchSlug} tableCode={tableCode} />
-          {/*
-            Salida de la carta hacia el estado del pedido: tras "Pedir más" el
-            comensal se quedaba encerrado en el menú sin forma de volver a ver
-            cómo iba su comanda.
-          */}
-          <Button
-            variant="ghost"
-            className="h-11 w-full gap-2"
-            onClick={() => router.push(`/${branchSlug}/${tableCode}/status`)}
+      {/* ── Pie: solo el carrito ─────────────────────────────────────────── */}
+      {itemCount > 0 && (
+        <div className="fixed inset-x-0 bottom-0 z-40 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+          <button
+            type="button"
+            onClick={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
+            className="flex h-14 w-full items-center justify-between rounded-full bg-primary pl-4 pr-2 text-primary-foreground shadow-lg"
           >
-            <ClipboardList className="h-4 w-4" />
-            Ver mis pedidos y el total de la mesa
-          </Button>
+            <span className="flex items-center gap-2.5">
+              <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-primary-foreground/20 px-1 text-[13px] font-semibold tabular-nums">
+                {itemCount}
+              </span>
+              <span className="text-[15px] font-medium">Ver mi pedido</span>
+            </span>
+            <span className="flex h-10 items-center gap-2 rounded-full bg-primary-foreground px-4 text-primary">
+              <span className="text-[15px] font-semibold tabular-nums">
+                {formatCurrency(cartTotal, currency)}
+              </span>
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            </span>
+          </button>
         </div>
-        {/* Cart button */}
-        {itemCount > 0 && (
-          <div className="px-4 pb-4">
-            <Button
-              className="w-full max-w-lg mx-auto flex items-center justify-between h-14 text-base px-5"
-              onClick={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
-            >
-              <div className="flex items-center gap-3">
-                <ShoppingCart className="h-5 w-5" />
-                <Badge variant="secondary" className="bg-primary-foreground/20 text-primary-foreground font-bold">
-                  {itemCount}
-                </Badge>
-              </div>
-              <span className="font-semibold">Ver Carrito</span>
-              <span className="font-bold">{formatCurrency(cartTotal)}</span>
-            </Button>
-          </div>
-        )}
-      </div>
+      )}
+
+      <TableSheet
+        open={tableSheet}
+        onOpenChange={setTableSheet}
+        branchSlug={branchSlug}
+        tableCode={tableCode}
+        tableNumber={menuData.table?.number}
+        orderSummary={itemCount > 0 ? `${itemCount} en tu pedido` : null}
+        voiceEnabled
+      />
+
+      {variantsFor && (
+        <VariantsSheet
+          open
+          onOpenChange={(o) => !o && setVariantsFor(null)}
+          menuItemId={variantsFor.id}
+          itemName={variantsFor.name}
+          currency={currency}
+          onConfigureNew={() => openDetail(variantsFor.id)}
+        />
+      )}
     </div>
   );
 }

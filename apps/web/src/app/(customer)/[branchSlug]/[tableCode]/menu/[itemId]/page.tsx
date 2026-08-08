@@ -1,361 +1,101 @@
 "use client";
-/* eslint-disable react-hooks/todo, react-hooks/set-state-in-effect, react-doctor/prefer-useReducer, react-doctor/no-giant-component */
+/* eslint-disable react-hooks/set-state-in-effect */
 
-import { use, useState, useEffect, useCallback, type Dispatch, type SetStateAction } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Button } from "@restai/ui/components/button";
-import { useCartStore } from "@/stores/cart-store";
-import { cn, formatCurrency } from "@/lib/utils";
 import {
   AlertCircle,
-  ArrowLeft,
-  Plus,
-  Minus,
-  ShoppingCart,
+  Check,
+  ChevronLeft,
+  ChevronRight,
   Loader2,
+  Minus,
+  NotebookPen,
+  Plus,
   UtensilsCrossed,
-  ChevronDown,
 } from "lucide-react";
+import { cn, formatCurrency } from "@/lib/utils";
+import { useCartStore } from "@/stores/cart-store";
+import {
+  isSingleChoice,
+  isUnsatisfiable,
+  maximumAllowed,
+  optionsTotal,
+  requiredMinimum,
+  selectionToCartModifiers,
+  toggleOption,
+  unitsInCart,
+  validateSelection,
+  type ModifierGroup,
+  type Selection,
+} from "@/lib/menu-options";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 interface MenuItem {
   id: string;
+  category_id: string;
   name: string;
-  description: string | null;
+  description?: string | null;
   price: number;
   image_url?: string | null;
   is_available: boolean;
-  category_id: string;
+  preparation_time_min?: number | null;
+  allergens?: string[] | null;
 }
 
-interface MenuData {
-  branch: { id: string; name: string; slug: string; currency: string };
-  table: { id: string; number: number };
-  categories: { id: string; name: string; sort_order: number }[];
-  items: MenuItem[];
-}
-
-interface Modifier {
-  id: string;
-  name: string;
-  price: number;
-}
-
-interface ModifierGroup {
-  id: string;
-  name: string;
-  is_required: boolean;
-  min_selections?: number;
-  max_selections?: number;
-  modifiers: Modifier[];
-}
-
-function useProductDetailLocalState() {
-  const [menuData, setMenuData] = useState<MenuData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [quantity, setQuantity] = useState(1);
-  const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
-  const [selectedModifiers, setSelectedModifiers] = useState<Record<string, string[]>>({});
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
-  // Errores de validación POR GRUPO. Antes esto era un alert() del navegador:
-  // un cuadro gris del sistema, sin el nombre del grupo a la vista y que hay que
-  // cerrar antes de poder tocar nada. El mensaje va ahora junto al grupo que
-  // falta, que es donde el comensal tiene que actuar.
-  const [groupErrors, setGroupErrors] = useState<Record<string, string>>({});
-  // Si las opciones no llegan, callarse es lo peor posible: el comensal agrega
-  // el plato sin sus opciones obligatorias y el pedido ENTERO se rechaza al
-  // confirmarlo, ya en el carrito y sin explicación.
-  const [modifiersError, setModifiersError] = useState<string | null>(null);
-
-  return {
-    modifiersError,
-    setModifiersError,
-    groupErrors,
-    setGroupErrors,
-    menuData,
-    setMenuData,
-    loading,
-    setLoading,
-    error,
-    setError,
-    quantity,
-    setQuantity,
-    modifierGroups,
-    setModifierGroups,
-    selectedModifiers,
-    setSelectedModifiers,
-    openGroups,
-    setOpenGroups,
-  };
-}
-
-function buildCartModifiers(
-  selectedModifiers: Record<string, string[]>,
-  modifierGroups: ModifierGroup[],
-) {
-  const cartModifiers: { modifierId: string; name: string; price: number }[] = [];
-  for (const [groupId, modIds] of Object.entries(selectedModifiers)) {
-    const group = modifierGroups.find((g) => g.id === groupId);
-    if (!group) continue;
-    for (const modId of modIds) {
-      const mod = group.modifiers.find((m) => m.id === modId);
-      if (!mod) continue;
-      cartModifiers.push({
-        modifierId: mod.id,
-        name: mod.name,
-        price: mod.price || 0,
-      });
-    }
-  }
-  return cartModifiers;
-}
-
-function calculateModifiersTotal(
-  selectedModifiers: Record<string, string[]>,
-  modifierGroups: ModifierGroup[],
-) {
-  return Object.entries(selectedModifiers).reduce((sum, [groupId, modIds]) => {
-    const group = modifierGroups.find((g) => g.id === groupId);
-    if (!group) return sum;
-    return (
-      sum +
-      modIds.reduce((modsSum, modId) => {
-        const mod = group.modifiers.find((m) => m.id === modId);
-        return modsSum + (mod?.price || 0);
-      }, 0)
-    );
-  }, 0);
-}
-
-function ModifierGroupsAccordion({
-  modifierGroups,
-  selectedModifiers,
-  setSelectedModifiers,
-  openGroups,
-  setOpenGroups,
-  groupErrors,
-  clearGroupError,
-}: {
-  modifierGroups: ModifierGroup[];
-  selectedModifiers: Record<string, string[]>;
-  setSelectedModifiers: Dispatch<SetStateAction<Record<string, string[]>>>;
-  openGroups: Record<string, boolean>;
-  setOpenGroups: Dispatch<SetStateAction<Record<string, boolean>>>;
-  groupErrors: Record<string, string>;
-  clearGroupError: (groupId: string) => void;
-}) {
-  if (modifierGroups.length === 0) return null;
-
-  return (
-    <div className="space-y-3">
-      {modifierGroups.map((group) => {
-        const isSingleSelect = group.max_selections === 1;
-        const selected = selectedModifiers[group.id] || [];
-        const isOpen = openGroups[group.id] ?? !!group.is_required;
-        const groupError = groupErrors[group.id];
-
-        const toggleGroup = () =>
-          setOpenGroups((prev) => ({
-            ...prev,
-            [group.id]: !prev[group.id],
-          }));
-
-        return (
-          <div
-            key={group.id}
-            id={`modifier-group-${group.id}`}
-            className={cn(
-              "rounded-xl bg-secondary/50 overflow-hidden",
-              groupError && "ring-2 ring-destructive",
-            )}
-          >
-            <button
-              type="button"
-              onClick={toggleGroup}
-              aria-expanded={isOpen}
-              aria-invalid={groupError ? true : undefined}
-              className="w-full min-h-12 flex items-center justify-between p-4 hover:bg-secondary/70 transition-colors"
-            >
-              <div className="flex items-center gap-2.5">
-                <h2 className="text-sm font-semibold">{group.name}</h2>
-                {group.is_required && (
-                  <span className="text-[10px] font-semibold text-red-400 bg-red-400/10 px-1.5 py-0.5 rounded-full">
-                    Requerido
-                  </span>
-                )}
-                {selected.length > 0 && (
-                  <span className="text-[10px] font-semibold text-foreground/70 bg-foreground/10 px-1.5 py-0.5 rounded-full">
-                    {selected.length} {selected.length === 1 ? "elegida" : "elegidas"}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {(group.max_selections || 0) > 1 && (
-                  <span className="text-xs text-muted-foreground">
-                    Máx. {group.max_selections}
-                  </span>
-                )}
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 text-muted-foreground transition-transform duration-200",
-                    isOpen && "rotate-180",
-                  )}
-                />
-              </div>
-            </button>
-
-            <div
-              className="grid transition-[grid-template-rows] duration-200 ease-in-out"
-              style={{
-                gridTemplateRows: isOpen ? "1fr" : "0fr",
-              }}
-            >
-              <div className="overflow-hidden">
-                {groupError && (
-                  <p
-                    role="alert"
-                    className="mx-3 mb-2 flex items-start gap-1.5 rounded-lg bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive"
-                  >
-                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
-                    {groupError}
-                  </p>
-                )}
-                <div className="px-3 pb-3 space-y-1.5">
-                  {group.modifiers.map((mod) => {
-                    const isSelected = selected.includes(mod.id);
-                    const handleToggle = () => {
-                      clearGroupError(group.id);
-                      if (isSingleSelect) {
-                        setSelectedModifiers((prev) => ({
-                          ...prev,
-                          [group.id]: isSelected ? [] : [mod.id],
-                        }));
-                        return;
-                      }
-
-                      if (isSelected) {
-                        setSelectedModifiers((prev) => ({
-                          ...prev,
-                          [group.id]: selected.filter((id) => id !== mod.id),
-                        }));
-                        return;
-                      }
-
-                      if (
-                        group.max_selections &&
-                        selected.length >= group.max_selections
-                      ) {
-                        return;
-                      }
-
-                      setSelectedModifiers((prev) => ({
-                        ...prev,
-                        [group.id]: [...selected, mod.id],
-                      }));
-                    };
-
-                    return (
-                      <button
-                        key={mod.id}
-                        type="button"
-                        onClick={handleToggle}
-                        className={cn(
-                          "w-full flex items-center justify-between rounded-xl p-3 transition-colors",
-                          isSelected
-                            ? "bg-secondary border border-foreground/30"
-                            : "bg-transparent border border-transparent hover:bg-secondary/80",
-                        )}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={cn(
-                              "flex h-5 w-5 items-center justify-center border-2 transition-colors",
-                              isSingleSelect ? "rounded-full" : "rounded-md",
-                              isSelected
-                                ? "border-foreground bg-foreground"
-                                : "border-muted-foreground/40",
-                            )}
-                          >
-                            {isSelected && (
-                              <svg
-                                className="h-3 w-3 text-background"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                                strokeWidth={3}
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  d="M5 13l4 4L19 7"
-                                />
-                              </svg>
-                            )}
-                          </div>
-                          <span className="text-sm font-medium">
-                            {mod.name}
-                          </span>
-                        </div>
-                        {mod.price > 0 && (
-                          <span className="text-sm text-muted-foreground">
-                            +{formatCurrency(mod.price)}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
+/**
+ * Ficha de un plato.
+ *
+ * El rediseño cambia sobre todo CUÁNDO se dice lo que falta. Antes el botón
+ * decía "Agregar" pase lo que pase y solo al pulsarlo aparecían los errores;
+ * ahora el botón dice lo que hay que hacer —"Elige el término"— y arriba queda
+ * un aviso que lleva al grupo pendiente. El grupo obligatorio, además, viene
+ * abierto: esconderlo tras un acordeón obligaba a descubrirlo.
+ *
+ * Y corrige cuatro cosas que dejaban al comensal atascado sin explicación:
+ *  - Un grupo NO marcado como obligatorio pero con mínimo también se valida
+ *    aquí. Antes se ignoraba y el servidor rechazaba el pedido ENTERO al
+ *    confirmar, con un 400 genérico y a dos pantallas de distancia.
+ *  - Un grupo de una sola opción y obligatorio ya no se puede vaciar volviendo
+ *    a tocar la opción marcada.
+ *  - Al llegar al tope de extras se dice; antes el toque no hacía nada.
+ *  - Si un grupo obligatorio se quedó sin opciones disponibles, se avisa de que
+ *    hay que llamar al mozo en vez de dejar el botón muerto para siempre.
+ */
 export default function ProductDetailPage({
   params,
 }: {
-  params: Promise<{
-    branchSlug: string;
-    tableCode: string;
-    itemId: string;
-  }>;
+  params: Promise<{ branchSlug: string; tableCode: string; itemId: string }>;
 }) {
   "use no memo";
   const { branchSlug, tableCode, itemId } = use(params);
   const router = useRouter();
-  const { addItem, items } = useCartStore();
-  const {
-    menuData,
-    setMenuData,
-    loading,
-    setLoading,
-    error,
-    setError,
-    quantity,
-    setQuantity,
-    modifierGroups,
-    setModifierGroups,
-    selectedModifiers,
-    setSelectedModifiers,
-    openGroups,
-    setOpenGroups,
-    groupErrors,
-    setGroupErrors,
-    modifiersError,
-    setModifiersError,
-  } = useProductDetailLocalState();
+
+  const addItem = useCartStore((s) => s.addItem);
+  const cartItems = useCartStore((s) => s.items);
+
+  const [menuData, setMenuData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [groups, setGroups] = useState<ModifierGroup[]>([]);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection>({});
+  const [quantity, setQuantity] = useState(1);
+  const [notes, setNotes] = useState("");
+  const [showNotes, setShowNotes] = useState(false);
+  const [atLimitGroup, setAtLimitGroup] = useState<string | null>(null);
+  const [touched, setTouched] = useState(false);
+
+  const groupRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const loadMenu = useCallback(() => {
     setLoading(true);
     setError(null);
     void fetch(`${API_URL}/api/customer/${branchSlug}/${tableCode}/menu`)
-      .then((res) => res.json())
+      .then((r) => r.json())
       .then((result) => {
         if (!result.success) {
           setError(result.error?.message || "No pudimos cargar la carta");
@@ -363,350 +103,406 @@ export default function ProductDetailPage({
         }
         setMenuData(result.data);
       })
-      .catch(() => {
-        setError("No hay conexión con el restaurante. Revisa tu red e inténtalo de nuevo.");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [branchSlug, tableCode, setLoading, setError, setMenuData]);
+      .catch(() =>
+        setError("No hay conexión con el restaurante. Revisa tu red e inténtalo de nuevo."),
+      )
+      .finally(() => setLoading(false));
+  }, [branchSlug, tableCode]);
 
-  const loadModifiers = useCallback(() => {
-    if (!menuData) return;
-    setModifiersError(null);
+  const loadGroups = useCallback(() => {
+    setGroupsError(null);
     void fetch(`${API_URL}/api/customer/${branchSlug}/menu/items/${itemId}/modifiers`)
-      .then((res) => res.json())
+      .then((r) => r.json())
       .then((result) => {
         if (!result.success) {
-          setModifiersError(
+          setGroupsError(
             "No pudimos cargar las opciones de este plato. Vuelve a intentarlo antes de agregarlo.",
           );
           return;
         }
-        setModifierGroups(result.data);
-        const defaults: Record<string, boolean> = {};
-        for (const group of result.data) {
-          defaults[group.id] = !!group.is_required;
-        }
-        setOpenGroups(defaults);
+        setGroups(result.data ?? []);
       })
-      .catch(() => {
-        setModifiersError(
+      .catch(() =>
+        setGroupsError(
           "No pudimos cargar las opciones de este plato. Revisa tu conexión e inténtalo de nuevo.",
-        );
-      });
-  }, [branchSlug, itemId, menuData, setModifierGroups, setOpenGroups, setModifiersError]);
+        ),
+      );
+  }, [branchSlug, itemId]);
 
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      loadMenu();
-    }, 0);
-    return () => clearTimeout(timeout);
+    const t = setTimeout(() => loadMenu(), 0);
+    return () => clearTimeout(t);
   }, [loadMenu]);
 
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      void loadModifiers();
-    }, 0);
-    return () => clearTimeout(timeout);
-  }, [loadModifiers]);
+    const t = setTimeout(() => loadGroups(), 0);
+    return () => clearTimeout(t);
+  }, [loadGroups]);
+
+  const item: MenuItem | undefined = menuData?.items?.find((i: MenuItem) => i.id === itemId);
+  const currency: string | undefined = menuData?.branch?.currency;
+
+  const issues = useMemo(() => validateSelection(groups, selection), [groups, selection]);
+  const blocked = issues.some((i) => i.blocked);
+  const firstIssue = issues[0];
+
+  const extra = useMemo(() => optionsTotal(groups, selection), [groups, selection]);
+  const total = item ? (item.price + extra) * quantity : 0;
+  const alreadyOrdered = item ? unitsInCart(cartItems, item.id) : 0;
+
+  const choose = (group: ModifierGroup, optionId: string) => {
+    const result = toggleOption(group, selection, optionId);
+    setSelection(result.selection);
+    setTouched(true);
+    // Al llegar al tope el toque no hace nada, pero decirlo evita que el
+    // comensal piense que la pantalla se colgó.
+    setAtLimitGroup(result.atLimit ? group.id : null);
+  };
+
+  const goToIssue = () => {
+    if (!firstIssue) return;
+    groupRefs.current[firstIssue.groupId]?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  };
+
+  const add = () => {
+    if (!item) return;
+    if (issues.length > 0) {
+      setTouched(true);
+      goToIssue();
+      return;
+    }
+    addItem({
+      menuItemId: item.id,
+      name: item.name,
+      unitPrice: item.price,
+      quantity,
+      modifiers: selectionToCartModifiers(groups, selection),
+      ...(notes.trim() ? { notes: notes.trim() } : {}),
+    });
+    router.push(`/${branchSlug}/${tableCode}/menu`);
+  };
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Cargando el producto...</p>
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
       </div>
     );
   }
 
-  if (error || !menuData) {
+  if (error || !menuData || !item) {
     return (
-      <div className="p-6 mt-12 text-center">
-        <p role="alert" className="text-destructive font-medium mb-2">
-          No pudimos cargar el producto
+      <div className="mt-12 p-6 text-center">
+        <p role="alert" className="mb-3 font-medium text-destructive">
+          {error || "No encontramos este plato"}
         </p>
-        <p className="text-sm text-muted-foreground mb-4">
-          {error || "Vuelve a intentarlo en un momento."}
-        </p>
-        <div className="mx-auto max-w-xs space-y-2">
-          <Button className="h-11 w-full" onClick={loadMenu}>
-            Reintentar
-          </Button>
-          <Button
-            variant="outline"
-            className="h-11 w-full"
-            onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
-          >
-            Volver a la carta
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  const item = menuData.items.find((i) => i.id === itemId);
-
-  if (!item) {
-    return (
-      <div className="p-6 mt-12 text-center">
-        <UtensilsCrossed className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-        <p className="font-medium mb-2">Producto no encontrado</p>
-        <p className="text-sm text-muted-foreground mb-4">
-          Este producto no existe o ya no está disponible.
-        </p>
-        <Button
-          variant="outline"
-          className="h-11 w-full max-w-xs"
-          onClick={() => router.push(`/${branchSlug}/${tableCode}/menu`)}
-        >
+        <Button variant="outline" className="h-11" onClick={() => router.back()}>
           Volver a la carta
         </Button>
       </div>
     );
   }
 
-  const category = menuData.categories.find((c) => c.id === item.category_id);
-  // Total quantity of this product already in the cart, across all modifier
-  // variants (for the "Ya tienes X en tu carrito" indicator).
-  const cartQty = items
-    .filter((i) => i.menuItemId === item.id)
-    .reduce((sum, i) => sum + i.quantity, 0);
-
-  const clearGroupError = (groupId: string) => {
-    setGroupErrors((prev) => {
-      if (!prev[groupId]) return prev;
-      const next = { ...prev };
-      delete next[groupId];
-      return next;
-    });
-  };
-
-  const handleAddToCart = () => {
-    // Validación en línea: se marcan TODOS los grupos que faltan (no solo el
-    // primero), se abren para que se vean sus opciones y se lleva la vista al
-    // primero. Nada de cuadros del sistema que tapan la pantalla.
-    const errors: Record<string, string> = {};
-    for (const group of modifierGroups) {
-      if (!group.is_required) continue;
-      const minimum = group.min_selections || 1;
-      const sel = selectedModifiers[group.id] || [];
-      if (sel.length < minimum) {
-        errors[group.id] =
-          minimum === 1
-            ? "Elige una opción para continuar"
-            : `Elige al menos ${minimum} opciones para continuar`;
-      }
-    }
-
-    if (Object.keys(errors).length > 0) {
-      setGroupErrors(errors);
-      setOpenGroups((prev) => {
-        const next = { ...prev };
-        for (const groupId of Object.keys(errors)) next[groupId] = true;
-        return next;
-      });
-      const firstId = modifierGroups.find((g) => errors[g.id])?.id;
-      if (firstId && typeof document !== "undefined") {
-        document
-          .getElementById(`modifier-group-${firstId}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-      return;
-    }
-
-    setGroupErrors({});
-    const cartModifiers = buildCartModifiers(selectedModifiers, modifierGroups);
-
-    // Always add as a line keyed by product+modifiers. The store merges only
-    // when the SAME product with the SAME modifiers is added again, so the
-    // selected modifiers are never discarded into a pre-existing plain line.
-    addItem({
-      menuItemId: item.id,
-      name: item.name,
-      unitPrice: item.price,
-      quantity,
-      modifiers: cartModifiers,
-    });
-    router.push(`/${branchSlug}/${tableCode}/menu`);
-  };
-
-  const modifiersTotal = calculateModifiersTotal(selectedModifiers, modifierGroups);
-
-  const totalPrice = (item.price + modifiersTotal) * quantity;
-
-  const missingGroupNames = modifierGroups
-    .filter((g) => groupErrors[g.id])
-    .map((g) => g.name);
+  const agotado = !item.is_available;
+  const puedeAgregar = !agotado && !groupsError && !blocked;
 
   return (
-    <div className="relative min-h-dvh pb-28">
-      {/* Hero image section */}
-      <div className="relative w-full h-72 bg-muted overflow-hidden">
+    <div className="relative pb-32">
+      {/* ── Foto ─────────────────────────────────────────────────────────── */}
+      <div className="relative h-56 bg-muted">
         {item.image_url ? (
-          <>
-            <Image
-              src={item.image_url}
-              alt={item.name}
-              fill
-              sizes="100vw"
-              unoptimized
-              className="object-contain"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-background via-background/60 to-transparent" />
-          </>
+          <Image src={item.image_url} alt="" fill unoptimized className="object-cover" />
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-muted">
-            <UtensilsCrossed className="h-16 w-16 text-muted-foreground/30" />
-            <p className="text-sm text-muted-foreground/50">Sin imagen</p>
-            <div className="absolute inset-0 bg-gradient-to-t from-background via-background/60 to-transparent" />
-          </div>
+          <span className="flex h-full items-center justify-center">
+            <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" aria-hidden="true" />
+          </span>
         )}
-
-        {/* Floating back button */}
         <button
           type="button"
           onClick={() => router.back()}
-          className="absolute top-4 left-4 z-10 flex items-center justify-center h-10 w-10 rounded-full bg-black/40 backdrop-blur-md transition-colors hover:bg-black/60"
+          aria-label="Volver a la carta"
+          className="absolute left-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-background/90 backdrop-blur"
         >
-          <ArrowLeft className="h-5 w-5 text-white" />
+          <ChevronLeft className="h-[18px] w-[18px]" aria-hidden="true" />
         </button>
       </div>
 
-      {/* Content section - overlapping the image */}
-      <div className="relative z-10 -mt-8 rounded-t-3xl bg-background">
-        <div className="p-5 pt-6 space-y-5">
-          {/* Category badge + name + price */}
-          <div>
-            {category && (
-              <p className="text-xs text-muted-foreground tracking-wide uppercase mb-1.5">
-                {category.name}
-              </p>
-            )}
-            <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
-            <p className="text-xl font-bold text-foreground mt-2">
-              {formatCurrency(item.price)}
-            </p>
-          </div>
+      {/* ── Cabecera del plato ───────────────────────────────────────────── */}
+      <div className="-mt-5 rounded-t-3xl bg-background px-5 pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <h1 className="text-[26px] font-medium leading-tight">{item.name}</h1>
+          <span className="whitespace-nowrap pt-1 text-[18px] font-semibold">
+            {formatCurrency(item.price, currency)}
+          </span>
+        </div>
 
-          {/* Description */}
-          {item.description && (
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              {item.description}
-            </p>
-          )}
+        {item.description && (
+          <p className="mt-2 text-[14px] leading-relaxed text-muted-foreground">
+            {item.description}
+          </p>
+        )}
 
-          {/* Modifier groups */}
-          <ModifierGroupsAccordion
-            modifierGroups={modifierGroups}
-            selectedModifiers={selectedModifiers}
-            setSelectedModifiers={setSelectedModifiers}
-            openGroups={openGroups}
-            setOpenGroups={setOpenGroups}
-            groupErrors={groupErrors}
-            clearGroupError={clearGroupError}
-          />
-
-          {modifiersError && (
-            <div
-              role="alert"
-              className="flex flex-col gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+        {alreadyOrdered > 0 && (
+          <p className="mt-3 text-[12px]">
+            <span className="font-medium">Ya pediste {alreadyOrdered}</span>
+            <button
+              type="button"
+              onClick={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
+              className="ml-2 text-primary underline-offset-2 hover:underline"
             >
-              <div className="flex items-start gap-2">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{modifiersError}</span>
-              </div>
-              <Button
-                variant="outline"
-                className="h-11 w-full"
-                onClick={() => loadModifiers()}
-              >
-                Reintentar
-              </Button>
-            </div>
-          )}
+              Ver en mi pedido
+            </button>
+          </p>
+        )}
 
-          {/* Already in cart indicator */}
-          {cartQty > 0 && (
-            <div className="flex items-center gap-2.5 bg-secondary/50 rounded-xl px-4 py-3">
-              <ShoppingCart className="h-4 w-4 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">
-                Ya tienes{" "}
-                <span className="font-semibold text-foreground">{cartQty}</span>{" "}
-                en tu carrito
-              </p>
-            </div>
+        {/* Aviso de lo que falta. Aparece solo tras el primer intento o toque:
+            recibir al comensal con un error antes de que haga nada es hostil. */}
+        {touched && firstIssue && (
+          <button
+            type="button"
+            onClick={goToIssue}
+            className={cn(
+              "mt-4 flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left",
+              firstIssue.blocked
+                ? "border-destructive/40 bg-destructive/10"
+                : "border-amber-500/40 bg-amber-500/10",
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-2.5">
+              <AlertCircle
+                className={cn(
+                  "h-4 w-4 shrink-0",
+                  firstIssue.blocked ? "text-destructive" : "text-amber-700 dark:text-amber-400",
+                )}
+                aria-hidden="true"
+              />
+              <span
+                className={cn(
+                  "text-[13px]",
+                  firstIssue.blocked ? "text-destructive" : "text-amber-800 dark:text-amber-300",
+                )}
+              >
+                {firstIssue.message}
+              </span>
+            </span>
+            {!firstIssue.blocked && (
+              <span className="shrink-0 text-[13px] font-semibold text-primary">Ir</span>
+            )}
+          </button>
+        )}
+
+        {groupsError && (
+          <div
+            role="alert"
+            className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3"
+          >
+            <p className="text-[13px] text-destructive">{groupsError}</p>
+            <Button variant="outline" className="h-9" onClick={loadGroups}>
+              Reintentar
+            </Button>
+          </div>
+        )}
+
+        {/* ── Grupos de opciones ─────────────────────────────────────────── */}
+        {groups.map((group) => {
+          const min = requiredMinimum(group);
+          const max = maximumAllowed(group);
+          const chosen = selection[group.id] ?? [];
+          const single = isSingleChoice(group);
+          const full = max !== null && chosen.length >= max;
+          const pending = touched && issues.some((i) => i.groupId === group.id);
+
+          return (
+            <section
+              key={group.id}
+              ref={(el) => {
+                groupRefs.current[group.id] = el;
+              }}
+              className="mt-6 scroll-mt-24"
+            >
+              <div className="mb-2.5 flex items-baseline justify-between gap-3">
+                <h2
+                  className={cn(
+                    "text-[15px] font-semibold",
+                    pending && "text-amber-700 dark:text-amber-400",
+                  )}
+                >
+                  {group.name}
+                </h2>
+                <span
+                  className={cn(
+                    "text-[12px]",
+                    pending ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+                  )}
+                >
+                  {min > 0
+                    ? min === 1
+                      ? "Elige 1"
+                      : `Elige ${min}`
+                    : max
+                      ? `Hasta ${max} · opcional`
+                      : "Opcional"}
+                  {max && max > 1 ? ` · ${chosen.length} de ${max}` : ""}
+                </span>
+              </div>
+
+              {isUnsatisfiable(group) ? (
+                <p className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-[13px] text-destructive">
+                  Se acabaron todas las opciones de {group.name.toLowerCase()}. Llama al mozo
+                  para que te ayude con este plato.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {group.modifiers.map((option) => {
+                    const selected = chosen.includes(option.id);
+                    // Con el grupo lleno, lo NO elegido se atenúa y explica por
+                    // qué no responde, en vez de ignorar el toque en silencio.
+                    const blockedByLimit = !selected && full;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => choose(group, option.id)}
+                        aria-pressed={selected}
+                        className={cn(
+                          "flex min-h-[52px] items-center gap-3 rounded-xl border px-4 text-left transition-colors",
+                          selected ? "border-foreground border-[1.5px]" : "border-border",
+                          blockedByLimit && "opacity-55",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "flex h-[18px] w-[18px] shrink-0 items-center justify-center border",
+                            single ? "rounded-full" : "rounded-[6px]",
+                            selected
+                              ? "border-foreground bg-foreground text-background"
+                              : "border-muted-foreground/40",
+                          )}
+                        >
+                          {selected && !single && (
+                            <Check className="h-3 w-3" strokeWidth={3.5} aria-hidden="true" />
+                          )}
+                          {selected && single && (
+                            <span className="h-2 w-2 rounded-full bg-background" />
+                          )}
+                        </span>
+                        <span className="flex-1 text-[15px]">{option.name}</span>
+                        <span className="shrink-0 text-[13px] text-muted-foreground">
+                          {option.price > 0
+                            ? `+ ${formatCurrency(option.price, currency)}`
+                            : blockedByLimit
+                              ? "Quita uno para añadirlo"
+                              : "Incluido"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {atLimitGroup === group.id && (
+                <p role="status" className="mt-2 text-[12px] text-muted-foreground">
+                  Ya elegiste el máximo. Quita uno para añadir otro.
+                </p>
+              )}
+            </section>
+          );
+        })}
+
+        {/* ── Nota para la cocina ────────────────────────────────────────── */}
+        <div className="mt-6">
+          {showNotes ? (
+            <label className="block">
+              <span className="mb-2 block text-[15px] font-semibold">Nota para la cocina</span>
+              <textarea
+                value={notes}
+                autoFocus
+                maxLength={500}
+                rows={3}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Sin cebolla, ají aparte…"
+                className="w-full rounded-xl border border-border bg-card px-4 py-3 text-[14px] outline-none focus:ring-2 focus:ring-ring"
+              />
+            </label>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowNotes(true)}
+              className="flex h-12 w-full items-center gap-2.5 rounded-xl bg-muted/60 px-4 text-left"
+            >
+              <NotebookPen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              <span className="text-[14px] text-muted-foreground">
+                {notes.trim() ? notes.trim() : "Nota para la cocina"}
+              </span>
+            </button>
           )}
         </div>
       </div>
 
-      {/* Fixed bottom CTA with quantity controls — z-30 so it stays above the
-          content section (relative z-10); otherwise the expanded modifier
-          accordion paints over the Agregar bar and the quantity controls. */}
-      <div className="fixed bottom-0 left-0 right-0 z-30 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-background/95 backdrop-blur-md border-t border-border">
-        {/*
-          Resumen del error pegado a la acción: si el comensal está abajo del
-          todo, tiene que entender aquí mismo por qué no pasa nada al pulsar.
-        */}
-        {missingGroupNames.length > 0 && (
-          <div
-            role="alert"
-            className="mx-auto mb-3 flex max-w-lg items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
-          >
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>
-              Falta elegir: {missingGroupNames.join(", ")}.
-            </span>
-          </div>
-        )}
-        <div className="max-w-lg mx-auto flex items-center gap-3">
-          {/* Quantity controls */}
-          <div className="flex items-center bg-secondary rounded-2xl shrink-0">
-            <button
-              type="button"
-              aria-label="Quitar una unidad"
-              onClick={() => setQuantity(Math.max(1, quantity - 1))}
-              disabled={quantity <= 1}
-              className="h-14 w-12 rounded-l-2xl flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10 disabled:opacity-30"
-            >
-              <Minus className="h-4 w-4" />
-            </button>
-            <span className="text-lg font-bold min-w-[2rem] text-center text-foreground tabular-nums">
-              {quantity}
-            </span>
-            <button
-              type="button"
-              aria-label="Añadir una unidad"
-              onClick={() => setQuantity((prev) => prev + 1)}
-              className="h-14 w-12 rounded-r-2xl flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10"
-            >
-              <Plus className="h-4 w-4" />
-            </button>
-          </div>
-          {/* Add to cart button */}
-          {/* Sin las opciones cargadas no se puede agregar: el servidor rechazaría
-              el pedido entero por falta de un grupo obligatorio. */}
+      {/* ── Pie: cantidad y añadir ───────────────────────────────────────── */}
+      <div className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 border-t border-border bg-background px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+        <div className="flex h-14 shrink-0 items-center rounded-full border border-border px-1.5">
           <button
             type="button"
-            onClick={handleAddToCart}
-            disabled={!item.is_available || modifiersError !== null}
-            className={cn(
-              "flex-1 h-14 rounded-2xl font-semibold text-base flex items-center justify-between px-5 transition-colors",
-              item.is_available && !modifiersError
-                ? "bg-foreground text-background hover:bg-foreground/90"
-                : "bg-muted text-muted-foreground cursor-not-allowed",
-            )}
+            onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+            disabled={quantity <= 1}
+            aria-label="Quitar una unidad"
+            className="flex h-11 w-11 items-center justify-center rounded-full disabled:opacity-40"
           >
-            <span>
-              {!item.is_available
-                ? "Agotado"
-                : modifiersError
-                  ? "Opciones no disponibles"
-                  : "Agregar"}
-            </span>
-            <span className="font-bold tabular-nums">{formatCurrency(totalPrice)}</span>
+            <Minus className="h-[18px] w-[18px]" aria-hidden="true" />
+          </button>
+          <span className="min-w-[1.5rem] text-center text-[16px] font-semibold tabular-nums">
+            {quantity}
+          </span>
+          <button
+            type="button"
+            onClick={() => setQuantity((q) => Math.min(99, q + 1))}
+            aria-label="Añadir una unidad"
+            className="flex h-11 w-11 items-center justify-center rounded-full"
+          >
+            <Plus className="h-[18px] w-[18px]" aria-hidden="true" />
           </button>
         </div>
+
+        {/*
+          El botón dice lo que toca hacer. Con algo pendiente no promete
+          "Agregar" para luego negarse: lleva al grupo que falta.
+        */}
+        <button
+          type="button"
+          onClick={add}
+          disabled={!puedeAgregar}
+          className={cn(
+            "flex h-14 flex-1 items-center justify-center gap-2.5 rounded-full text-[15px] transition-colors",
+            !puedeAgregar
+              ? "bg-muted text-muted-foreground"
+              : issues.length > 0
+                ? "border-[1.5px] border-foreground bg-background text-foreground"
+                : "bg-primary text-primary-foreground",
+          )}
+        >
+          {agotado ? (
+            <span className="font-medium">Agotado</span>
+          ) : blocked ? (
+            <span className="font-medium">No disponible ahora</span>
+          ) : issues.length > 0 ? (
+            <>
+              <span className="font-medium">{firstIssue?.message}</span>
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            </>
+          ) : (
+            <>
+              <span className="font-medium">Agregar</span>
+              <span className="opacity-50">·</span>
+              <span className="font-semibold tabular-nums">
+                {formatCurrency(total, currency)}
+              </span>
+            </>
+          )}
+        </button>
       </div>
     </div>
   );
