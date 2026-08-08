@@ -19,7 +19,7 @@ import {
 import { cn, formatCurrency } from "@/lib/utils";
 import { useCartStore } from "@/stores/cart-store";
 import { DishFacts } from "../_components/dish-facts";
-import { AlreadyOrdered } from "../_components/already-ordered";
+import { InCartNote } from "../_components/in-cart-note";
 import { RelatedDishes } from "../_components/related-dishes";
 import {
   isSingleChoice,
@@ -29,6 +29,7 @@ import {
   requiredMinimum,
   selectionToCartModifiers,
   toggleOption,
+  unitsInCart,
   validateSelection,
   type ModifierGroup,
   type Selection,
@@ -91,6 +92,7 @@ export default function ProductDetailPage({
   const [showNotes, setShowNotes] = useState(false);
   const [atLimitGroup, setAtLimitGroup] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
+  const cartItems = useCartStore((s) => s.items);
 
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
 
@@ -150,6 +152,8 @@ export default function ProductDetailPage({
   const firstIssue = issues[0];
 
   const extra = useMemo(() => optionsTotal(groups, selection), [groups, selection]);
+  /** Unidades que ya hay de este plato: cambian cómo se lee el botón del pie. */
+  const yaEnCarrito = item ? unitsInCart(cartItems, item.id) : 0;
   const total = item ? (item.price + extra) * quantity : 0;
 
   const choose = (group: ModifierGroup, optionId: string) => {
@@ -274,7 +278,11 @@ export default function ProductDetailPage({
           hasOptions={groups.length > 0}
         />
 
-        <AlreadyOrdered menuItemId={item.id} currency={currency} />
+        <InCartNote
+          menuItemId={item.id}
+          currency={currency}
+          onOpenCart={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
+        />
 
         {/* Aviso de lo que falta. Aparece solo tras el primer intento o toque:
             recibir al comensal con un error antes de que haga nada es hostil. */}
@@ -520,7 +528,13 @@ export default function ProductDetailPage({
             </>
           ) : (
             <>
-              <span className="font-medium">Agregar</span>
+              <span className="font-medium">
+                {yaEnCarrito > 0
+                  ? `Agregar ${quantity} más`
+                  : quantity > 1
+                    ? `Agregar ${quantity}`
+                    : "Agregar"}
+              </span>
               <span className="opacity-50">·</span>
               <span className="font-semibold tabular-nums">
                 {formatCurrency(total, currency)}
