@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useMediaQuery, XL_QUERY } from "@/hooks/use-media-query";
 import { hasPermission } from "@/lib/permissions";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
@@ -86,6 +87,16 @@ function TablesContent() {
   const user = useAuthStore((s) => s.user);
   const canDelete = hasPermission(user?.role, "tables:delete");
   const canCharge = hasPermission(user?.role, "payments:create");
+
+  /**
+   * ¿Cabe el panel lateral fijo?
+   *
+   * Hay que saberlo en JS, no solo con clases: el panel deslizante monta un
+   * fondo oscuro a pantalla completa y captura el foco, así que esconder solo
+   * su contenido con `xl:hidden` oscurecía el escritorio entero y bloqueaba la
+   * sala sin mostrar nada. En ancho, sencillamente no se monta.
+   */
+  const anchaParaPanelFijo = useMediaQuery(XL_QUERY);
 
   const [viewMode, setViewMode] = useState<"grid" | "planner">("grid");
   const [qrDialog, setQrDialog] = useState<TableRow | null>(null);
@@ -447,12 +458,12 @@ function TablesContent() {
         trabajo, así que la misma ficha se abre como panel deslizante.
       */}
       <Sheet
-        open={!!selected}
+        open={!!selected && !anchaParaPanelFijo}
         onOpenChange={(open) => {
           if (!open) selectTable(null);
         }}
       >
-        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[380px] xl:hidden">
+        <SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[380px]">
           <SheetHeader className="sr-only">
             <SheetTitle>Ficha de la mesa {selected?.number}</SheetTitle>
           </SheetHeader>

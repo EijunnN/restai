@@ -117,12 +117,23 @@ export function TableTile({
 
   return (
     <article
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(table.id)}
+      onKeyDown={(e) => {
+        // La sala se maneja también con teclado desde el mostrador, sin ratón.
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(table.id);
+        }
+      }}
       className={cn(
         "flex min-h-[168px] cursor-pointer flex-col rounded-xl border p-4 transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         estado.card,
         selected && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
       )}
+      aria-pressed={selected}
       aria-label={`Mesa ${table.number}, ${estado.label}`}
     >
       <div className="flex items-start justify-between gap-2">
