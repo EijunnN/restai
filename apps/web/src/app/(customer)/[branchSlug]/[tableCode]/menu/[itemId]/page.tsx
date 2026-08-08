@@ -18,6 +18,9 @@ import {
 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { useCartStore } from "@/stores/cart-store";
+import { DishFacts } from "../_components/dish-facts";
+import { AlreadyOrdered } from "../_components/already-ordered";
+import { RelatedDishes } from "../_components/related-dishes";
 import {
   isSingleChoice,
   isUnsatisfiable,
@@ -26,7 +29,6 @@ import {
   requiredMinimum,
   selectionToCartModifiers,
   toggleOption,
-  unitsInCart,
   validateSelection,
   type ModifierGroup,
   type Selection,
@@ -44,6 +46,8 @@ interface MenuItem {
   is_available: boolean;
   preparation_time_min?: number | null;
   allergens?: string[] | null;
+  dietary_tags?: string[] | null;
+  spice_level?: number | null;
 }
 
 /**
@@ -75,7 +79,6 @@ export default function ProductDetailPage({
   const router = useRouter();
 
   const addItem = useCartStore((s) => s.addItem);
-  const cartItems = useCartStore((s) => s.items);
 
   const [menuData, setMenuData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -148,7 +151,6 @@ export default function ProductDetailPage({
 
   const extra = useMemo(() => optionsTotal(groups, selection), [groups, selection]);
   const total = item ? (item.price + extra) * quantity : 0;
-  const alreadyOrdered = item ? unitsInCart(cartItems, item.id) : 0;
 
   const choose = (group: ModifierGroup, optionId: string) => {
     const result = toggleOption(group, selection, optionId);
@@ -206,15 +208,32 @@ export default function ProductDetailPage({
     );
   }
 
+  const relacionados = (menuData.items ?? [])
+    .filter(
+      (i: any) => i.category_id === item.category_id && i.id !== item.id && i.is_available,
+    )
+    .slice(0, 8);
+  const categoryName = (menuData.categories ?? []).find(
+    (c: any) => c.id === item.category_id,
+  )?.name;
+
   const agotado = !item.is_available;
   const puedeAgregar = !agotado && !groupsError && !blocked;
 
   return (
     <div className="relative pb-32">
       {/* ── Foto ─────────────────────────────────────────────────────────── */}
-      <div className="relative h-56 bg-muted">
+      <div className="relative h-[224px] bg-muted">
         {item.image_url ? (
-          <Image src={item.image_url} alt="" fill unoptimized className="object-cover" />
+          <>
+            <Image src={item.image_url} alt="" fill unoptimized className="object-cover" />
+            {/* Sin esto la foto termina en una línea recta contra el panel. El
+                degradado la funde con el fondo y el redondeo se lee. */}
+            <span
+              aria-hidden="true"
+              className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background to-transparent"
+            />
+          </>
         ) : (
           <span className="flex h-full items-center justify-center">
             <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" aria-hidden="true" />
@@ -231,7 +250,11 @@ export default function ProductDetailPage({
       </div>
 
       {/* ── Cabecera del plato ───────────────────────────────────────────── */}
-      <div className="-mt-5 rounded-t-3xl bg-background px-5 pt-5">
+      <div className="relative -mt-7 rounded-t-[28px] bg-background px-5 pb-2 pt-7">
+        <span
+          aria-hidden="true"
+          className="absolute left-1/2 top-2.5 h-1 w-10 -translate-x-1/2 rounded-full bg-border"
+        />
         <div className="flex items-start justify-between gap-4">
           <h1 className="text-[26px] font-medium leading-tight">{item.name}</h1>
           <span className="whitespace-nowrap pt-1 text-[18px] font-semibold">
@@ -245,18 +268,17 @@ export default function ProductDetailPage({
           </p>
         )}
 
-        {alreadyOrdered > 0 && (
-          <p className="mt-3 text-[12px]">
-            <span className="font-medium">Ya pediste {alreadyOrdered}</span>
-            <button
-              type="button"
-              onClick={() => router.push(`/${branchSlug}/${tableCode}/cart`)}
-              className="ml-2 text-primary underline-offset-2 hover:underline"
-            >
-              Ver en mi pedido
-            </button>
-          </p>
-        )}
+        {/* Datos que ya llegaban de la API y no se pintaban: sin ellos, un plato
+            sin opciones dejaba la ficha con nombre, precio y una línea suelta. */}
+        <DishFacts
+          prepTime={item.preparation_time_min}
+          spiceLevel={item.spice_level}
+          dietaryTags={item.dietary_tags}
+          allergens={item.allergens}
+          hasOptions={groups.length > 0}
+        />
+
+        <AlreadyOrdered menuItemId={item.id} currency={currency} />
 
         {/* Aviso de lo que falta. Aparece solo tras el primer intento o toque:
             recibir al comensal con un error antes de que haga nada es hostil. */}
@@ -440,6 +462,13 @@ export default function ProductDetailPage({
             </button>
           )}
         </div>
+
+        <RelatedDishes
+          dishes={relacionados}
+          categoryName={categoryName}
+          currency={currency}
+          onOpen={(id) => router.replace(`/${branchSlug}/${tableCode}/menu/${id}`)}
+        />
       </div>
 
       {/* ── Pie: cantidad y añadir ───────────────────────────────────────── */}
