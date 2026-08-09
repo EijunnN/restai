@@ -82,7 +82,12 @@ describe("routes/voice", () => {
   });
 
   it("responde 503 sin clave configurada, no 500", async () => {
+    // Hay que apagar TODOS los proveedores, no solo OpenAI: desde que existe
+    // Gemini, quitar una sola clave deja la voz encendida por la otra y el
+    // test medía algo que ya no era cierto.
     delete process.env.OPENAI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.VOICE_AGENT_PROVIDER;
     const res = await app.request("/api/voice/session", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -94,7 +99,13 @@ describe("routes/voice", () => {
   });
 
   it("acuña la credencial y devuelve el mapa ref→uuid", async () => {
+    // El proveedor se fija a mano por dos motivos: el despliegue puede tener
+    // `VOICE_AGENT_PROVIDER=gemini` —y entonces la clave falsa de OpenAI no se
+    // miraría siquiera—, y con una clave real de Gemini en el entorno este caso
+    // acabaría llamando a Google de verdad desde una prueba unitaria.
+    process.env.VOICE_AGENT_PROVIDER = "openai";
     process.env.OPENAI_API_KEY = "sk-test-fake";
+    delete process.env.GEMINI_API_KEY;
 
     let capturedBody: any = null;
     globalThis.fetch = (async (url: any, init: any) => {
@@ -145,6 +156,8 @@ describe("routes/voice", () => {
 
   it("config no expone el modelo cuando la voz está apagada", async () => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.VOICE_AGENT_PROVIDER;
     const res = await app.request("/api/voice/config");
     const body = (await res.json()) as any;
     expect(body.data.enabled).toBe(false);
