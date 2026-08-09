@@ -37,6 +37,7 @@ export type AuditAction =
   | "menu.price_change"
   | "menu.availability_change"
   | "menu.delete"
+  | "menu.restore"
   | "staff.create"
   | "staff.update"
   | "staff.password_change"

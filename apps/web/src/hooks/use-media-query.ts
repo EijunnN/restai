@@ -32,3 +32,14 @@ export function useMediaQuery(query: string): boolean {
 
 /** Ancho a partir del cual la sala muestra su panel lateral fijo (Tailwind `xl`). */
 export const XL_QUERY = "(min-width: 1280px)";
+
+/**
+ * Ancho a partir del cual la carta muestra sus TRES columnas a la vez.
+ *
+ * Es más alto que `XL_QUERY` a propósito: esa pantalla pone barra lateral del
+ * panel (256 px), columna de categorías (192 px) y ficha (348 px) antes de
+ * llegar a la tabla. A 1280 px eso dejaba la tabla en 389 px —el nombre del
+ * plato cabía en dieciséis caracteres— así que por debajo de 1536 la ficha se
+ * abre como panel deslizante y la tabla se queda con todo el ancho.
+ */
+export const CARTA_TRES_COLUMNAS = "(min-width: 1536px)";

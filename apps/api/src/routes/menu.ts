@@ -15,10 +15,14 @@ import {
   updateModifierSchema,
   idParamSchema,
   bulkUpdateMenuItemsSchema,
+  bulkItemIdsSchema,
+  bulkLinkModifierGroupSchema,
 } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
+import { auditFromContext, auditMoney } from "../lib/audit.js";
+import { realtime } from "../infrastructure/container.js";
 
 const menu = new Hono<AppEnv>();
 
@@ -216,7 +220,35 @@ menu.get("/items", requirePermission("menu:read"), async (c) => {
     .where(and(...conditions))
     .orderBy(asc(schema.menuItems.sort_order), asc(schema.menuItems.name));
 
-  return c.json({ success: true, data: items });
+  // Cuántos grupos de modificadores cuelgan de cada plato. La pantalla de
+  // administración lo enseña en cada fila y filtra por "sin modificadores";
+  // resolverlo en el cliente sería una petición por plato. Una sola consulta
+  // agrupada, y los platos sin grupos simplemente no aparecen en ella.
+  const conteo = items.length
+    ? await db
+        .select({
+          item_id: schema.menuItemModifierGroups.item_id,
+          count: sql<number>`count(*)`,
+        })
+        .from(schema.menuItemModifierGroups)
+        .where(
+          inArray(
+            schema.menuItemModifierGroups.item_id,
+            items.map((i) => i.id),
+          ),
+        )
+        .groupBy(schema.menuItemModifierGroups.item_id)
+    : [];
+
+  const gruposPorPlato = new Map(conteo.map((f) => [f.item_id, Number(f.count)]));
+
+  return c.json({
+    success: true,
+    data: items.map((item) => ({
+      ...item,
+      modifier_group_count: gruposPorPlato.get(item.id) ?? 0,
+    })),
+  });
 });
 
 /**
@@ -245,6 +277,43 @@ menu.patch(
     if (patch.allergens !== undefined) updateData.allergens = patch.allergens;
     if (patch.dietaryTags !== undefined) updateData.dietary_tags = patch.dietaryTags;
 
+    // El precio se calcula EN LA BASE, fila a fila, dentro de la transacción.
+    // Traerlo, multiplicarlo en JavaScript y devolverlo abriría una ventana en
+    // la que otro cambio de precio se pierde, y con dinero eso no se negocia.
+    // La división es entera y va redondeada: `10000` es el 100 %.
+    if (patch.price) {
+      const columna = schema.menuItems.price;
+      if (patch.price.mode === "percent") {
+        const factor = 10000 + patch.price.value;
+        if (factor < 0) {
+          return c.json(
+            {
+              success: false,
+              error: {
+                code: "BAD_REQUEST",
+                message: "Ese descuento deja el precio por debajo de cero",
+              },
+            },
+            400,
+          );
+        }
+        updateData.price = sql`greatest(0, round(${columna} * ${factor}::numeric / 10000))::int`;
+      } else if (patch.price.mode === "delta") {
+        updateData.price = sql`greatest(0, ${columna} + ${patch.price.value})`;
+      } else {
+        if (patch.price.value < 0) {
+          return c.json(
+            {
+              success: false,
+              error: { code: "BAD_REQUEST", message: "Un precio no puede ser negativo" },
+            },
+            400,
+          );
+        }
+        updateData.price = patch.price.value;
+      }
+    }
+
     if (Object.keys(updateData).length === 0) {
       return c.json(
         { success: false, error: { code: "BAD_REQUEST", message: "Nada que actualizar" } },
@@ -266,6 +335,8 @@ menu.patch(
       const before = await tx
         .select({
           id: schema.menuItems.id,
+          name: schema.menuItems.name,
+          price: schema.menuItems.price,
           is_available: schema.menuItems.is_available,
           category_id: schema.menuItems.category_id,
           spice_level: schema.menuItems.spice_level,
@@ -297,6 +368,64 @@ menu.patch(
         },
         404,
       );
+    }
+
+    // La disponibilidad no es un campo más: es el canal que miran la carta
+    // abierta en la mesa y el POS. Cambiarla en silencio deja a esas pantallas
+    // ofreciendo un plato que ya no hay, así que este lote emite exactamente lo
+    // mismo que la ruta de cocina — traza y evento — por cada plato que de
+    // verdad cambió. Va DESPUÉS de confirmar la transacción: avisar de algo que
+    // luego se revierte es peor que no avisar.
+    if (patch.isAvailable !== undefined) {
+      const previo = new Map(result.before.map((fila) => [fila.id, fila.is_available]));
+
+      for (const item of result.after) {
+        if (previo.get(item.id) === item.is_available) continue;
+
+        await auditFromContext(c, {
+          action: "menu.availability_change",
+          entityType: "menu_item",
+          entityId: item.id,
+          summary: item.is_available
+            ? `Plato "${item.name}" repuesto en la carta`
+            : `Plato "${item.name}" marcado como agotado`,
+          before: { is_available: !item.is_available },
+          after: { is_available: item.is_available },
+        });
+
+        const payload = {
+          type: "menu:availability",
+          payload: {
+            menuItemId: item.id,
+            name: item.name,
+            isAvailable: item.is_available,
+          },
+          timestamp: Date.now(),
+        };
+        await realtime.publish(`branch:${tenant.branchId}`, payload);
+        await realtime.publish(`branch:${tenant.branchId}:kitchen`, payload);
+      }
+    }
+
+    // Cambiar precios en lote es la operación más fácil de hacer sin querer y
+    // la más difícil de reconstruir después. Queda traza por plato, con el
+    // importe anterior y el nuevo.
+    if (patch.price) {
+      const antes = new Map(result.before.map((fila) => [fila.id, fila.price]));
+
+      for (const item of result.after) {
+        const previo = antes.get(item.id);
+        if (previo === undefined || previo === item.price) continue;
+
+        await auditFromContext(c, {
+          action: "menu.price_change",
+          entityType: "menu_item",
+          entityId: item.id,
+          summary: `Precio de "${item.name}": ${auditMoney(previo)} → ${auditMoney(item.price)}`,
+          before: { price: previo },
+          after: { price: item.price },
+        });
+      }
     }
 
     return c.json({
@@ -412,6 +541,174 @@ menu.patch(
     }
 
     return c.json({ success: true, data: updated });
+  },
+);
+
+/**
+ * Vincula UN grupo de modificadores a varios productos de una vez.
+ *
+ * "Se acaba de crear el grupo Guarnición y lo llevan los doce fondos": doce
+ * clics de menú desplegable, uno por plato, sin forma de saber si alguno se
+ * quedó fuera. Los que ya lo tenían no molestan —el vínculo es idempotente— y
+ * se devuelven aparte los que de verdad se han añadido, que son los únicos que
+ * debe quitar el "Deshacer".
+ */
+menu.post(
+  "/items/bulk/modifier-groups",
+  requirePermission("menu:update"),
+  zValidator("json", bulkLinkModifierGroupSchema),
+  async (c) => {
+    const { ids, groupId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const [grupo] = await db
+      .select({ id: schema.modifierGroups.id, name: schema.modifierGroups.name })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, groupId),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!grupo) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Grupo no encontrado" } },
+        404,
+      );
+    }
+
+    const resultado = await db.transaction(async (tx) => {
+      const platos = await tx
+        .select({ id: schema.menuItems.id })
+        .from(schema.menuItems)
+        .where(
+          and(
+            inArray(schema.menuItems.id, ids),
+            eq(schema.menuItems.branch_id, tenant.branchId),
+            eq(schema.menuItems.organization_id, tenant.organizationId),
+            isNull(schema.menuItems.deleted_at),
+          ),
+        );
+
+      if (platos.length !== ids.length) return { error: true as const, vinculados: [] };
+
+      const insertados = await tx
+        .insert(schema.menuItemModifierGroups)
+        .values(ids.map((item_id) => ({ item_id, group_id: groupId })))
+        .onConflictDoNothing()
+        .returning({ item_id: schema.menuItemModifierGroups.item_id });
+
+      return { error: false as const, vinculados: insertados.map((f) => f.item_id) };
+    });
+
+    if (resultado.error) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "NOT_FOUND",
+            message: "Alguno de los productos no existe en esta sede",
+          },
+        },
+        404,
+      );
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        groupId,
+        groupName: grupo.name,
+        linked: resultado.vinculados,
+        alreadyLinked: ids.length - resultado.vinculados.length,
+      },
+    });
+  },
+);
+
+/**
+ * Archiva varios productos a la vez, o los devuelve.
+ *
+ * Borrar es SUAVE: la fila se queda con su `deleted_at` puesto porque los
+ * pedidos históricos la referencian. Por eso el mismo endpoint sirve para las
+ * dos direcciones y el "Deshacer" es real, no una promesa.
+ *
+ * Exige `menu:delete` también para reponer: quien no puede archivar tampoco
+ * tiene por qué poder resucitar lo que archivó otro.
+ */
+menu.post(
+  "/items/bulk/delete",
+  requirePermission("menu:delete"),
+  zValidator("json", bulkItemIdsSchema.extend({ restore: z.boolean().optional() })),
+  async (c) => {
+    const { ids, restore } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+    const archivando = !restore;
+
+    const resultado = await db.transaction(async (tx) => {
+      const existentes = await tx
+        .select({ id: schema.menuItems.id, name: schema.menuItems.name })
+        .from(schema.menuItems)
+        .where(
+          and(
+            inArray(schema.menuItems.id, ids),
+            eq(schema.menuItems.branch_id, tenant.branchId),
+            eq(schema.menuItems.organization_id, tenant.organizationId),
+          ),
+        )
+        .for("update");
+
+      if (existentes.length !== ids.length) return { error: true as const, filas: [] };
+
+      const filas = await tx
+        .update(schema.menuItems)
+        .set({ deleted_at: archivando ? new Date() : null })
+        .where(
+          and(
+            inArray(schema.menuItems.id, ids),
+            eq(schema.menuItems.branch_id, tenant.branchId),
+            eq(schema.menuItems.organization_id, tenant.organizationId),
+            archivando
+              ? isNull(schema.menuItems.deleted_at)
+              : sql`${schema.menuItems.deleted_at} is not null`,
+          ),
+        )
+        .returning({ id: schema.menuItems.id, name: schema.menuItems.name });
+
+      return { error: false as const, filas };
+    });
+
+    if (resultado.error) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "NOT_FOUND",
+            message: "Alguno de los productos no existe en esta sede",
+          },
+        },
+        404,
+      );
+    }
+
+    for (const fila of resultado.filas) {
+      await auditFromContext(c, {
+        action: archivando ? "menu.delete" : "menu.restore",
+        entityType: "menu_item",
+        entityId: fila.id,
+        summary: archivando
+          ? `Producto "${fila.name}" archivado`
+          : `Producto "${fila.name}" devuelto a la carta`,
+      });
+    }
+
+    return c.json({
+      success: true,
+      data: { changed: resultado.filas.length, items: resultado.filas },
+    });
   },
 );
 

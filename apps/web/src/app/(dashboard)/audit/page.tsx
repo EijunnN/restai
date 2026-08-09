@@ -36,6 +36,7 @@ const ACTION_LABELS: Record<string, string> = {
   "menu.price_change": "Cambió un precio",
   "menu.availability_change": "Cambió la disponibilidad de un plato",
   "menu.delete": "Eliminó un producto",
+  "menu.restore": "Devolvió un producto a la carta",
   "staff.create": "Dio de alta a un empleado",
   "staff.update": "Modificó a un empleado",
   "staff.password_change": "Cambió una contraseña",

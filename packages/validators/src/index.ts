@@ -128,6 +128,20 @@ export const updateMenuItemSchema = createMenuItemSchema.partial().extend({
  * agotar los tres platos que la llevan. Uno a uno son tres peticiones sin
  * atomicidad, y si la segunda falla nadie sabe qué quedó aplicado.
  */
+/**
+ * Ajuste de precio en lote.
+ *
+ * `percent` va en PUNTOS BÁSICOS enteros (1000 = +10 %) y no en un decimal:
+ * subir un 10 % con coma flotante da 4199 céntimos donde debía dar 4200, y ese
+ * céntimo aparece en cada ticket. `delta` y `set` son céntimos, como todo el
+ * dinero del sistema. El resultado nunca baja de cero: un descuento mayor que
+ * el precio deja el plato gratis, no en negativo.
+ */
+export const priceAdjustmentSchema = z.object({
+  mode: z.enum(["percent", "delta", "set"]),
+  value: z.number().int(),
+});
+
 export const bulkUpdateMenuItemsSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   patch: z.object({
@@ -136,7 +150,17 @@ export const bulkUpdateMenuItemsSchema = z.object({
     spiceLevel: z.number().int().min(0).max(3).nullable().optional(),
     allergens: z.array(z.enum(ALLERGENS)).max(15).optional(),
     dietaryTags: z.array(z.enum(DIETARY_TAGS)).max(9).optional(),
+    price: priceAdjustmentSchema.optional(),
   }),
+});
+
+export const bulkItemIdsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200),
+});
+
+export const bulkLinkModifierGroupSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200),
+  groupId: z.string().uuid(),
 });
 
 export const createModifierGroupSchema = z.object({

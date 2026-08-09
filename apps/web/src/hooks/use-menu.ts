@@ -87,6 +87,68 @@ export function useDeleteMenuItem() {
   });
 }
 
+/**
+ * Devuelve a la carta un producto borrado.
+ *
+ * Borrar un producto es un borrado SUAVE: la fila sigue ahí con su `deleted_at`
+ * puesto, porque los pedidos históricos la referencian. El servidor ya ofrecía
+ * esta ruta desde el principio y nadie la llamaba, así que el "¿seguro? no se
+ * puede deshacer" del diálogo mentía: sí se podía, solo que no había botón.
+ */
+export function useRestoreMenuItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/menu/items/${id}/restore`, { method: "PATCH" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
+/**
+ * Cambia varios productos de una vez.
+ *
+ * Devuelve `{updated, before, items}`: el `before` es lo que hace posible el
+ * "Deshacer" del aviso, porque sin el estado previo solo se podría adivinar
+ * (y adivinar mal es reponer en la carta un plato que llevaba días agotado).
+ */
+export function useBulkUpdateMenuItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, patch }: { ids: string[]; patch: Record<string, unknown> }) =>
+      apiFetch("/api/menu/items/bulk", {
+        method: "PATCH",
+        body: JSON.stringify({ ids, patch }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
+/** Vincula un grupo de modificadores a varios productos en una transacción. */
+export function useBulkLinkModifierGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, groupId }: { ids: string[]; groupId: string }) =>
+      apiFetch("/api/menu/items/bulk/modifier-groups", {
+        method: "POST",
+        body: JSON.stringify({ ids, groupId }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
+/** Archiva varios productos, o los devuelve con `restore: true`. */
+export function useBulkDeleteMenuItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, restore }: { ids: string[]; restore?: boolean }) =>
+      apiFetch("/api/menu/items/bulk/delete", {
+        method: "POST",
+        body: JSON.stringify({ ids, restore }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
 // --- Modifier Groups ---
 
 export function useModifierGroups() {
@@ -171,6 +233,20 @@ export function useItemModifierGroups(itemId: string) {
     queryKey: ["menu", "items", itemId, "modifier-groups"],
     queryFn: () => apiFetch(`/api/menu/items/${itemId}/modifier-groups`),
     enabled: !!itemId,
+  });
+}
+
+/**
+ * El sentido inverso: qué productos usan este grupo.
+ *
+ * Sin esto, el diálogo de borrado prometía la consecuencia en prosa —"los
+ * productos vinculados perderán este grupo"— sin poder nombrar ni uno.
+ */
+export function useModifierGroupItems(groupId: string) {
+  return useQuery({
+    queryKey: ["menu", "modifier-groups", groupId, "items"],
+    queryFn: () => apiFetch(`/api/menu/modifier-groups/${groupId}/items`),
+    enabled: !!groupId,
   });
 }
 
