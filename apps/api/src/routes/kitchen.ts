@@ -11,6 +11,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
 import { realtime } from "../infrastructure/container.js";
+import { camposDeCambioDeEstado } from "../services/order-status.js";
 import { auditFromContext } from "../lib/audit.js";
 import { repriceOrderAfterCancel, persistRepricedDiscount } from "../services/order.service.js";
 
@@ -418,8 +419,11 @@ kitchen.post(
           tax: nuevoImpuesto,
           delivery_fee: nuevoDelivery,
           total: nuevoTotal,
-          status: nuevoEstadoOrden,
-          updated_at: now,
+          // Pasa por el helper aunque el estado no cambie: si cambia (la última
+          // línea viva anulada tumba la orden entera), el reloj de estado tiene
+          // que moverse con él. Era el único de los cinco escritores que lo
+          // hacía a mano.
+          ...camposDeCambioDeEstado(nuevoEstadoOrden as any, now),
         })
         .where(eq(schema.orders.id, orderId))
         .returning();

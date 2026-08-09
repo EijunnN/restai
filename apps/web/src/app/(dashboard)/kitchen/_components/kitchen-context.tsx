@@ -400,8 +400,17 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
     if (!stations.some((s) => s.key === station)) setStation(ALL_STATIONS);
   }, [stations, station]);
 
+  /*
+    `confirmed` cae en la MISMA columna que `pending`, y no en ninguna.
+
+    La API de cocina trae las comandas en los cuatro estados vivos
+    (routes/kitchen.ts:52), pero el tablero solo pintaba tres columnas: una
+    orden confirmada llegaba y no se dibujaba en ningún sitio. Para la cocina
+    "pendiente" y "confirmada" son lo mismo —nadie ha empezado a cocinarla— así
+    que van juntas en vez de desaparecer.
+  */
   const columns = {
-    pending: orders.filter((o: any) => o.status === "pending"),
+    pending: orders.filter((o: any) => o.status === "pending" || o.status === "confirmed"),
     preparing: orders.filter((o: any) => o.status === "preparing"),
     ready: orders.filter((o: any) => o.status === "ready"),
   };
@@ -471,8 +480,12 @@ export function KitchenProvider({ children }: { children: ReactNode }) {
   const advanceOrder = (orderId: string, currentStatus: string) => {
     if (pendingOrderIds.has(orderId)) return;
 
+    // `confirmed` avanza igual que `pending`: para la cocina son lo mismo
+    // —nadie ha empezado— y comparten columna. Sin esta rama, una comanda
+    // confirmada mandaba su propio estado y el servidor devolvía 400, porque la
+    // máquina de estados no admite quedarse donde estás.
     const newStatus =
-      currentStatus === "pending"
+      currentStatus === "pending" || currentStatus === "confirmed"
         ? "preparing"
         : currentStatus === "preparing"
           ? "ready"

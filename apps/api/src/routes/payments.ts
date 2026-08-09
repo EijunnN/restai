@@ -14,6 +14,7 @@ import {
   isNotNull,
 } from "drizzle-orm";
 import { db, schema, type DbOrTx } from "@restai/db";
+import { camposDeCambioDeEstado } from "../services/order-status.js";
 import { createPaymentSchema, idParamSchema } from "@restai/validators";
 import { z } from "zod";
 import { authMiddleware } from "../middleware/auth.js";
@@ -74,7 +75,7 @@ const CLOSABLE_BY_PAYMENT = ["ready", "served"] as const;
 async function closeCounterOrder(txOrDb: DbOrTx, orderId: string): Promise<boolean> {
   const closed = await txOrDb
     .update(schema.orders)
-    .set({ status: "completed", updated_at: new Date() })
+    .set(camposDeCambioDeEstado("completed"))
     .where(
       and(
         eq(schema.orders.id, orderId),

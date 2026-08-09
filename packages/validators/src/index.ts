@@ -554,8 +554,27 @@ export const updateBranchSettingsSchema = z.object({
 // Query validators for GET endpoints
 export const orderQuerySchema = z.object({
   status: z.enum(["pending", "confirmed", "preparing", "ready", "served", "completed", "cancelled"]).optional(),
+  /**
+   * `open` = el servicio en curso; `closed` = lo cerrado o anulado.
+   *
+   * Sin esta separación, la pantalla trataba igual una orden de hace tres
+   * minutos y una cobrada hace dos horas: el servicio vivo quedaba enterrado
+   * entre meses de historial y solo se llegaba a él paginando a ciegas.
+   */
+  scope: z.enum(["open", "closed"]).optional(),
+  /** Busca en número de orden, nombre del cliente y número de mesa. */
+  q: z.string().trim().max(120).optional(),
+  /** Rango de fechas (ISO). Se interpretan como día completo en hora de Lima. */
+  from: z.string().optional(),
+  to: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  /**
+   * El tope sube a 300 por el servicio en curso, que se sirve entero y sin
+   * paginar: partir en páginas lo que está abierto obliga a buscar la mesa que
+   * reclama en la página 2. Un local con más de 300 órdenes vivas a la vez no
+   * existe; si existiera, el recorte se avisa en la respuesta.
+   */
+  limit: z.coerce.number().int().min(1).max(300).default(20),
 });
 
 export const inventoryQuerySchema = z.object({

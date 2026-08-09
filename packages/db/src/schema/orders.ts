@@ -56,9 +56,25 @@ export const orders = pgTable("orders", {
   created_by: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   inventory_deducted: boolean("inventory_deducted").default(false).notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  /**
+   * Desde cuándo lleva la orden en el estado en el que está (migración 0019).
+   *
+   * `created_at` responde "cuándo entró"; esto responde "cuánto lleva parada
+   * donde está", que es lo que ordena el trabajo del salón. El fallo más caro de
+   * un servicio es un plato LISTO enfriándose en el pase, y con solo
+   * `created_at` es invisible: una orden de las 20:14 lleva 26 minutos tanto si
+   * la cocina acaba de terminarla como si lleva media hora esperando a un mozo.
+   *
+   * Lo escribe `camposDeCambioDeEstado` (apps/api/src/services/order-status.ts).
+   * Cualquier sitio nuevo que toque `status` debe pasar por ahí.
+   */
+  status_changed_at: timestamp("status_changed_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("idx_orders_branch_status").on(table.branch_id, table.status),
+  index("idx_orders_branch_status_changed").on(table.branch_id, table.status_changed_at),
   index("idx_orders_table_session").on(table.table_session_id),
   index("idx_orders_customer").on(table.customer_id),
   index("idx_orders_created_at").on(table.created_at),

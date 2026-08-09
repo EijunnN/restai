@@ -8,6 +8,17 @@
  * que la barra no cambie de tamaño cada vez que se arregla un plato.
  */
 
+/**
+ * Colores del punto. Escritos ENTEROS porque Tailwind busca clases literales:
+ * una construida con `${...}` no aparece en el CSS compilado.
+ */
+const TONO_PUNTO: Record<string, string> = {
+  verde: "bg-emerald-500",
+  ambar: "bg-amber-500",
+  violeta: "bg-violet-500",
+  azul: "bg-blue-500",
+};
+
 export function FilterChips<T extends string>({
   filtros,
   activo,
@@ -16,7 +27,7 @@ export function FilterChips<T extends string>({
   nota,
   extra,
 }: {
-  filtros: readonly { clave: T; label: string; punto?: "verde" | "ambar" }[];
+  filtros: readonly { clave: T; label: string; punto?: string }[];
   activo: T;
   conteo: Record<T, number>;
   onCambiar: (clave: T) => void;
@@ -46,11 +57,7 @@ export function FilterChips<T extends string>({
             }`}
           >
             {f.punto && (
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  f.punto === "verde" ? "bg-emerald-500" : "bg-amber-500"
-                }`}
-              />
+              <span className={`h-1.5 w-1.5 rounded-full ${TONO_PUNTO[f.punto] ?? "bg-muted-foreground"}`} />
             )}
             {f.label}
             <span className="text-[11px] font-bold tabular-nums opacity-60">{n}</span>

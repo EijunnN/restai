@@ -131,6 +131,10 @@ export const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
  * "Deshacer" no puedan ofrecer un movimiento que el servidor vaya a rechazar.
  */
 export const KITCHEN_BACK_TRANSITIONS: Record<string, string> = {
+  // `confirmed` comparte columna con `pending` en el tablero: para la cocina
+  // ninguna de las dos ha empezado. Sin esta clave, una comanda confirmada se
+  // veía en el tablero y no tenía botón de volver.
+  confirmed: "pending",
   preparing: "pending",
   ready: "preparing",
   served: "ready",

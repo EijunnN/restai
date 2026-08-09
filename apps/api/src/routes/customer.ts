@@ -4,6 +4,7 @@ import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, or, inArray, sql, desc, asc, isNull, gte, lt, lte } from "drizzle-orm";
 import { db, schema } from "@restai/db";
+import { camposDeCambioDeEstado } from "../services/order-status.js";
 import {
   startSessionSchema,
   createOrderSchema,
@@ -1984,7 +1985,7 @@ customer.post(
 
         const updatedOrders = await tx
           .update(schema.orders)
-          .set({ status: "cancelled" })
+          .set(camposDeCambioDeEstado("cancelled"))
           .where(
             and(
               eq(schema.orders.id, id),

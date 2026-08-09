@@ -1,6 +1,7 @@
 import { eq, and, desc, gte, lt, ne, inArray, notInArray, isNull, sql } from "drizzle-orm";
 import { decode } from "hono/jwt";
 import { db, schema, type DbOrTx } from "@restai/db";
+import { camposDeCambioDeEstado } from "./order-status.js";
 import { signCustomerToken } from "../lib/jwt.js";
 import { logger } from "../lib/logger.js";
 import { peruCivilDayStart, peruCivilDayEnd } from "../lib/timezone.js";
@@ -598,7 +599,7 @@ export async function freeTable(params: {
         const now = new Date();
         await tx
           .update(schema.orders)
-          .set({ status: "completed", updated_at: now })
+          .set(camposDeCambioDeEstado("completed", now))
           .where(inArray(schema.orders.id, orderIds));
         await tx
           .update(schema.orderItems)

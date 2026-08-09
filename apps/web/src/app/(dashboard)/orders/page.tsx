@@ -1,98 +1,238 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@restai/ui/components/button";
+import { Sheet, SheetContent, SheetTitle } from "@restai/ui/components/sheet";
 import { RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { useAuthStore } from "@/stores/auth-store";
+import { hasAllPermissions, hasPermission } from "@/lib/permissions";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { useOrders, useUpdateOrderStatus } from "@/hooks/use-orders";
 import { useOrgSettings, useBranchSettings } from "@/hooks/use-settings";
 import { usePrintReceipt } from "@/components/print-ticket";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { apiFetch } from "@/lib/fetcher";
-import { useAuthStore } from "@/stores/auth-store";
-import { hasAllPermissions } from "@/lib/permissions";
-import { PageHeader } from "@/components/page-header";
-import { OrderFilters } from "./_components/order-filters";
-import { OrdersTable } from "./_components/orders-table";
 import { ShiftClockButton } from "../staff/_components/shift-clock-button";
 import { PaymentDialog } from "../payments/_components/payment-dialog";
+import { OrdersToolbar } from "./_components/orders-toolbar";
+import { FilterChips } from "../menu/_components/filter-chips";
+import { StageRail } from "./_components/stage-rail";
+import { OrdersFeed, type OrdenFila } from "./_components/orders-feed";
+import { OrderInspector } from "./_components/order-inspector";
+import {
+  HistoryPeriods,
+  OrdersHistory,
+  periodosHistorial,
+} from "./_components/orders-history";
+import {
+  ETIQUETA_ESTADO,
+  FILTROS,
+  contarFiltros,
+  cumpleFiltro,
+  type ClaveFiltro,
+} from "./_components/orders-flow";
 
-const PAGE_SIZE = 20;
+/** A partir de aquí caben las tres columnas: etapas, lista y ficha. */
+const TRES_COLUMNAS = "(min-width: 1536px)";
+
+const PAGINA_HISTORIAL = 25;
 
 export default function OrdersPage() {
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [page, setPage] = useState(1);
-  const [chargeOrderId, setChargeOrderId] = useState<string | null>(null);
+  const role = useAuthStore((s) => s.user?.role);
 
-  // Esta pantalla la abre cualquier rol con `orders:read`, cocina incluida, que
-  // NO puede cobrar. Cobrar exige las dos cosas: `payments:create` para
-  // registrar el cobro y `payments:read` para que el diálogo pueda listar las
-  // órdenes con saldo. Sin esta comprobación se pintaba "Cobrar" a la cocina y
-  // el diálogo moría en dos 403 seguidos.
-  const user = useAuthStore((s) => s.user);
-  const puedeCobrar = hasAllPermissions(user?.role, ["payments:create", "payments:read"]);
+  /**
+   * Los permisos se comprueban AQUÍ y bajan a cada componente.
+   *
+   * Antes solo se comprobaba uno —el de cobrar— y el botón de avanzar estado se
+   * pintaba a todo el que abriera la pantalla. Funcionaba de casualidad, porque
+   * hoy todos los roles con `orders:read` tienen también `orders:update_status`;
+   * en cuanto exista un rol de solo lectura, el botón muere en un 403 mudo.
+   */
+  const puedeAvanzar = hasPermission(role, "orders:update_status");
+  const puedeCobrar = hasAllPermissions(role, ["payments:create", "payments:read"]);
+  const puedeAnular = hasPermission(role, "orders:update_status");
+  const puedeCrear = hasPermission(role, "orders:create");
 
-  const { data, isLoading, error, refetch } = useOrders({ status: statusFilter, page, limit: PAGE_SIZE });
-  const updateStatus = useUpdateOrderStatus();
+  const anchoCompleto = useMediaQuery(TRES_COLUMNAS);
+
+  const [vista, setVista] = useState<"curso" | "historial">("curso");
+  const [busqueda, setBusqueda] = useState("");
+  const [filtro, setFiltro] = useState<ClaveFiltro>("todas");
+  const [etapa, setEtapa] = useState<string | null>(null);
+  const [periodo, setPeriodo] = useState("7d");
+  const [pagina, setPagina] = useState(1);
+  const [ordenActivaId, setOrdenActivaId] = useState<string | null>(null);
+  const [cobrandoId, setCobrandoId] = useState<string | null>(null);
+  const [porAnular, setPorAnular] = useState<OrdenFila | null>(null);
+
+  /*
+    Un solo reloj para toda la pantalla.
+
+    Los minutos de espera se calculan contra ESTE valor y no contra `Date.now()`
+    en cada fila: si cada una mirase su propio reloj, dos filas de la misma lista
+    podrían discrepar en un minuto, y el grupo "necesitan acción" cambiaría de
+    contenido a mitad de un render. Se refresca cada 20 segundos, que es la
+    resolución que se necesita para contar minutos.
+  */
+  const [ahora, setAhora] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setAhora(Date.now()), 20_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const periodos = useMemo(() => periodosHistorial(), []);
+  const periodoActivo = periodos.find((p) => p.clave === periodo);
+
+  const enCurso = vista === "curso";
+  const consulta = useOrders(
+    enCurso
+      ? { scope: "open", q: busqueda.trim() || undefined, limit: 300 }
+      : {
+          scope: "closed",
+          q: busqueda.trim() || undefined,
+          from: periodoActivo?.from,
+          to: periodoActivo?.to,
+          page: pagina,
+          limit: PAGINA_HISTORIAL,
+        },
+  );
+
+  /*
+    Cuántas órdenes hay abiertas AHORA, mire uno lo que mire.
+
+    La pestaña "En curso" lleva ese número también desde el historial, y es
+    justo cuando más sirve: te enteras de que el servicio se está acumulando
+    mientras revisas comandas de la semana pasada. Pide una sola fila, así que
+    lo que cuesta es el COUNT, no traerse la lista.
+  */
+  const abiertas = useOrders(enCurso ? undefined : { scope: "open", limit: 1 });
+  const totalAbiertas = enCurso ? undefined : (abiertas.data?.pagination.total ?? 0);
+
+  const actualizarEstado = useUpdateOrderStatus();
   const { data: orgSettings } = useOrgSettings();
   const { data: branchSettings } = useBranchSettings();
-  const printReceipt = usePrintReceipt();
-  const updatingOrderId = updateStatus.isPending ? updateStatus.variables?.id ?? null : null;
-  const updatingTargetStatus = updateStatus.isPending ? updateStatus.variables?.status ?? null : null;
+  const imprimirTicket = usePrintReceipt();
 
-  const handlePrintReceipt = async (order: any) => {
+  const ordenes: OrdenFila[] = (consulta.data?.orders ?? []) as OrdenFila[];
+  const paginacion = consulta.data?.pagination;
+  const resumen = consulta.data?.summary;
+
+  const conteoFiltros = useMemo(() => contarFiltros(ordenes, ahora), [ordenes, ahora]);
+
+  const visibles = useMemo(
+    () =>
+      ordenes
+        .filter((o) => cumpleFiltro(o, filtro, ahora))
+        .filter((o) => (etapa ? o.status === etapa : true)),
+    [ordenes, filtro, etapa, ahora],
+  );
+
+  const ordenActiva = ordenes.find((o) => o.id === ordenActivaId) ?? null;
+  const cambiandoId = actualizarEstado.isPending
+    ? (actualizarEstado.variables?.id ?? null)
+    : null;
+
+  const subtitulo = enCurso
+    ? `${ordenes.length} ${ordenes.length === 1 ? "orden abierta" : "órdenes abiertas"}`
+    : (periodoActivo?.nombre ?? "Historial");
+
+  /**
+   * Avanzar o retroceder.
+   *
+   * El fallo se DICE. Antes `mutate` iba sin `onError`, así que un 409 —que
+   * ocurre en cuanto la cocina y el salón tocan la misma comanda— dejaba el
+   * botón como estaba y cero explicación: el operador concluía que la app no
+   * funciona.
+   */
+  const mover = (orden: OrdenFila, destino: string) => {
+    actualizarEstado.mutate(
+      { id: orden.id, status: destino },
+      {
+        onSuccess: () =>
+          toast.success(`${orden.order_number ?? "La orden"} · ${ETIQUETA_ESTADO[destino]}`),
+        onError: (err: any) => {
+          const conflicto = err?.status === 409;
+          toast.error(
+            conflicto ? "Alguien la movió antes que tú" : "No se pudo cambiar el estado",
+            {
+              description: conflicto
+                ? "La cocina o el salón acaban de tocar esta orden. Se ha recargado."
+                : err?.message,
+            },
+          );
+          consulta.refetch();
+        },
+      },
+    );
+  };
+
+  const anular = async () => {
+    if (!porAnular) return;
     try {
-      const orderDetail = await apiFetch(`/api/orders/${order.id}`);
-      const org = orgSettings as any;
-      const branch = branchSettings as any;
-      const items = (orderDetail as any)?.items || [];
-      printReceipt({
-        businessName: org?.name || "Restaurante",
-        ruc: org?.settings?.ruc || undefined,
-        address: branch?.address || undefined,
-        orderNumber: order.order_number || order.id,
-        createdAt: order.created_at || new Date().toISOString(),
-        items: items.map((i: any) => ({
+      await actualizarEstado.mutateAsync({ id: porAnular.id, status: "cancelled" } as any);
+      toast.success("Orden anulada", {
+        description: "Las líneas no cobradas quedan anuladas y hay traza en la auditoría.",
+      });
+      if (ordenActivaId === porAnular.id) setOrdenActivaId(null);
+    } catch (err: any) {
+      // El servidor solo admite anular desde pendiente, confirmada o en cocina:
+      // una orden lista o servida ya no se puede tirar por esta vía.
+      toast.error("No se pudo anular", {
+        description:
+          err?.status === 400
+            ? "Una orden que ya está lista o servida no se anula: hay que retrocederla primero."
+            : err?.message,
+      });
+    }
+    setPorAnular(null);
+  };
+
+  const imprimir = async (orden: OrdenFila) => {
+    const org = orgSettings as any;
+    const branch = branchSettings as any;
+    const base = {
+      businessName: org?.name || "Restaurante",
+      ruc: org?.ruc || org?.settings?.ruc || undefined,
+      address: branch?.address || undefined,
+      orderNumber: orden.order_number || orden.id,
+      createdAt: orden.created_at || new Date().toISOString(),
+      subtotal: (orden as any).subtotal ?? 0,
+      tax: (orden as any).tax ?? 0,
+      total: orden.total ?? 0,
+      customerName: orden.customer_name || undefined,
+    };
+
+    try {
+      const detalle: any = await apiFetch(`/api/orders/${orden.id}`);
+      imprimirTicket({
+        ...base,
+        items: (detalle?.items ?? []).map((i: any) => ({
           name: i.name,
           quantity: i.quantity,
           unit_price: i.unit_price,
           total: i.total,
         })),
-        subtotal: order.subtotal ?? 0,
-        tax: order.tax ?? 0,
-        total: order.total ?? 0,
-        customerName: order.customer_name || undefined,
       });
     } catch {
-      const org = orgSettings as any;
-      printReceipt({
-        businessName: org?.name || "Restaurante",
-        orderNumber: order.order_number || order.id,
-        createdAt: order.created_at || new Date().toISOString(),
-        items: [],
-        subtotal: order.subtotal ?? 0,
-        tax: order.tax ?? 0,
-        total: order.total ?? 0,
-        customerName: order.customer_name || undefined,
+      // Antes se imprimía igual con `items: []`: salía papel con importes y sin
+      // líneas, y nadie se enteraba de que el detalle no había llegado.
+      toast.error("No se pudo leer el detalle de la orden", {
+        description: "No se ha impreso nada. Inténtalo de nuevo.",
       });
     }
   };
 
-  const orders: any[] = data?.orders ?? [];
-  const pagination = data?.pagination ?? { page: 1, limit: PAGE_SIZE, total: 0, totalPages: 1 };
-
-  const handleStatusFilter = (status: string) => {
-    setStatusFilter(status);
-    setPage(1);
-  };
-
-  if (error) {
+  if (consulta.error) {
     return (
-      <div className="space-y-6">
-        <PageHeader title="Órdenes" />
-        <div className="p-4 rounded-lg border border-destructive/50 bg-destructive/5 flex items-center justify-between">
-          <p className="text-sm text-destructive">Error al cargar ordenes: {(error as Error).message}</p>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
+      <div className="space-y-4">
+        <h1 className="text-xl font-extrabold tracking-tight">Órdenes</h1>
+        <div className="flex items-center justify-between rounded-lg border border-destructive/50 bg-destructive/5 p-4">
+          <p className="text-sm text-destructive">
+            No se pudieron cargar las órdenes: {(consulta.error as Error).message}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => consulta.refetch()}>
+            <RefreshCw className="mr-2 h-4 w-4" />
             Reintentar
           </Button>
         </div>
@@ -100,46 +240,156 @@ export default function OrdersPage() {
     );
   }
 
+  const inspector = ordenActiva ? (
+    <OrderInspector
+      key={ordenActiva.id}
+      orden={ordenActiva}
+      ahora={ahora}
+      cambiando={cambiandoId === ordenActiva.id}
+      puedeAvanzar={puedeAvanzar}
+      puedeCobrar={puedeCobrar}
+      puedeAnular={puedeAnular}
+      onCerrar={() => setOrdenActivaId(null)}
+      onAvanzar={mover}
+      onCobrar={(o) => setCobrandoId(o.id)}
+      onImprimir={imprimir}
+      onAnular={setPorAnular}
+    />
+  ) : (
+    <div className="flex h-full items-center justify-center rounded-2xl bg-muted/25 p-6 text-center">
+      <p className="max-w-[15rem] text-[12.5px] text-muted-foreground">
+        Elige una orden para ver qué se pidió, cobrarla o imprimir su boleta.
+      </p>
+    </div>
+  );
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Órdenes"
-        description="Gestiona y rastrea todas las órdenes"
-        actions={<ShiftClockButton />}
+    <div className="flex h-[calc(100vh-8rem)] min-h-0 flex-col gap-3 md:h-[calc(100vh-4rem)]">
+      <OrdersToolbar
+        subtitulo={subtitulo}
+        vista={vista}
+        onVista={(v) => {
+          setVista(v);
+          setPagina(1);
+          setOrdenActivaId(null);
+        }}
+        totalEnCurso={enCurso ? ordenes.length : (totalAbiertas ?? 0)}
+        busqueda={busqueda}
+        onBusqueda={(v) => {
+          setBusqueda(v);
+          setPagina(1);
+        }}
+        puedeCrear={puedeCrear}
+        acciones={<ShiftClockButton />}
       />
 
-      <OrderFilters
-        search={search}
-        onSearchChange={setSearch}
-        statusFilter={statusFilter}
-        onStatusFilterChange={handleStatusFilter}
-      />
+      {enCurso && (
+        <FilterChips
+          filtros={FILTROS}
+          activo={filtro}
+          conteo={conteoFiltros}
+          onCambiar={setFiltro}
+          nota="Ordenadas por urgencia, no por hora de entrada"
+        />
+      )}
 
-      <OrdersTable
-        orders={orders}
-        isLoading={isLoading}
-        search={search}
-        pagination={pagination}
-        page={page}
-        onPageChange={setPage}
-        updateStatusPending={updateStatus.isPending}
-        updatingOrderId={updatingOrderId}
-        updatingTargetStatus={updatingTargetStatus}
-        activeChargeOrderId={chargeOrderId}
-        onUpdateStatus={(id, status) => updateStatus.mutate({ id, status })}
-        onPrintReceipt={handlePrintReceipt}
-        onCharge={puedeCobrar ? (order) => setChargeOrderId(order.id) : undefined}
-      />
+      {resumen?.truncated && (
+        <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12px] text-amber-600 dark:text-amber-400">
+          Hay más órdenes abiertas de las que caben en una carga. Usa el buscador
+          para llegar a la que necesitas.
+        </p>
+      )}
 
-      {/* El diálogo se MONTA solo al pulsar "Cobrar". Estando siempre montado,
-          sus hooks se ejecutaban aunque estuviera cerrado y disparaban
-          GET /api/payments/unpaid-orders en cada carga de la pantalla: un 403
-          garantizado para quien entra aquí sin `payments:read`. */}
-      {chargeOrderId && (
+      <div className="flex min-h-0 flex-1 gap-4">
+        <aside className="hidden w-48 shrink-0 lg:block">
+          {enCurso ? (
+            <StageRail ordenes={ordenes} etapa={etapa} onEtapa={setEtapa} />
+          ) : (
+            <HistoryPeriods
+              periodos={periodos}
+              activo={periodo}
+              onElegir={(p) => {
+                setPeriodo(p);
+                setPagina(1);
+              }}
+              totalPeriodo={resumen?.total_amount ?? 0}
+              ordenesPeriodo={paginacion?.total ?? 0}
+            />
+          )}
+        </aside>
+
+        <main className="flex min-h-0 flex-1 flex-col">
+          {enCurso ? (
+            consulta.isLoading && ordenes.length === 0 ? (
+              <div className="flex-1 animate-pulse rounded-2xl bg-muted/40" />
+            ) : (
+              <OrdersFeed
+                ordenes={visibles}
+                ordenActivaId={ordenActivaId}
+                ahora={ahora}
+                cambiandoId={cambiandoId}
+                puedeAvanzar={puedeAvanzar}
+                puedeCobrar={puedeCobrar}
+                onAbrir={setOrdenActivaId}
+                onAvanzar={mover}
+                onCobrar={(o) => setCobrandoId(o.id)}
+              />
+            )
+          ) : (
+            <OrdersHistory
+              ordenes={ordenes}
+              cargando={consulta.isLoading}
+              pagina={paginacion?.page ?? 1}
+              totalPaginas={paginacion?.totalPages ?? 1}
+              total={paginacion?.total ?? 0}
+              onPagina={setPagina}
+              onAbrir={setOrdenActivaId}
+            />
+          )}
+        </main>
+
+        {anchoCompleto && <aside className="w-[348px] shrink-0">{inspector}</aside>}
+      </div>
+
+      {/* En estrecho la ficha se MONTA solo cuando toca: un Sheet escondido con
+          clases deja vivo su fondo y su captura de foco. */}
+      {!anchoCompleto && (
+        <Sheet
+          open={!!ordenActiva}
+          onOpenChange={(abierto) => {
+            if (!abierto) setOrdenActivaId(null);
+          }}
+        >
+          <SheetContent side="right" className="w-full p-0 sm:max-w-md">
+            <SheetTitle className="sr-only">Ficha de la orden</SheetTitle>
+            <div className="h-full p-3">{inspector}</div>
+          </SheetContent>
+        </Sheet>
+      )}
+
+      {/* El diálogo se monta SOLO al pulsar "Cobrar": montado siempre, sus hooks
+          piden las órdenes con saldo en cada carga y devuelven 403 a cocina, que
+          entra aquí sin `payments:read`. */}
+      {cobrandoId && (
         <PaymentDialog
           open
-          onOpenChange={(v) => { if (!v) setChargeOrderId(null); }}
-          preselectedOrderId={chargeOrderId}
+          onOpenChange={(v) => {
+            if (!v) setCobrandoId(null);
+          }}
+          preselectedOrderId={cobrandoId}
+        />
+      )}
+
+      {porAnular && (
+        <ConfirmDialog
+          open
+          onOpenChange={(v) => {
+            if (!v) setPorAnular(null);
+          }}
+          title="Anular la orden"
+          description={`Se anulan las líneas no cobradas de ${porAnular.order_number ?? "esta orden"}. Si ya se cobró algo, ese dinero sigue registrado y hay que devolverlo aparte.`}
+          onConfirm={anular}
+          loading={actualizarEstado.isPending}
         />
       )}
     </div>

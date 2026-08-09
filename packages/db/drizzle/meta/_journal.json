@@ -134,6 +134,13 @@
       "when": 1786307699405,
       "tag": "0018_static_menu_and_order",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786314919307,
+      "tag": "0019_order_status_clock",
+      "breakpoints": true
     }
   ]
 }

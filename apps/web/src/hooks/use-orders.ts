@@ -4,6 +4,12 @@ import { apiFetch, apiFetchWithMeta } from "@/lib/fetcher";
 
 interface OrderFilters {
   status?: string;
+  /** `open` = el servicio en curso; `closed` = el historial. */
+  scope?: "open" | "closed";
+  /** Búsqueda REAL, en toda la sede. Antes solo filtraba la página abierta. */
+  q?: string;
+  from?: string;
+  to?: string;
   page?: number;
   limit?: number;
 }
@@ -15,15 +21,24 @@ interface Pagination {
   totalPages: number;
 }
 
+interface Summary {
+  /** Lo que suman las órdenes con los filtros puestos, en céntimos. */
+  total_amount: number;
+  /** El servidor recortó la lista. Hay que DECIRLO, no callarlo. */
+  truncated: boolean;
+}
+
 interface OrdersResponse {
   orders: any[];
   pagination: Pagination;
+  summary: Summary;
 }
 
 /** Respuesta cruda de GET /api/orders: la paginación viaja al nivel raíz. */
 interface OrdersEnvelope {
   data: any[] | null;
   pagination?: Pagination;
+  summary?: Summary;
 }
 
 /**
@@ -42,12 +57,17 @@ async function fetchOrdersWithPagination(path: string): Promise<OrdersResponse> 
   return {
     orders: json.data ?? [],
     pagination: json.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 },
+    summary: json.summary ?? { total_amount: 0, truncated: false },
   };
 }
 
 export function useOrders(filters?: OrderFilters) {
   const params = new URLSearchParams();
   if (filters?.status && filters.status !== "all") params.set("status", filters.status);
+  if (filters?.scope) params.set("scope", filters.scope);
+  if (filters?.q) params.set("q", filters.q);
+  if (filters?.from) params.set("from", filters.from);
+  if (filters?.to) params.set("to", filters.to);
   if (filters?.page) params.set("page", String(filters.page));
   if (filters?.limit) params.set("limit", String(filters.limit));
   const qs = params.toString();
@@ -55,7 +75,21 @@ export function useOrders(filters?: OrderFilters) {
   return useQuery<OrdersResponse>({
     queryKey: ["orders", filters],
     queryFn: () => fetchOrdersWithPagination(`/api/orders${qs ? `?${qs}` : ""}`),
-    refetchInterval: 5000,
+    /*
+      El servicio en curso se refresca solo; el historial no se mueve.
+      Resondear una consulta de hace tres semanas cada cinco segundos es
+      trabajo para el servidor y batería para nadie.
+    */
+    refetchInterval: filters?.scope === "closed" ? false : 5000,
+    /*
+      Sin filtros no se pregunta nada.
+
+      Quien llama usa `undefined` para decir "ahora mismo no me hace falta" —la
+      pantalla de órdenes lo hace con el recuento de abiertas mientras ya está
+      mirando las abiertas—. Sin esto, `useOrders()` pediría la sede entera sin
+      paginar cada cinco segundos.
+    */
+    enabled: filters !== undefined,
   });
 }
 

@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
-import { eq, and, ne, desc, sql, isNull, inArray, getTableColumns } from "drizzle-orm";
+import { eq, and, ne, or, asc, desc, sql, isNull, inArray, notInArray, gte, lte, getTableColumns } from "drizzle-orm";
 import { db, schema } from "@restai/db";
+import { camposDeCambioDeEstado } from "../services/order-status.js";
 import {
   createOrderSchema,
   updateOrderStatusSchema,
@@ -15,6 +16,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
 import { realtime } from "../infrastructure/container.js";
+import { fechaDeLima } from "../lib/lima-date.js";
 import { z } from "zod";
 import {
   createOrder,
@@ -351,10 +353,13 @@ async function rollbackOpenedSession(params: {
   }
 }
 
+/** Lo que ya no está en el servicio: cerrado o anulado. */
+const ESTADOS_CERRADOS = ["completed", "cancelled"] as const;
+
 // GET / - List orders
 orders.get("/", requirePermission("orders:read"), zValidator("query", orderQuerySchema), async (c) => {
   const tenant = c.get("tenant") as any;
-  const { status, page, limit } = c.req.valid("query");
+  const { status, scope, q, from, to, page, limit } = c.req.valid("query");
   const offset = (page - 1) * limit;
 
   const conditions = [
@@ -365,6 +370,39 @@ orders.get("/", requirePermission("orders:read"), zValidator("query", orderQuery
   if (status) {
     conditions.push(eq(schema.orders.status, status as any));
   }
+
+  // El servicio en curso y el historial son dos trabajos distintos, y hasta
+  // ahora vivían en la misma lista: una orden de hace tres minutos aparecía
+  // junto a otra cobrada hace ocho meses, y llegar a las vivas era paginar a
+  // ciegas.
+  if (scope === "open") {
+    conditions.push(notInArray(schema.orders.status, [...ESTADOS_CERRADOS]));
+  } else if (scope === "closed") {
+    conditions.push(inArray(schema.orders.status, [...ESTADOS_CERRADOS]));
+  }
+
+  // La búsqueda estaba SOLO en el cliente y sobre las 20 filas de la página
+  // abierta: buscar "Mesa 7" con 300 órdenes respondía "no se encontraron"
+  // mientras el pie decía "300 en total". Aquí busca de verdad, en toda la sede.
+  if (q) {
+    const patron = `%${q.toLowerCase()}%`;
+    const comoNumeroDeMesa = Number.parseInt(q.replace(/\D/g, ""), 10);
+
+    const alternativas = [
+      sql`lower(${schema.orders.order_number}) like ${patron}`,
+      sql`lower(coalesce(${schema.orders.customer_name}, '')) like ${patron}`,
+    ];
+    if (Number.isFinite(comoNumeroDeMesa)) {
+      alternativas.push(sql`${schema.tables.number} = ${comoNumeroDeMesa}`);
+    }
+
+    conditions.push(or(...alternativas)!);
+  }
+
+  const desde = fechaDeLima(from, "inicio");
+  const hasta = fechaDeLima(to, "fin");
+  if (desde) conditions.push(gte(schema.orders.created_at, desde));
+  if (hasta) conditions.push(lte(schema.orders.created_at, hasta));
 
   const whereClause = and(...conditions);
 
@@ -381,21 +419,79 @@ orders.get("/", requirePermission("orders:read"), zValidator("query", orderQuery
         // que usa payments.ts.
         total_paid: sql<number>`COALESCE((SELECT SUM(amount)::int FROM payments WHERE payments.order_id = ${schema.orders.id} AND payments.status = 'completed' AND payments.voided_at IS NULL), 0)`,
         table_number: schema.tables.number,
+        // Quién levantó la comanda. Sin esto no se puede mirar el historial por
+        // mozo, que es la primera pregunta cuando algo salió mal en una mesa.
+        waiter_name: schema.users.name,
+        /*
+          Minutos que ESTA orden debería tardar: el máximo de sus platos, no la
+          suma. La cocina trabaja en paralelo; sumar da cifras absurdas (seis
+          platos de 15 minutos no son hora y media) y convierte el aviso de
+          retraso en ruido que nadie mira.
+
+          Se calcula al leer en vez de guardarse: es una estimación derivada de
+          la carta, y congelarla en la orden significaría que corregir el tiempo
+          de un plato no arregla las comandas ya abiertas.
+        */
+        prep_minutes: sql<number | null>`(
+          SELECT MAX(menu_items.preparation_time_min)::int
+          FROM order_items
+          JOIN menu_items ON menu_items.id = order_items.menu_item_id
+          WHERE order_items.order_id = ${schema.orders.id}
+            AND order_items.status <> 'cancelled'
+        )`,
+        /*
+          Con qué se pagó. Si hubo varios cobros se devuelve "Mixto", que es lo
+          que dice la verdad: enseñar solo el último método haría creer que una
+          cuenta partida entre efectivo y tarjeta se pagó entera en efectivo.
+        */
+        payment_method: sql<string | null>`(
+          SELECT CASE WHEN COUNT(DISTINCT method) > 1 THEN 'mixto' ELSE MIN(method::text) END
+          FROM payments
+          WHERE payments.order_id = ${schema.orders.id}
+            AND payments.status = 'completed'
+            AND payments.voided_at IS NULL
+        )`,
+        /** Comprobante emitido, para la columna "Boleta" del historial. */
+        invoice_number: sql<string | null>`(
+          SELECT invoices.series || '-' || lpad(invoices.number::text, 4, '0')
+          FROM invoices
+          WHERE invoices.order_id = ${schema.orders.id}
+          ORDER BY invoices.created_at DESC
+          LIMIT 1
+        )`,
       })
       .from(schema.orders)
       .leftJoin(schema.tableSessions, eq(schema.orders.table_session_id, schema.tableSessions.id))
       .leftJoin(schema.tables, eq(schema.tableSessions.table_id, schema.tables.id))
+      .leftJoin(schema.users, eq(schema.orders.created_by, schema.users.id))
       .where(whereClause)
-      .orderBy(desc(schema.orders.created_at))
+      // En el servicio en curso manda lo más PARADO, no lo más nuevo: con el
+      // orden por hora de entrada, la orden urgente quedaba la última.
+      .orderBy(
+        scope === "open"
+          ? asc(schema.orders.status_changed_at)
+          : desc(schema.orders.created_at),
+      )
       .limit(limit)
       .offset(offset),
+    // El conteo repite los mismos JOIN porque la búsqueda puede filtrar por
+    // número de MESA, que vive en otra tabla: sin ellos, el total del pie no
+    // cuadra con las filas de la lista.
     db
-      .select({ count: sql<number>`COUNT(*)::int` })
+      .select({
+        count: sql<number>`COUNT(*)::int`,
+        // Lo que suman las órdenes con los filtros puestos. El historial lo
+        // enseña en el pie: sin esto hay que sumar a mano lo que se está viendo.
+        sum: sql<number>`COALESCE(SUM(${schema.orders.total})::int, 0)`,
+      })
       .from(schema.orders)
+      .leftJoin(schema.tableSessions, eq(schema.orders.table_session_id, schema.tableSessions.id))
+      .leftJoin(schema.tables, eq(schema.tableSessions.table_id, schema.tables.id))
       .where(whereClause),
   ]);
 
   const total = countResult[0]?.count ?? 0;
+  const sumaTotal = countResult[0]?.sum ?? 0;
 
   const enriched = result.map((order) => {
     const paid = order.total_paid ?? 0;
@@ -412,6 +508,10 @@ orders.get("/", requirePermission("orders:read"), zValidator("query", orderQuery
     success: true,
     data: enriched,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    // Suma de lo filtrado y aviso de recorte. El servicio en curso se pide sin
+    // paginar, y si alguna vez no cupiera hay que DECIRLO: una lista recortada
+    // en silencio se lee como "no hay más".
+    summary: { total_amount: sumaTotal, truncated: scope === "open" && total > limit },
   });
 });
 
@@ -723,9 +823,76 @@ orders.get(
     const items = await db
       .select()
       .from(schema.orderItems)
-      .where(eq(schema.orderItems.order_id, order.id));
+      .where(eq(schema.orderItems.order_id, order.id))
+      .orderBy(asc(schema.orderItems.id));
 
-    return c.json({ success: true, data: { ...order, items } });
+    /*
+      Las opciones elegidas van con su línea.
+
+      Sin esto, la ficha enseña "Lomo saltado" y calla que va al punto y sin
+      ají, que es justo lo que hay que leer antes de rehacer un plato o discutir
+      una cuenta. El coste es una consulta más, no una por línea.
+    */
+    const idsDeLinea = items.map((i) => i.id);
+    const modificadores = idsDeLinea.length
+      ? await db
+          .select({
+            order_item_id: schema.orderItemModifiers.order_item_id,
+            name: schema.orderItemModifiers.name,
+            price: schema.orderItemModifiers.price,
+          })
+          .from(schema.orderItemModifiers)
+          .where(inArray(schema.orderItemModifiers.order_item_id, idsDeLinea))
+      : [];
+
+    /*
+      Los cobros ya registrados, con el mismo criterio canónico que usa el resto
+      del repositorio: un cobro anulado NO es dinero cobrado. Se devuelven
+      también los anulados, marcados, porque la ficha tiene que poder explicar
+      por qué una cuenta que "ya se pagó" vuelve a tener saldo.
+    */
+    const cobros = await db
+      .select({
+        id: schema.payments.id,
+        method: schema.payments.method,
+        amount: schema.payments.amount,
+        status: schema.payments.status,
+        voided_at: schema.payments.voided_at,
+        created_at: schema.payments.created_at,
+        reference: schema.payments.reference,
+      })
+      .from(schema.payments)
+      .where(eq(schema.payments.order_id, order.id))
+      .orderBy(asc(schema.payments.created_at));
+
+    const [contexto] = await db
+      .select({
+        table_number: schema.tables.number,
+        waiter_name: schema.users.name,
+      })
+      .from(schema.orders)
+      .leftJoin(schema.tableSessions, eq(schema.orders.table_session_id, schema.tableSessions.id))
+      .leftJoin(schema.tables, eq(schema.tableSessions.table_id, schema.tables.id))
+      .leftJoin(schema.users, eq(schema.orders.created_by, schema.users.id))
+      .where(eq(schema.orders.id, order.id))
+      .limit(1);
+
+    return c.json({
+      success: true,
+      data: {
+        ...order,
+        table_number: contexto?.table_number ?? null,
+        waiter_name: contexto?.waiter_name ?? null,
+        items: items.map((i) => ({
+          ...i,
+          modifiers: modificadores.filter((m) => m.order_item_id === i.id),
+        })),
+        payments: cobros,
+        total_paid: cobros
+          .filter((p) => p.status === "completed" && !p.voided_at)
+          .reduce((suma, p) => suma + p.amount, 0),
+      },
+    });
   },
 );
 
@@ -793,7 +960,7 @@ orders.patch(
     const outcome = await db.transaction(async (tx) => {
       const [updated] = await tx
         .update(schema.orders)
-        .set({ status, updated_at: now })
+        .set(camposDeCambioDeEstado(status, now))
         .where(
           and(
             eq(schema.orders.id, id),
