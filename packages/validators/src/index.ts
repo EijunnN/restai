@@ -298,6 +298,18 @@ export const createOrderSchema = z.object({
   isPaid: z.boolean().optional(),
 });
 
+/**
+ * Añadir platos a una cuenta ya abierta.
+ *
+ * Es lo que hace posible el servicio de salón de verdad: la mesa pide, se manda
+ * a cocina, y media hora después pide otra ronda SOBRE LA MISMA CUENTA. Sin
+ * esto, ampliar un pedido obligaba a levantar una comanda nueva y la mesa
+ * acababa con tres cuentas que había que cobrar por separado.
+ */
+export const addOrderItemsSchema = z.object({
+  items: z.array(createOrderItemSchema).min(1, "Hay que añadir al menos un plato").max(60),
+});
+
 export const updateOrderStatusSchema = z.object({
   status: z.enum(["pending", "confirmed", "preparing", "ready", "served", "completed", "cancelled"]),
 });

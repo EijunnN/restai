@@ -10,6 +10,7 @@ import {
   updateOrderItemStatusSchema,
   idParamSchema,
   orderQuerySchema,
+  addOrderItemsSchema,
 } from "@restai/validators";
 import { ORDER_STATUS_TRANSITIONS, ORDER_ITEM_STATUS_TRANSITIONS } from "@restai/config";
 import { authMiddleware } from "../middleware/auth.js";
@@ -20,6 +21,7 @@ import { fechaDeLima } from "../lib/lima-date.js";
 import { z } from "zod";
 import {
   createOrder,
+  validarYPreciarLineas,
   handleOrderCompletion,
   OrderValidationError,
   repriceOrderAfterCancel,
@@ -1112,6 +1114,189 @@ orders.patch(
     }
 
     return c.json({ success: true, data: updated });
+  },
+);
+
+/**
+ * POST /:id/items — añadir platos a una cuenta ya abierta.
+ *
+ * Es lo que hace posible el servicio de salón de verdad: la mesa pide, se manda
+ * a cocina, y media hora después pide otra ronda SOBRE LA MISMA CUENTA. Sin
+ * este endpoint, ampliar un pedido obligaba a levantar una comanda nueva y la
+ * mesa acababa con tres cuentas que había que cobrar por separado.
+ *
+ * Todo pasa en UNA transacción con la orden bloqueada: insertar las líneas y
+ * recalcular la cuenta no pueden separarse, o un cobro que entre en medio vería
+ * platos que aún no están sumados y la mesa se iría pagando de menos.
+ *
+ * El precio lo pone SIEMPRE el servidor con la carta de este momento; lo único
+ * que se acepta del cliente es qué plato, cuántos y con qué opciones.
+ */
+orders.post(
+  "/:id/items",
+  requirePermission("orders:update"),
+  zValidator("param", idParamSchema),
+  zValidator("json", addOrderItemsSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { items } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    let resultado;
+    try {
+      resultado = await db.transaction(async (tx) => {
+        const [order] = await tx
+          .select()
+          .from(schema.orders)
+          .where(
+            and(
+              eq(schema.orders.id, id),
+              eq(schema.orders.branch_id, tenant.branchId),
+              eq(schema.orders.organization_id, tenant.organizationId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+
+        if (!order) return { error: "NOT_FOUND" as const };
+
+        // Una cuenta cerrada o anulada no admite más platos. Permitirlo dejaría
+        // líneas colgando de una venta ya cuadrada en caja.
+        if (order.status === "completed" || order.status === "cancelled") {
+          return { error: "CLOSED" as const, status: order.status };
+        }
+
+        const { lineas } = await validarYPreciarLineas(
+          { organizationId: tenant.organizationId, branchId: tenant.branchId, items },
+          tx,
+        );
+
+        const creadas = await tx
+          .insert(schema.orderItems)
+          .values(
+            lineas.map((l) => ({
+              order_id: order.id,
+              menu_item_id: l.menu_item_id,
+              name: l.name,
+              unit_price: l.unit_price,
+              quantity: l.quantity,
+              total: l.total,
+              notes: l.notes,
+            })),
+          )
+          .returning();
+
+        for (let i = 0; i < creadas.length; i++) {
+          const mods = lineas[i]!.modifiers;
+          if (mods.length === 0) continue;
+          await tx.insert(schema.orderItemModifiers).values(
+            mods.map((m) => ({
+              order_item_id: creadas[i]!.id,
+              modifier_id: m.modifierId,
+              name: m.name,
+              price: m.price,
+            })),
+          );
+        }
+
+        /*
+          Se recalcula la cuenta ENTERA, no se suma lo nuevo al total viejo.
+
+          Sumar parecería más simple y sería incorrecto: con un cupón del 20 %,
+          el descuento se aplica sobre el subtotal nuevo, y el IGV sobre la base
+          ya descontada. Arrastrar el total anterior y añadirle el importe de las
+          líneas nuevas se salta las dos cosas.
+        */
+        const totales = await repriceOrderAfterCancel(
+          {
+            orderId: order.id,
+            organizationId: tenant.organizationId,
+            branchId: tenant.branchId,
+            previousDiscount: order.discount,
+            deliveryFee: order.delivery_fee,
+            ampliacion: true,
+          },
+          tx,
+        );
+
+        const [actualizada] = await tx
+          .update(schema.orders)
+          .set({
+            subtotal: totales.subtotal,
+            discount: totales.discount,
+            tax: totales.tax,
+            total: totales.total,
+            updated_at: new Date(),
+          })
+          .where(eq(schema.orders.id, order.id))
+          .returning();
+
+        // El importe registrado del cupón se pone al día ya en la fase de
+        // escritura: durante el cálculo, un error posterior lo habría dejado
+        // grabado igualmente (devolver un error no aborta la transacción).
+        await persistRepricedDiscount(totales, tx);
+
+        return { error: null, order: actualizada!, added: creadas, previo: order };
+      });
+    } catch (err) {
+      if (err instanceof OrderValidationError) {
+        return c.json(
+          { success: false, error: { code: "BAD_REQUEST", message: err.message } },
+          400,
+        );
+      }
+      throw err;
+    }
+
+    if (resultado.error === "NOT_FOUND") {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Orden no encontrada" } },
+        404,
+      );
+    }
+    if (resultado.error === "CLOSED") {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message:
+              resultado.status === "cancelled"
+                ? "Esta cuenta está anulada: no admite más platos."
+                : "Esta cuenta ya se cobró. Abre una nueva para seguir pidiendo.",
+          },
+        },
+        409,
+      );
+    }
+
+    const payload = {
+      type: "order:updated",
+      payload: {
+        orderId: resultado.order.id,
+        orderNumber: resultado.order.order_number,
+        status: resultado.order.status,
+        addedItems: resultado.added.length,
+        total: resultado.order.total,
+      },
+      timestamp: Date.now(),
+    };
+
+    // A la cocina SIEMPRE por su sala propia: es la que decide si se pone a
+    // cocinar los platos nuevos. Y al comensal por la suya, que ve crecer su
+    // cuenta sin recargar.
+    await broadcast([
+      { room: `branch:${tenant.branchId}`, message: payload },
+      { room: `branch:${tenant.branchId}:kitchen`, message: payload },
+      ...(resultado.order.table_session_id
+        ? [{ room: `session:${resultado.order.table_session_id}`, message: payload }]
+        : []),
+    ]);
+
+    return c.json({
+      success: true,
+      data: { ...resultado.order, added: resultado.added },
+    });
   },
 );
 

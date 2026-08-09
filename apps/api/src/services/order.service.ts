@@ -1,5 +1,5 @@
 import { eq, and, ne, inArray, sql, isNull } from "drizzle-orm";
-import { db, schema } from "@restai/db";
+import { db, schema , type DbOrTx } from "@restai/db";
 import { generateOrderNumber } from "../lib/id.js";
 import { logger } from "../lib/logger.js";
 import { awardPoints } from "./loyalty.service.js";
@@ -47,27 +47,47 @@ interface CreateOrderResult {
  * Validates menu items and creates an order with its items.
  * Returns the created order and items, or throws an error if validation fails.
  */
-export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
-  const {
-    organizationId,
-    branchId,
-    items,
-    type,
-    customerName,
-    notes,
-    tableSessionId,
-    customerId,
-    couponCode,
-    redemptionId,
-    deliveryAddress,
-    deliveryPhone,
-    deliveryFee = 0,
-    deliveryDriverId,
-  } = params;
+/** Una línea tal y como se va a guardar, con sus modificadores ya validados. */
+export interface LineaPreciada {
+  menu_item_id: string;
+  name: string;
+  unit_price: number;
+  quantity: number;
+  total: number;
+  notes?: string;
+  /**
+   * Con nombre y precio ya resueltos: la instantánea que se guarda tiene que
+   * salir de la MISMA lectura que validó el modificador, no de una segunda
+   * consulta que podría ver otra cosa.
+   */
+  modifiers: Array<{ modifierId: string; name: string; price: number }>;
+}
+
+/**
+ * Valida y pone precio a un conjunto de líneas.
+ *
+ * Estaba dentro de `createOrder` y ahora lo comparten DOS caminos: crear un
+ * pedido y añadir platos a una cuenta ya abierta. Duplicarlo habría significado
+ * dos sitios donde permitir un modificador que no pertenece al plato —el fallo
+ * que convierte "Pollo a la brasa" en "Pollo a la brasa + doble langostino
+ * gratis"— y dos sitios donde olvidar comprobar que el plato sigue disponible.
+ *
+ * Todo el precio se calcula AQUÍ, con los datos de la carta leídos en este
+ * momento: nunca con lo que mande el cliente HTTP.
+ */
+export async function validarYPreciarLineas(
+  params: {
+    organizationId: string;
+    branchId: string;
+    items: CreateOrderParams["items"];
+  },
+  ejecutor: DbOrTx = db,
+): Promise<{ lineas: LineaPreciada[]; subtotal: number }> {
+  const { organizationId, branchId, items } = params;
 
   // Get menu items for price calculation (exclude soft-deleted, scope to tenant)
   const menuItemIds = items.map((i) => i.menuItemId);
-  const menuItemsResult = await db
+  const menuItemsResult = await ejecutor
     .select()
     .from(schema.menuItems)
     .where(and(
@@ -93,7 +113,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   // Map each requested modifier to its owning group (for selection counting)
   const modifierGroupOfModifier = new Map<string, string>();
   if (allModifierIds.length > 0) {
-    const modifierRecords = await db
+    const modifierRecords = await ejecutor
       .select({
         id: schema.modifiers.id,
         name: schema.modifiers.name,
@@ -124,7 +144,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     Array<{ group_id: string; min_selections: number; max_selections: number; is_required: boolean }>
   >();
   if (menuItemIds.length > 0) {
-    const linkedGroups = await db
+    const linkedGroups = await ejecutor
       .select({
         item_id: schema.menuItemModifierGroups.item_id,
         group_id: schema.modifierGroups.id,
@@ -163,7 +183,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     quantity: number;
     total: number;
     notes?: string;
-    modifiers: Array<{ modifierId: string }>;
+    modifiers: Array<{ modifierId: string; name: string; price: number }>;
   }> = [];
 
   for (const item of items) {
@@ -234,9 +254,37 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       quantity: item.quantity,
       total: itemTotal,
       notes: item.notes,
-      modifiers: item.modifiers || [],
+      modifiers: (item.modifiers || []).map((m) => {
+        const modificador = modifierMap.get(m.modifierId)!;
+        return { modifierId: m.modifierId, name: modificador.name, price: modificador.price };
+      }),
     });
   }
+
+  return { lineas: orderItemsData, subtotal };
+}
+
+export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
+  const {
+    organizationId,
+    branchId,
+    items,
+    type,
+    customerName,
+    notes,
+    tableSessionId,
+    customerId,
+    couponCode,
+    redemptionId,
+    deliveryAddress,
+    deliveryPhone,
+    deliveryFee = 0,
+    deliveryDriverId,
+  } = params;
+
+  const { lineas: orderItemsData, subtotal } = await validarYPreciarLineas(
+    { organizationId, branchId, items },
+  );
 
   // Get branch tax rate
   const [branch] = await db
@@ -343,15 +391,12 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       const itemData = orderItemsData[i];
       if (itemData.modifiers.length > 0) {
         await tx.insert(schema.orderItemModifiers).values(
-          itemData.modifiers.map((mod) => {
-            const modifier = modifierMap.get(mod.modifierId);
-            return {
-              order_item_id: createdItems[i].id,
-              modifier_id: mod.modifierId,
-              name: modifier?.name || "Modificador",
-              price: modifier?.price || 0,
-            };
-          }),
+          itemData.modifiers.map((mod) => ({
+            order_item_id: createdItems[i].id,
+            modifier_id: mod.modifierId,
+            name: mod.name,
+            price: mod.price,
+          })),
         );
       }
     }
@@ -887,6 +932,17 @@ export async function repriceOrderAfterCancel(
     previousDiscount: number;
     deliveryFee: number;
     excludeItemIds?: string[];
+    /**
+     * El pedido CRECIÓ: se añadieron líneas en vez de anularlas.
+     *
+     * Cambia una sola cosa, y es de dinero: el techo del descuento. Al anular,
+     * un cupón del 20 % no puede subir —sería regalar más por servir menos— y
+     * por eso el importe guardado hace de tope. Al AÑADIR, ese mismo tope
+     * congelaría el descuento en el valor del pedido pequeño, y el comensal
+     * perdería en silencio parte de su cupón por el simple hecho de haber
+     * pedido en dos veces en lugar de una.
+     */
+    ampliacion?: boolean;
   },
   tx: TxOrDb,
 ): Promise<RepricedOrderTotals> {
@@ -950,7 +1006,7 @@ export async function repriceOrderAfterCancel(
   const taxRate = branch?.tax_rate ?? 1800;
 
   const { discount, couponRedemptionUpdate } = await recomputeOrderDiscount(
-    { orderId, organizationId, survivors, subtotal, previousDiscount },
+    { orderId, organizationId, survivors, subtotal, previousDiscount, ampliacion: params.ampliacion },
     tx,
   );
 
@@ -992,6 +1048,7 @@ async function recomputeOrderDiscount(
     survivors: PricedLine[];
     subtotal: number;
     previousDiscount: number;
+    ampliacion?: boolean;
   },
   tx: TxOrDb,
 ): Promise<{
@@ -1045,7 +1102,11 @@ async function recomputeOrderDiscount(
   }
 
   const recomputed = couponDiscount + redemptionDiscount;
-  const discount = Math.max(0, Math.min(recomputed, subtotal, previousDiscount));
+  // Al ampliar, el único límite es lo que se está comprando: la regla del cupón
+  // ya se ha vuelto a aplicar sobre el subtotal nuevo, con sus propios topes.
+  const discount = params.ampliacion
+    ? Math.max(0, Math.min(recomputed, subtotal))
+    : Math.max(0, Math.min(recomputed, subtotal, previousDiscount));
 
   // Lo registrado en `coupon_redemptions` no puede superar el descuento que de
   // verdad se aplicó a la orden: el tope de `previousDiscount` puede haber
