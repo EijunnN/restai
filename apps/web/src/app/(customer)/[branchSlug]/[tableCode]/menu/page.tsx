@@ -22,6 +22,7 @@ import { VariantsSheet } from "@/components/customer/variants-sheet";
 import { VoiceEntryButton } from "@/components/customer/voice-entry-button";
 import { KIOSK_INTENT_KEY } from "@/hooks/use-kiosk";
 import { DishRow, type DishRowItem } from "./_components/dish-row";
+import { CartaLectura } from "@/components/customer/carta-lectura";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
@@ -31,7 +32,7 @@ interface MenuCategory {
 }
 
 interface MenuData {
-  branch: { id: string; name: string; currency?: string };
+  branch: { id: string; name: string; currency?: string; menu_mode?: string };
   table?: { id: string; number?: number; short_code?: string } | null;
   categories: MenuCategory[];
   items: (DishRowItem & { category_id: string })[];
@@ -166,7 +167,16 @@ export default function CustomerMenuPage({
     return () => clearTimeout(t);
   }, [loadMenu]);
 
-  if (sessionValid === false) {
+  /**
+   * Carta de solo lectura: el local decidió que su QR sirve para leer.
+   *
+   * La comprobación va DESPUÉS de tener la carta, no antes: el modo llega en la
+   * respuesta de `/menu`, y redirigir a la pantalla de entrada mientras tanto
+   * mandaría al comensal a rellenar un formulario que en este modo no existe.
+   */
+  const soloLectura = menuData?.branch?.menu_mode === "static";
+
+  if (menuData && !soloLectura && sessionValid === false) {
     redirect(`/${branchSlug}/${tableCode}`);
   }
 
@@ -215,7 +225,7 @@ export default function CustomerMenuPage({
     sectionRefs.current[categoryId]?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  if (loading || sessionValid === null) {
+  if (loading || (sessionValid === null && !soloLectura)) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
@@ -240,6 +250,19 @@ export default function CustomerMenuPage({
           Reintentar
         </Button>
       </div>
+    );
+  }
+
+  if (soloLectura) {
+    return (
+      <CartaLectura
+        branchName={menuData.branch.name}
+        currency={menuData.branch.currency}
+        categories={menuData.categories}
+        items={menuData.items}
+        subtitulo={menuData.table?.number ? `Mesa ${menuData.table.number}` : null}
+        comoPedir="Cuando quieras pedir, llama a un mozo."
+      />
     );
   }
 

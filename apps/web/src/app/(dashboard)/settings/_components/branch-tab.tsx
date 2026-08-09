@@ -6,7 +6,7 @@ import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
 import { Button } from "@restai/ui/components/button";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@restai/ui/components/select";
-import { Clock, Info, RefreshCw } from "lucide-react";
+import { Clock, ExternalLink, Info, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useBranchSettings, useUpdateBranch } from "@/hooks/use-settings";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ function SettingSwitch({
   title,
   description,
   disabled,
+  oculto,
 }: {
   id: string;
   checked: boolean;
@@ -36,7 +37,12 @@ function SettingSwitch({
   title: string;
   description: ReactNode;
   disabled?: boolean;
+  /** No se pinta. Se DESMONTA: un interruptor invisible pero enfocable con el
+   *  tabulador es peor que no tenerlo. */
+  oculto?: boolean;
 }) {
+  if (oculto) return null;
+
   return (
     <button
       type="button"
@@ -93,6 +99,10 @@ export function BranchTab({ canWrite }: { canWrite: boolean }) {
     inventoryEnabled: false,
     waiterTableAssignmentEnabled: false,
     autoApproveSessions: false,
+    // Se hidrata desde el servidor en el efecto de abajo. Si se olvidara, el
+    // formulario mandaría "dynamic" al guardar CUALQUIER otro campo y apagaría
+    // el modo estático sin que nadie lo tocara: este formulario se envía entero.
+    menuMode: "dynamic" as "dynamic" | "static",
   });
 
   useEffect(() => {
@@ -106,6 +116,7 @@ export function BranchTab({ canWrite }: { canWrite: boolean }) {
         inventoryEnabled: branchData.settings?.inventory_enabled ?? false,
         waiterTableAssignmentEnabled: branchData.settings?.waiter_table_assignment_enabled ?? false,
         autoApproveSessions: branchData.settings?.auto_approve_sessions ?? false,
+        menuMode: branchData.menu_mode === "static" ? "static" : "dynamic",
       });
     }
   }, [branchData]);
@@ -131,6 +142,7 @@ export function BranchTab({ canWrite }: { canWrite: boolean }) {
         currency: branchForm.currency,
         inventoryEnabled: branchForm.inventoryEnabled,
         waiterTableAssignmentEnabled: branchForm.waiterTableAssignmentEnabled,
+        menuMode: branchForm.menuMode,
         // Los ajustes se FUSIONAN en el servidor: enviar solo esta clave no pisa
         // el resto (series de SUNAT, otros interruptores).
         settings: { auto_approve_sessions: branchForm.autoApproveSessions },
@@ -286,15 +298,82 @@ export function BranchTab({ canWrite }: { canWrite: boolean }) {
             </div>
 
             <div className="space-y-3">
+              {/*
+                El modo de carta va PRIMERO porque manda sobre los de abajo: en
+                solo lectura no hay sesiones que aprobar ni mesas que asignar.
+              */}
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-sm font-medium">¿Para qué sirve tu QR?</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Lo decides tú y puedes cambiarlo cuando quieras. No hay que
+                  reimprimir nada: los mismos códigos QR valen para los dos.
+                </p>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <ModoCarta
+                    activo={branchForm.menuMode === "dynamic"}
+                    disabled={!canWrite}
+                    onSelect={() => setBranchForm({ ...branchForm, menuMode: "dynamic" })}
+                    titulo="Pedir desde la mesa"
+                    descripcion="El comensal escanea, entra a la mesa y hace su pedido desde el móvil. Necesita que alguien apruebe su entrada, salvo que actives la entrada directa."
+                  />
+                  <ModoCarta
+                    activo={branchForm.menuMode === "static"}
+                    disabled={!canWrite}
+                    onSelect={() => setBranchForm({ ...branchForm, menuMode: "static" })}
+                    titulo="Solo enseñar la carta"
+                    descripcion="El comensal escanea y ve la carta al instante. No abre cuenta, no pide desde el móvil y no molesta a nadie para poder mirar. Sustituye a la carta de papel."
+                  />
+                </div>
+
+                {branchForm.menuMode === "static" && (
+                  <div className="mt-3 flex items-start gap-2 rounded-md bg-amber-500/10 p-3">
+                    <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      Mientras esté así, nadie puede pedir desde el móvil: los pedidos
+                      se toman como siempre, hablando con un mozo. Lo que ya estaba
+                      abierto se puede seguir cobrando con normalidad.
+                    </p>
+                  </div>
+                )}
+
+                {branchData?.public_code && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/40 p-3">
+                    <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                      Tu carta también tiene una dirección propia, sin mesa, para
+                      imprimir en la puerta o en el mostrador.
+                    </p>
+                    <a
+                      href={`/${branchData.slug}/carta/${branchData.public_code}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium hover:bg-muted"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      Ver mi carta
+                    </a>
+                  </div>
+                )}
+              </div>
+
               <SettingSwitch
                 id="autoApproveSessions"
                 checked={branchForm.autoApproveSessions}
                 onChange={(v) => setBranchForm({ ...branchForm, autoApproveSessions: v })}
+                // En solo lectura no hay entradas que aprobar: dejarlo visible
+                // haría creer que se puede pedir.
+                oculto={branchForm.menuMode === "static"}
                 disabled={!canWrite}
                 title="Entrada directa del comensal (auto-aprobación)"
                 description="Activado: quien escanea el QR pasa a la carta al instante. Desactivado: su solicitud queda en espera hasta que un mozo la aprueba, y caduca a los 10 minutos."
               />
-              <div className="flex items-start gap-2 rounded-md bg-muted/40 p-3">
+              <div
+                className={
+                  branchForm.menuMode === "static"
+                    ? "hidden"
+                    : "flex items-start gap-2 rounded-md bg-muted/40 p-3"
+                }
+              >
                 <Info className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
                 <p className="text-xs text-muted-foreground">
                   {branchForm.autoApproveSessions
@@ -337,5 +416,56 @@ export function BranchTab({ canWrite }: { canWrite: boolean }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Una de las dos formas de usar el QR.
+ *
+ * Son tarjetas y no un interruptor porque no es "encendido/apagado": son dos
+ * maneras distintas de trabajar, y cada una necesita su frase para que el dueño
+ * elija sabiendo. Un interruptor llamado "carta estática" no dice nada a quien
+ * nunca ha oído la expresión.
+ */
+function ModoCarta({
+  activo,
+  disabled,
+  onSelect,
+  titulo,
+  descripcion,
+}: {
+  activo: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+  titulo: string;
+  descripcion: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={activo}
+      disabled={disabled}
+      onClick={onSelect}
+      className={`rounded-lg border p-3 text-left transition-colors disabled:opacity-60 ${
+        activo
+          ? "border-primary bg-primary/5"
+          : "border-border hover:border-muted-foreground/40"
+      }`}
+    >
+      <span className="flex items-center gap-2">
+        <span
+          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+            activo ? "border-primary" : "border-muted-foreground/40"
+          }`}
+        >
+          {activo && <span className="h-2 w-2 rounded-full bg-primary" />}
+        </span>
+        <span className="text-sm font-medium">{titulo}</span>
+      </span>
+      <span className="mt-1.5 block text-xs leading-snug text-muted-foreground">
+        {descripcion}
+      </span>
+    </button>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
-import { ImageOff, UtensilsCrossed } from "lucide-react";
+import { GripVertical, ImageOff, Info, UtensilsCrossed } from "lucide-react";
+import { useReordenArrastre } from "./use-reorden";
 import { formatCurrency } from "@/lib/utils";
 import { Casilla, CasillaCabecera, Interruptor } from "./controls";
 import { estadoCabecera, type Producto } from "./menu-filters";
@@ -23,11 +24,30 @@ import { estadoCabecera, type Producto } from "./menu-filters";
  * categorías y la ficha de la derecha— y las siete columnas se aplastaban unas
  * contra otras. `@container` mide el contenedor, que es lo que importa.
  */
-const REJILLA =
-  "grid items-center gap-3 px-3.5 " +
+const BASE_REJILLA = "grid items-center gap-3 px-3.5 ";
+
+/**
+ * Las dos rejillas van ESCRITAS ENTERAS, no compuestas con plantillas.
+ *
+ * Tailwind busca cadenas de clases literales en el código fuente: una clase
+ * construida con `${...}` no aparece en el CSS compilado y la tabla se queda
+ * sin columnas. Es el tipo de fallo que no da error en ningún sitio.
+ *
+ * La manija ocupa columna propia en vez de compartir la de la casilla: dos
+ * controles en 20 px se tocan sin querer, y aquí uno mueve la carta que ve el
+ * comensal y el otro solo selecciona.
+ */
+const REJILLA_SIN_MANIJA =
+  BASE_REJILLA +
   "grid-cols-[20px_44px_minmax(0,1fr)_84px_46px] " +
   "@md:grid-cols-[20px_44px_minmax(0,1fr)_88px_84px_46px] " +
   "@2xl:grid-cols-[20px_44px_minmax(0,1fr)_88px_60px_84px_46px]";
+
+const REJILLA_CON_MANIJA =
+  BASE_REJILLA +
+  "grid-cols-[14px_20px_44px_minmax(0,1fr)_84px_46px] " +
+  "@md:grid-cols-[14px_20px_44px_minmax(0,1fr)_88px_84px_46px] " +
+  "@2xl:grid-cols-[14px_20px_44px_minmax(0,1fr)_88px_60px_84px_46px]";
 
 function Miniatura({ producto }: { producto: Producto }) {
   if (!producto.imageUrl) {
@@ -66,6 +86,8 @@ export function ProductsTable({
   onAlternarTodos,
   onAbrir,
   onAlternarDisponible,
+  motivoNoArrastrable,
+  onReordenar,
 }: {
   productos: Producto[];
   categorias: { id: string; name: string }[];
@@ -79,16 +101,39 @@ export function ProductsTable({
   onAlternarTodos: () => void;
   onAbrir: (id: string) => void;
   onAlternarDisponible: (p: Producto) => void;
+  /** Por qué no se puede arrastrar ahora, o `null` si sí se puede. */
+  motivoNoArrastrable: string | null;
+  onReordenar: (ids: string[]) => void;
 }) {
   const nombrePorCategoria = new Map(categorias.map((c) => [c.id, c.name]));
-  const visibles = productos.map((p) => p.id);
+
+  /*
+    Arrastrar solo tiene sentido cuando lo que ves ES la carta: una categoría
+    concreta, ordenada por su posición y sin filtros. Con la vista ordenada por
+    precio, el índice de la fila no dice nada del orden real; con un filtro
+    activo, entre dos filas visibles puede haber tres platos escondidos.
+  */
+  const puedeArrastrar = motivoNoArrastrable === null;
+
+  const reorden = useReordenArrastre({
+    ids: productos.map((p) => p.id),
+    habilitado: puedeArrastrar,
+    onSoltar: onReordenar,
+  });
+
+  const porId = new Map(productos.map((p) => [p.id, p]));
+  const enOrden = reorden.visibles.map((id) => porId.get(id)).filter((p): p is Producto => !!p);
+
+  const visibles = enOrden.map((p) => p.id);
   const estado = estadoCabecera(visibles, seleccion);
+  const REJILLA = puedeArrastrar ? REJILLA_CON_MANIJA : REJILLA_SIN_MANIJA;
 
   return (
     <div className="@container flex min-h-0 flex-col overflow-hidden rounded-2xl bg-muted/25">
       <div
         className={`${REJILLA} h-9 shrink-0 border-b border-border/60 text-[10.5px] font-bold uppercase tracking-[0.14em] text-muted-foreground`}
       >
+        {puedeArrastrar && <span />}
         {puedeSeleccionar ? (
           <CasillaCabecera
             estado={estado}
@@ -106,14 +151,25 @@ export function ProductsTable({
         <span className="text-right">Disp.</span>
       </div>
 
+      {/* Se dice POR QUÉ no se puede mover, en vez de dejar la manija fuera sin
+          explicación: quien viene a ordenar la carta la busca y no la encuentra. */}
+      {motivoNoArrastrable && productos.length > 1 && (
+        <p className="flex shrink-0 items-start gap-2 border-b border-border/40 bg-muted/40 px-3.5 py-2 text-[11.5px] leading-snug text-muted-foreground">
+          <Info className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+          {motivoNoArrastrable}
+        </p>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {productos.map((p) => {
+        {enOrden.map((p) => {
           const marcado = seleccion.includes(p.id);
           const activo = productoActivoId === p.id && !marcado;
+          const arrastrando = reorden.arrastrandoId === p.id;
 
           return (
             <div
               key={p.id}
+              ref={(el) => reorden.registrarFila(p.id, el)}
               role="button"
               tabIndex={0}
               onClick={() => onAbrir(p.id)}
@@ -129,8 +185,19 @@ export function ProductsTable({
                   : activo
                     ? "bg-muted/60 shadow-[inset_3px_0_0_var(--foreground)]"
                     : ""
-              } ${p.isAvailable ? "" : "opacity-60"}`}
+              } ${p.isAvailable ? "" : "opacity-60"} ${arrastrando ? "opacity-60" : ""}`}
             >
+              {puedeArrastrar && (
+                <span
+                  {...reorden.manija(p.id)}
+                  role="button"
+                  aria-label={`Mover ${p.name}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex cursor-grab justify-center text-muted-foreground/40 hover:text-muted-foreground active:cursor-grabbing"
+                >
+                  <GripVertical className="h-3.5 w-3.5" />
+                </span>
+              )}
               {puedeSeleccionar ? (
                 <Casilla
                   marcada={marcado}

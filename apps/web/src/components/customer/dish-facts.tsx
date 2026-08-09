@@ -15,7 +15,8 @@ import { cn } from "@/lib/utils";
  * no cargó los alérgenos, no se finge que los tiene.
  */
 
-const ALERGENOS: Record<string, string> = {
+/** Traducción de alérgenos. Se exporta: la lee también la carta de solo lectura. */
+export const ALERGENOS: Record<string, string> = {
   gluten: "gluten",
   crustaceans: "crustáceos",
   eggs: "huevo",
@@ -33,7 +34,7 @@ const ALERGENOS: Record<string, string> = {
   shellfish: "mariscos",
 };
 
-const DIETAS: Record<string, string> = {
+export const DIETAS: Record<string, string> = {
   vegetarian: "Vegetariano",
   vegan: "Vegano",
   gluten_free: "Sin gluten",
@@ -46,7 +47,7 @@ const DIETAS: Record<string, string> = {
 };
 
 /** El picante se dice con palabras: "3" no significa nada para quien no cocina. */
-const PICANTE = ["", "Poco picante", "Picante", "Muy picante", "Bien picante", "Ardiente"];
+export const PICANTE = ["", "Poco picante", "Picante", "Muy picante", "Bien picante", "Ardiente"];
 
 export function DishFacts({
   prepTime,

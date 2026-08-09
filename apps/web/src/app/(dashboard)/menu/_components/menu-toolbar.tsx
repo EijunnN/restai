@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Search } from "lucide-react";
+import { ExternalLink, Plus, Search } from "lucide-react";
 import { Button } from "@restai/ui/components/button";
 
 /**
@@ -21,6 +21,7 @@ export function MenuToolbar({
   onBusqueda,
   puedeCrear,
   onCrear,
+  urlCarta,
 }: {
   subtitulo: string;
   vista: "productos" | "modificadores";
@@ -31,6 +32,8 @@ export function MenuToolbar({
   onBusqueda: (v: string) => void;
   puedeCrear: boolean;
   onCrear: () => void;
+  /** Dirección pública de la carta. Sin ella el botón no se pinta. */
+  urlCarta?: string | null;
 }) {
   const enProductos = vista === "productos";
 
@@ -87,6 +90,23 @@ export function MenuToolbar({
           className="h-9 w-full rounded-xl bg-muted pl-9 pr-3 text-[13px] outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
       </div>
+
+      {/*
+        Abre EXACTAMENTE lo que ve el comensal, no una imitación. Es la forma
+        más rápida de descubrir que un plato salió sin foto o que una categoría
+        se quedó desactivada, cosas que en esta pantalla no se notan.
+      */}
+      {urlCarta && (
+        <a
+          href={urlCarta}
+          target="_blank"
+          rel="noreferrer"
+          className="flex h-9 items-center gap-1.5 rounded-xl bg-muted px-3 text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ExternalLink className="h-[15px] w-[15px]" />
+          Ver carta
+        </a>
+      )}
 
       {puedeCrear && (
         <Button size="sm" className="h-9 rounded-xl" onClick={onCrear}>

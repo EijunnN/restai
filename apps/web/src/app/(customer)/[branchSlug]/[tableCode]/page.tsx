@@ -120,6 +120,18 @@ function CustomerEntryPageContent({
           // El servidor devuelve el número de mesa junto al estado de sesión.
           const num = result.data?.tableNumber ?? result.data?.table_number;
           if (typeof num === "number") setTableNumber(num);
+
+          /*
+            Carta de solo lectura: aquí no hay nada que pedirle al comensal.
+            Enseñarle un formulario con su nombre para después no dejarle pedir
+            sería hacerle trabajar para nada, así que se va derecho a la carta.
+            `replace` y no `push`: volver atrás desde la carta debe salir del
+            local, no traerlo otra vez a esta pantalla intermedia.
+          */
+          if (result.data?.menu_mode === "static") {
+            router.replace(`/${branchSlug}/${tableCode}/menu`);
+            return;
+          }
         }
         if (result.success && result.data.hasSession) {
           setExistingSession(result.data);

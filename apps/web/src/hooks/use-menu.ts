@@ -149,6 +149,46 @@ export function useBulkDeleteMenuItems() {
   });
 }
 
+/**
+ * Reordenar. Las tres comparten contrato: se envía la lista COMPLETA del ámbito
+ * en su orden final y el servidor escribe 0,1,2… en una transacción.
+ */
+export function useReorderCategories() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) =>
+      apiFetch("/api/menu/categories/reorder", {
+        method: "PATCH",
+        body: JSON.stringify({ ids }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
+export function useReorderMenuItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ categoryId, ids }: { categoryId: string; ids: string[] }) =>
+      apiFetch("/api/menu/items/reorder", {
+        method: "PATCH",
+        body: JSON.stringify({ categoryId, ids }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
+export function useReorderModifiers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, ids }: { groupId: string; ids: string[] }) =>
+      apiFetch(`/api/menu/modifier-groups/${groupId}/modifiers/reorder`, {
+        method: "PATCH",
+        body: JSON.stringify({ ids }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["menu"] }),
+  });
+}
+
 // --- Modifier Groups ---
 
 export function useModifierGroups() {

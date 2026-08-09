@@ -896,10 +896,15 @@ customer.get("/:branchSlug/:tableCode/check-session", async (c) => {
   const resolved = await resolvePublicTable(branchSlug, tableCode);
 
   if (!resolved.ok) {
-    return c.json({ success: true, data: { hasSession: false } });
+    return c.json({ success: true, data: { hasSession: false, menu_mode: "dynamic" } });
   }
 
   const { branch, table } = resolved;
+
+  // El modo viaja también aquí, y no solo en /menu: es la PRIMERA llamada que
+  // hace la pantalla de entrada, y sin él tendría que pedir la carta entera solo
+  // para saber si debe enseñar un formulario que en modo estático no pinta nada.
+  const menu_mode = branch.menu_mode;
 
   // Nunca se filtra el sessionId ni el nombre del ocupante a un anónimo: solo si
   // hay sesión y en qué estado.
@@ -910,10 +915,10 @@ customer.get("/:branchSlug/:tableCode/check-session", async (c) => {
   });
 
   if (occupancy === "free") {
-    return c.json({ success: true, data: { hasSession: false } });
+    return c.json({ success: true, data: { hasSession: false, menu_mode } });
   }
 
-  return c.json({ success: true, data: { hasSession: true, status: occupancy } });
+  return c.json({ success: true, data: { hasSession: true, status: occupancy, menu_mode } });
 });
 
 // POST /:branchSlug/:tableCode/session - Start session (public)

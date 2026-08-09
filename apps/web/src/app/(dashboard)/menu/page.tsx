@@ -17,6 +17,8 @@ import {
   useDeleteModifierGroup,
   useMenuItems,
   useModifierGroups,
+  useReorderCategories,
+  useReorderMenuItems,
 } from "@/hooks/use-menu";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CategoryDialog } from "./_components/category-dialog";
@@ -47,6 +49,7 @@ import {
   type GrupoConUso,
   type Producto,
 } from "./_components/menu-filters";
+import { motivoNoArrastrable } from "./_components/reorder";
 
 const FILTROS_GRUPO = [
   { clave: "todos" as const, label: "Todos" },
@@ -83,6 +86,8 @@ export default function MenuPage() {
   const borrarProducto = useDeleteMenuItem();
   const borrarGrupo = useDeleteModifierGroup();
   const { alternar, enCambio } = useToggleMenuAvailability();
+  const reordenarCategorias = useReorderCategories();
+  const reordenarProductos = useReorderMenuItems();
 
   const [vista, setVista] = useState<"productos" | "modificadores">("productos");
   const [busqueda, setBusqueda] = useState("");
@@ -121,6 +126,18 @@ export default function MenuPage() {
     [productos, categoria, busqueda, filtro, orden],
   );
 
+  /*
+    Arrastrar escribe el orden de la carta del comensal. Solo puede hacerse
+    cuando lo que se ve ES esa carta: una categoría concreta, ordenada por su
+    posición y sin nada oculto por un filtro o una búsqueda.
+  */
+  const motivoSinArrastre = motivoNoArrastrable({
+    ordenadoPorCarta: orden === "carta",
+    categoriaConcreta: categoria !== "all",
+    hayFiltro: filtro !== "todos",
+    hayBusqueda: busqueda.trim() !== "",
+  });
+
   const conteo = useMemo(() => contarFiltros(productos), [productos]);
   const gruposVisibles = useMemo(
     () => filtrarGrupos(grupos, busqueda, filtroGrupo),
@@ -131,7 +148,12 @@ export default function MenuPage() {
   const seleccionados = productos.filter((p) => seleccion.includes(p.id));
   const productoActivo = productos.find((p) => p.id === productoActivoId) ?? null;
   const grupoActivo = grupos.find((g) => g.id === grupoActivoId) ?? null;
-  const nombreSede = sedes?.find((s: any) => s.id === branchId)?.name;
+  const sedeActual = sedes?.find((s: any) => s.id === branchId);
+  const nombreSede = sedeActual?.name;
+  const urlCarta =
+    sedeActual?.slug && sedeActual?.public_code
+      ? `/${sedeActual.slug}/carta/${sedeActual.public_code}`
+      : null;
 
   const subtitulo = [
     nombreSede,
@@ -140,6 +162,36 @@ export default function MenuPage() {
   ]
     .filter(Boolean)
     .join(" · ");
+
+  /**
+   * Guardar el nuevo orden.
+   *
+   * Se guarda al soltar, sin botón: un "Guardar orden" que hay que acordarse de
+   * pulsar se olvida, y el trabajo se pierde al cambiar de pantalla. El 409 no
+   * es un fallo del usuario —alguien creó o borró algo mientras arrastraba— así
+   * que se cuenta como lo que es y se recarga.
+   */
+  const guardarOrden = async (
+    ejecutar: () => Promise<unknown>,
+    /** Frase completa: el género no es el mismo en "platos" y "categorías". */
+    aviso: string,
+  ) => {
+    try {
+      await ejecutar();
+      toast.success(aviso, {
+        description: "Este es el orden que ve el comensal.",
+      });
+    } catch (err: any) {
+      const conflicto = err?.status === 409;
+      toast.error(conflicto ? "La lista cambió mientras movías" : "No se pudo guardar el orden", {
+        description: conflicto
+          ? "Alguien añadió o quitó algo. Se ha recargado: vuelve a intentarlo."
+          : err?.message,
+      });
+      categoriasQ.refetch();
+      itemsQ.refetch();
+    }
+  };
 
   const confirmarBorrado = async () => {
     if (!porBorrar) return;
@@ -279,6 +331,7 @@ export default function MenuPage() {
         onBusqueda={setBusqueda}
         puedeCrear={puedeCrear}
         onCrear={() => (vista === "productos" ? setDialogoProducto(true) : setDialogoGrupo(true))}
+        urlCarta={urlCarta}
       />
 
       {vista === "productos" ? (
@@ -324,6 +377,9 @@ export default function MenuPage() {
               onBorrar={(cat) =>
                 setPorBorrar({ tipo: "categoria", id: cat.id, nombre: cat.name })
               }
+              onReordenar={(ids) =>
+                guardarOrden(() => reordenarCategorias.mutateAsync(ids), "Categorías reordenadas")
+              }
             />
           </aside>
         )}
@@ -346,6 +402,13 @@ export default function MenuPage() {
               }
               onAbrir={setProductoActivoId}
               onAlternarDisponible={(p) => alternar(p.id, p.name, !p.isAvailable)}
+              motivoNoArrastrable={puedeEditar ? motivoSinArrastre : "Tu rol puede consultar la carta, pero no reordenarla."}
+              onReordenar={(ids) =>
+                guardarOrden(
+                  () => reordenarProductos.mutateAsync({ categoryId: categoria, ids }),
+                  "Platos reordenados",
+                )
+              }
             />
           ) : (
             <ModifierGroupsList

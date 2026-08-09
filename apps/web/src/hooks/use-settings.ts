@@ -38,6 +38,10 @@ export interface BranchSettings {
   timezone: string | null;
   currency: string;
   is_active: boolean;
+  /** `dynamic` o `static`. Columna propia, no una clave de `settings`. */
+  menu_mode?: string;
+  /** Identificador único global de la sede, para su carta pública. */
+  public_code?: string;
   settings: Record<string, any> | null;
 }
 
@@ -48,6 +52,9 @@ export interface Branch {
   address: string | null;
   phone?: string | null;
   is_active?: boolean;
+  /** Único global: la carta pública de la sede se resuelve por aquí. */
+  public_code?: string;
+  menu_mode?: string;
 }
 
 export interface UpdateOrgInput {
@@ -68,6 +75,8 @@ export interface UpdateBranchInput {
   settings?: Record<string, unknown>;
   inventoryEnabled?: boolean;
   waiterTableAssignmentEnabled?: boolean;
+  /** `dynamic` (se pide desde la mesa) o `static` (el QR solo enseña la carta). */
+  menuMode?: "dynamic" | "static";
 }
 
 export function useOrgSettings() {

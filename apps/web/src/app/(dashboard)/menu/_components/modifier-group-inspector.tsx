@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "@restai/ui/components/button";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
-import { Check, Copy, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, Copy, GripVertical, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { formatCurrency } from "@/lib/utils";
 import {
@@ -12,9 +12,11 @@ import {
   useCreateModifierGroup,
   useDeleteModifier,
   useModifierGroupItems,
+  useReorderModifiers,
   useUpdateModifier,
   useUpdateModifierGroup,
 } from "@/hooks/use-menu";
+import { useReordenArrastre } from "./use-reorden";
 import { Interruptor } from "./controls";
 import { describirRegla, type GrupoConUso } from "./menu-filters";
 
@@ -72,6 +74,31 @@ export function ModifierGroupInspector({
   const [opcionPrecio, setOpcionPrecio] = useState("");
 
   const opciones: any[] = grupo.modifiers ?? [];
+
+  /*
+    En una escala el orden ES el significado: "Sin ají, Suave, Picante, Bien
+    picante" leído en cualquier otro orden no dice nada. Aquí no hace falta
+    ninguna guarda como en la tabla de platos: esta lista siempre es completa y
+    siempre está en el orden real del grupo.
+  */
+  const reordenarOpciones = useReorderModifiers();
+  const reorden = useReordenArrastre({
+    ids: opciones.map((o: any) => o.id),
+    habilitado: puedeEditar,
+    onSoltar: async (ids) => {
+      try {
+        await reordenarOpciones.mutateAsync({ groupId: grupo.id, ids });
+      } catch (err: any) {
+        reorden.revertir();
+        toast.error("No se pudo guardar el orden", { description: err?.message });
+      }
+    },
+  });
+
+  const porId = new Map(opciones.map((o: any) => [o.id, o]));
+  const opcionesEnOrden = reorden.visibles
+    .map((id) => porId.get(id))
+    .filter((o): o is any => !!o);
   // El endpoint devuelve `{group, items}`, no una lista pelada: leer `platos`
   // directamente daba un objeto de dos claves que se contaba como dos platos.
   const usos: any[] = platos?.items ?? [];
@@ -340,7 +367,7 @@ export function ModifierGroupInspector({
               </p>
             )}
 
-            {opciones.map((o: any) =>
+            {opcionesEnOrden.map((o: any) =>
               editandoOpcion === o.id ? (
                 <div key={o.id} className="flex items-center gap-2 rounded-xl bg-muted/60 p-2">
                   <Input
@@ -368,8 +395,21 @@ export function ModifierGroupInspector({
               ) : (
                 <div
                   key={o.id}
-                  className="flex h-[42px] items-center gap-2.5 rounded-xl bg-muted/60 px-3"
+                  ref={(el) => reorden.registrarFila(o.id, el)}
+                  className={`flex h-[42px] items-center gap-2.5 rounded-xl bg-muted/60 px-3 ${
+                    reorden.arrastrandoId === o.id ? "opacity-60" : ""
+                  }`}
                 >
+                  {puedeEditar && (
+                    <button
+                      type="button"
+                      {...reorden.manija(o.id)}
+                      aria-label={`Mover ${o.name}`}
+                      className="-ml-1 flex shrink-0 cursor-grab text-muted-foreground/40 hover:text-muted-foreground active:cursor-grabbing"
+                    >
+                      <GripVertical className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <span className="min-w-0 flex-1 truncate text-[13px]">{o.name}</span>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     {o.price > 0 ? `+${formatCurrency(o.price)}` : "Incluido"}

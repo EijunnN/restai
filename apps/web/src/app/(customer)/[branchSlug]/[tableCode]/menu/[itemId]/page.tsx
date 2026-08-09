@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { useCartStore } from "@/stores/cart-store";
-import { DishFacts } from "../_components/dish-facts";
+import { DishFacts } from "@/components/customer/dish-facts";
 import { InCartNote } from "../_components/in-cart-note";
 import { RelatedDishes } from "../_components/related-dishes";
 import {
