@@ -17,6 +17,8 @@ import {
   bulkUpdateMenuItemsSchema,
   bulkItemIdsSchema,
   bulkLinkModifierGroupSchema,
+  reorderSchema,
+  reorderItemsSchema,
 } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
@@ -36,6 +38,9 @@ menu.use("*", requireBranch);
 menu.get("/categories", requirePermission("menu:read"), async (c) => {
   const tenant = c.get("tenant") as any;
 
+  // Sin este orden, la columna de categorías salía como quisiera Postgres:
+  // arrastrarlas para colocarlas guardaba bien y la pantalla seguía enseñándolas
+  // en otro orden en la siguiente recarga, así que el arrastre parecía roto.
   const categories = await db
     .select()
     .from(schema.menuCategories)
@@ -44,10 +49,114 @@ menu.get("/categories", requirePermission("menu:read"), async (c) => {
         eq(schema.menuCategories.branch_id, tenant.branchId),
         eq(schema.menuCategories.organization_id, tenant.organizationId),
       ),
-    );
+    )
+    .orderBy(asc(schema.menuCategories.sort_order), asc(schema.menuCategories.name));
 
   return c.json({ success: true, data: categories });
 });
+
+/**
+ * Reordenar: se recibe la lista COMPLETA del ámbito en su orden final y se
+ * escriben las posiciones 0,1,2… en UNA sentencia dentro de una transacción.
+ *
+ * Tres decisiones que no son de estilo:
+ *
+ * - **Lista completa, no "este al puesto 4".** Con posiciones relativas, dos
+ *   administradores moviendo a la vez dejan dos elementos en el mismo puesto y
+ *   un hueco, y nadie se entera hasta que el comensal ve la carta rara.
+ * - **409 si la lista no cuadra.** Si alguien creó o borró algo mientras el
+ *   otro arrastraba, escribir de todas formas colocaría lo nuevo en un sitio
+ *   que nadie eligió. Mejor rechazar y que la pantalla recargue.
+ * - **Un solo UPDATE con CASE.** N updates en bucle son N viajes y una ventana
+ *   más larga con las filas bloqueadas.
+ */
+function expresionDeOrden(columnaId: any, columnaOrden: any, ids: string[]) {
+  const casos = sql.join(
+    // El `::int` no es adorno: sin él Postgres trata el parámetro como texto y
+    // rechaza la sentencia entera ("la columna sort_order es de tipo integer
+    // pero la expresión es de tipo text").
+    ids.map((id, indice) => sql`when ${columnaId} = ${id}::uuid then ${indice}::int`),
+    sql` `,
+  );
+
+  // El `else` conserva el valor actual. Sin él, una fila que entrara en el
+  // ámbito y no viniera en la lista recibiría NULL y reventaría contra el
+  // NOT NULL con un 500. La comprobación previa hace que no debería ocurrir;
+  // esto decide si ese "no debería" acaba en un error feo o en no tocar nada.
+  return sql`case ${casos} else ${columnaOrden} end`;
+}
+
+/**
+ * La siguiente posición libre del ámbito.
+ *
+ * Lo que se creaba nacía en la posición 0 —el primero de la carta— porque el
+ * validador tenía `.default(0)`. Un plato recién dado de alta se colaba delante
+ * del plato estrella sin que nadie lo pidiera, y en cuanto el orden empieza a
+ * importar de verdad eso es un problema diario.
+ */
+async function siguientePosicion(
+  ejecutor: typeof db,
+  tabla: any,
+  columnaOrden: any,
+  ambito: any,
+): Promise<number> {
+  const [fila] = await ejecutor
+    .select({ maximo: sql<number | null>`max(${columnaOrden})` })
+    .from(tabla)
+    .where(ambito);
+  return (fila?.maximo ?? -1) + 1;
+}
+
+// PATCH /categories/reorder — debe ir ANTES que /categories/:id
+menu.patch(
+  "/categories/reorder",
+  requirePermission("menu:update"),
+  zValidator("json", reorderSchema),
+  async (c) => {
+    const { ids } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const ambito = and(
+      eq(schema.menuCategories.branch_id, tenant.branchId),
+      eq(schema.menuCategories.organization_id, tenant.organizationId),
+    );
+
+    const desfasada = await db.transaction(async (tx) => {
+      const actuales = await tx
+        .select({ id: schema.menuCategories.id })
+        .from(schema.menuCategories)
+        .where(ambito)
+        .for("update");
+
+      const enviadas = new Set(ids);
+      if (actuales.length !== ids.length || actuales.some((f) => !enviadas.has(f.id))) {
+        return true;
+      }
+
+      await tx
+        .update(schema.menuCategories)
+        .set({ sort_order: expresionDeOrden(schema.menuCategories.id, schema.menuCategories.sort_order, ids) })
+        .where(ambito);
+
+      return false;
+    });
+
+    if (desfasada) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "La lista de categorías ha cambiado. Recarga y vuelve a ordenarla.",
+          },
+        },
+        409,
+      );
+    }
+
+    return c.json({ success: true, data: { reordered: ids.length } });
+  },
+);
 
 // POST /categories
 menu.post(
@@ -66,7 +175,17 @@ menu.post(
         name: body.name,
         description: body.description,
         image_url: body.imageUrl,
-        sort_order: body.sortOrder,
+        sort_order:
+          body.sortOrder ??
+          (await siguientePosicion(
+            db,
+            schema.menuCategories,
+            schema.menuCategories.sort_order,
+            and(
+              eq(schema.menuCategories.branch_id, tenant.branchId),
+              eq(schema.menuCategories.organization_id, tenant.organizationId),
+            ),
+          )),
         is_active: body.isActive,
       })
       .returning();
@@ -250,6 +369,63 @@ menu.get("/items", requirePermission("menu:read"), async (c) => {
     })),
   });
 });
+
+// PATCH /items/reorder — el orden de los platos DENTRO de una categoría
+menu.patch(
+  "/items/reorder",
+  requirePermission("menu:update"),
+  zValidator("json", reorderItemsSchema),
+  async (c) => {
+    const { ids, categoryId } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // El ámbito es la categoría, no la sede: la posición de un plato es
+    // relativa a los de su categoría, porque así se agrupa la carta. Reindexar
+    // una mezcla de categorías escribiría posiciones cruzadas.
+    const ambito = and(
+      eq(schema.menuItems.category_id, categoryId),
+      eq(schema.menuItems.branch_id, tenant.branchId),
+      eq(schema.menuItems.organization_id, tenant.organizationId),
+      isNull(schema.menuItems.deleted_at),
+    );
+
+    const desfasada = await db.transaction(async (tx) => {
+      const actuales = await tx
+        .select({ id: schema.menuItems.id })
+        .from(schema.menuItems)
+        .where(ambito)
+        .for("update");
+
+      const enviados = new Set(ids);
+      if (actuales.length !== ids.length || actuales.some((f) => !enviados.has(f.id))) {
+        return true;
+      }
+
+      await tx
+        .update(schema.menuItems)
+        .set({ sort_order: expresionDeOrden(schema.menuItems.id, schema.menuItems.sort_order, ids) })
+        .where(ambito);
+
+      return false;
+    });
+
+    if (desfasada) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message:
+              "Los productos de esta categoría han cambiado. Recarga y vuelve a ordenarlos.",
+          },
+        },
+        409,
+      );
+    }
+
+    return c.json({ success: true, data: { reordered: ids.length } });
+  },
+);
 
 /**
  * Cambia varios productos de una vez, dentro de UNA transacción.
@@ -474,7 +650,19 @@ menu.post(
         price: body.price,
         image_url: body.imageUrl,
         is_available: body.isAvailable,
-        sort_order: body.sortOrder,
+        // Al final de SU categoría, no al principio de la carta.
+        sort_order:
+          body.sortOrder ??
+          (await siguientePosicion(
+            db,
+            schema.menuItems,
+            schema.menuItems.sort_order,
+            and(
+              eq(schema.menuItems.category_id, body.categoryId),
+              eq(schema.menuItems.branch_id, tenant.branchId),
+              isNull(schema.menuItems.deleted_at),
+            ),
+          )),
         preparation_time_min: body.preparationTimeMin,
         // La carta del comensal ya pinta estos tres, pero hasta ahora no había
         // forma de cargarlos: solo los ponía el seed.
@@ -841,6 +1029,14 @@ menu.post(
         name: body.name,
         price: body.price,
         is_available: body.isAvailable,
+        // Al final del grupo: quien añade "Bien picante" a una escala lo quiere
+        // detrás de "Picante", no delante de "Sin ají".
+        sort_order: await siguientePosicion(
+          db,
+          schema.modifiers,
+          schema.modifiers.sort_order,
+          eq(schema.modifiers.group_id, body.groupId),
+        ),
       })
       .returning();
 
@@ -924,7 +1120,10 @@ menu.get("/modifier-groups", requirePermission("menu:read"), async (c) => {
         groupIds.length === 1
           ? eq(schema.modifiers.group_id, groupIds[0])
           : inArray(schema.modifiers.group_id, groupIds)
-      );
+      )
+      // En una escala —"Sin ají, Suave, Picante, Bien picante"— el orden ES el
+      // significado, y sin esto salía el que quisiera Postgres.
+      .orderBy(asc(schema.modifiers.sort_order), asc(schema.modifiers.name));
   }
 
   /*
@@ -1149,6 +1348,75 @@ menu.delete(
     }
 
     return c.json({ success: true, data: { message: "Grupo eliminado" } });
+  },
+);
+
+// PATCH /modifier-groups/:id/modifiers/reorder — el orden de las opciones
+menu.patch(
+  "/modifier-groups/:id/modifiers/reorder",
+  requirePermission("menu:update"),
+  zValidator("param", idParamSchema),
+  zValidator("json", reorderSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const { ids } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    // La tabla `modifiers` no lleva columnas de sede: se comprueba a través del
+    // grupo, o cualquiera reordenaría las opciones de otro restaurante.
+    const [grupo] = await db
+      .select({ id: schema.modifierGroups.id })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, id),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!grupo) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Grupo no encontrado" } },
+        404,
+      );
+    }
+
+    const desfasada = await db.transaction(async (tx) => {
+      const actuales = await tx
+        .select({ id: schema.modifiers.id })
+        .from(schema.modifiers)
+        .where(eq(schema.modifiers.group_id, id))
+        .for("update");
+
+      const enviados = new Set(ids);
+      if (actuales.length !== ids.length || actuales.some((f) => !enviados.has(f.id))) {
+        return true;
+      }
+
+      await tx
+        .update(schema.modifiers)
+        .set({ sort_order: expresionDeOrden(schema.modifiers.id, schema.modifiers.sort_order, ids) })
+        .where(eq(schema.modifiers.group_id, id));
+
+      return false;
+    });
+
+    if (desfasada) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "Las opciones de este grupo han cambiado. Recarga y vuelve a ordenarlas.",
+          },
+        },
+        409,
+      );
+    }
+
+    return c.json({ success: true, data: { reordered: ids.length } });
   },
 );
 

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, or, inArray, sql, desc, asc, isNull, gte, lt, lte } from "drizzle-orm";
@@ -77,6 +78,11 @@ const publicBranchColumns = {
   tax_rate: schema.branches.tax_rate,
   is_active: schema.branches.is_active,
   settings: schema.branches.settings,
+  /**
+   * `static` o `dynamic`. Decide si el QR sirve para pedir o solo para leer.
+   * Viaja al comensal porque la pantalla necesita saber si pintar el carrito.
+   */
+  menu_mode: schema.branches.menu_mode,
 };
 
 type PublicBranch = {
@@ -88,7 +94,55 @@ type PublicBranch = {
   tax_rate: number;
   is_active: boolean;
   settings: unknown;
+  menu_mode: string;
 };
+
+/**
+ * Carta estática: el QR sirve para LEER, no para pedir.
+ *
+ * El modo no puede vivir solo en la pantalla. Un enlace guardado en el
+ * navegador, un token de una visita anterior o una petición hecha a mano se
+ * saltarían una comprobación que estuviera únicamente en el móvil del comensal,
+ * y el local acabaría con comandas que no espera nadie.
+ *
+ * Lo que NO bloquea: cerrar y cobrar lo que ya estaba abierto. Cambiar de modo a
+ * media tarde no puede dejar una mesa sin poder pagar.
+ */
+function esCartaEstatica(branch: { menu_mode?: string | null }): boolean {
+  return branch.menu_mode === "static";
+}
+
+const ERROR_CARTA_ESTATICA = {
+  success: false,
+  error: {
+    code: "STATIC_MENU",
+    message: "Este local tiene la carta en modo solo lectura. Para pedir, avisa a un mozo.",
+  },
+} as const;
+
+/**
+ * Cierra las rutas de PEDIR cuando la sede está en modo carta estática.
+ *
+ * Hace falta ADEMÁS de cerrar la creación de sesiones: quien tenía una visita
+ * abierta cuando el dueño cambió el modo conserva su token, y sin esto seguiría
+ * mandando comandas. La comprobación va contra la sede del propio token, nunca
+ * contra algo que mande el cliente.
+ */
+const bloquearSiCartaEstatica = createMiddleware<AppEnv>(async (c, next) => {
+  const user = c.get("user") as any;
+
+  const [sede] = await db
+    .select({ menu_mode: schema.branches.menu_mode })
+    .from(schema.branches)
+    .where(eq(schema.branches.id, user.branch))
+    .limit(1);
+
+  if (sede && esCartaEstatica(sede)) {
+    return c.json(ERROR_CARTA_ESTATICA, 409);
+  }
+
+  await next();
+});
 
 type PublicTable = {
   id: string;
@@ -358,6 +412,56 @@ async function publishSessionStarted(params: {
   }
 }
 
+/**
+ * GET /carta/:publicCode — la carta de una sede, sin mesa y sin sesión.
+ *
+ * Es lo que hace posible el modo estático: un QR pegado en la puerta o en la
+ * mesa que sustituye a la carta de papel. También es la vista previa que abre
+ * el administrador desde el panel, para ver exactamente lo que ve el comensal.
+ *
+ * Se resuelve por `public_code` y NO por slug. El slug de sede solo es único
+ * dentro de su organización, así que `/miraflores/carta` serviría la carta de
+ * otro restaurante el día que otra cadena registre ese nombre. Es el mismo
+ * motivo por el que el flujo con mesa resuelve por el código del QR.
+ *
+ * Nunca permite pedir: no hay mesa, no hay sesión y no se emite ningún token.
+ * Por eso puede ser pública en los dos modos.
+ */
+customer.get("/carta/:publicCode", async (c) => {
+  const publicCode = normalizeShortCode(c.req.param("publicCode"));
+
+  const [branch] = await db
+    .select(publicBranchColumns)
+    .from(schema.branches)
+    .where(eq(schema.branches.public_code, publicCode))
+    .limit(1);
+
+  if (!branch || !branch.is_active) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: "Carta no encontrada" } },
+      404,
+    );
+  }
+
+  const { categories, items } = await cargarCartaPublica(branch);
+
+  return c.json({
+    success: true,
+    data: {
+      branch: {
+        id: branch.id,
+        name: branch.name,
+        slug: branch.slug,
+        currency: branch.currency,
+        tax_rate: branch.tax_rate,
+        menu_mode: branch.menu_mode,
+      },
+      categories,
+      items,
+    },
+  });
+});
+
 // GET /:branchSlug/tables/by-code/:code - Resolver mesa por código corto (público)
 //
 // Plan B del QR: sin cámara, sin datos, con el sticker despegado o con un
@@ -449,6 +553,7 @@ customer.get("/:branchSlug/tables/by-code/:code", async (c) => {
         slug: branch.slug,
         currency: branch.currency,
         tax_rate: branch.tax_rate,
+        menu_mode: branch.menu_mode,
       },
       table,
       session: {
@@ -459,38 +564,16 @@ customer.get("/:branchSlug/tables/by-code/:code", async (c) => {
   });
 });
 
-// GET /:branchSlug/:tableCode/menu - Get menu for branch (public)
-customer.get("/:branchSlug/:tableCode/menu", async (c) => {
-  const branchSlug = c.req.param("branchSlug");
-  const tableCode = c.req.param("tableCode");
-
-  // Sede y mesa a la vez, resueltas por el QR (único global) y confirmadas con
-  // el slug: nunca se elige una sede arbitraria entre varias homónimas.
-  const resolved = await resolvePublicTable(branchSlug, tableCode);
-
-  if (!resolved.ok) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: "NOT_FOUND",
-          message: resolved.reason === "table" ? "Mesa no encontrada" : "Sucursal no encontrada",
-        },
-      },
-      404,
-    );
-  }
-
-  const { branch, table } = resolved;
-
-  if (!branch.is_active) {
-    return c.json(
-      { success: false, error: { code: "NOT_FOUND", message: "Sucursal no encontrada" } },
-      404,
-    );
-  }
-
-  // Get active categories and items
+/**
+ * Categorías y platos que ve el público, con `has_modifiers`.
+ *
+ * Vive aparte porque lo sirven DOS rutas: la del QR de la mesa y la carta de
+ * sede sin mesa. Con el cuerpo duplicado, arreglar un filtro en una y olvidarlo
+ * en la otra significa que el comensal ve una carta distinta según por dónde
+ * entre, que es el peor fallo posible en una carta.
+ */
+async function cargarCartaPublica(branch: { id: string; organization_id: string }) {
+  // Categorías activas y sus platos.
   const categories = await db
     .select()
     .from(schema.menuCategories)
@@ -555,6 +638,42 @@ customer.get("/:branchSlug/:tableCode/menu", async (c) => {
     has_modifiers: modifierItemIds.has(it.id),
   }));
 
+  return { categories, items: itemsWithFlags };
+}
+
+// GET /:branchSlug/:tableCode/menu - Get menu for branch (public)
+customer.get("/:branchSlug/:tableCode/menu", async (c) => {
+  const branchSlug = c.req.param("branchSlug");
+  const tableCode = c.req.param("tableCode");
+
+  // Sede y mesa a la vez, resueltas por el QR (único global) y confirmadas con
+  // el slug: nunca se elige una sede arbitraria entre varias homónimas.
+  const resolved = await resolvePublicTable(branchSlug, tableCode);
+
+  if (!resolved.ok) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "NOT_FOUND",
+          message: resolved.reason === "table" ? "Mesa no encontrada" : "Sucursal no encontrada",
+        },
+      },
+      404,
+    );
+  }
+
+  const { branch, table } = resolved;
+
+  if (!branch.is_active) {
+    return c.json(
+      { success: false, error: { code: "NOT_FOUND", message: "Sucursal no encontrada" } },
+      404,
+    );
+  }
+
+  const { categories, items: itemsWithFlags } = await cargarCartaPublica(branch);
+
   return c.json({
     success: true,
     data: {
@@ -567,6 +686,9 @@ customer.get("/:branchSlug/:tableCode/menu", async (c) => {
         // asumía 18% fijo, lo que rompe a cualquier local con tasa distinta
         // (Amazonía, exoneraciones) y desconciertaba al comensal al pagar.
         tax_rate: branch.tax_rate,
+        // Sin esto la carta no sabe si es de pedir o de leer, y pintaría un
+        // carrito que el servidor va a rechazar.
+        menu_mode: branch.menu_mode,
       },
       table: { id: table.id, number: table.number, short_code: table.short_code },
       categories,
@@ -613,6 +735,11 @@ customer.post(
     // el comensal quedaba sentado en un local cerrado.
     if (!branch.is_active) {
       return c.json({ success: false, error: { code: "NOT_FOUND", message: "Sucursal no encontrada" } }, 404);
+    }
+
+    // En modo carta estática no se abren visitas: el QR es solo para leer.
+    if (esCartaEstatica(branch)) {
+      return c.json(ERROR_CARTA_ESTATICA, 409);
     }
 
     // Chequeo temprano para no crear un cliente en la BD si la mesa ya está
@@ -822,6 +949,12 @@ customer.post(
         { success: false, error: { code: "NOT_FOUND", message: "Sucursal no encontrada" } },
         404,
       );
+    }
+
+
+    // En modo carta estática no se abren visitas: el QR es solo para leer.
+    if (esCartaEstatica(branch)) {
+      return c.json(ERROR_CARTA_ESTATICA, 409);
     }
 
     // Chequeo temprano (no autoritativo): la mesa ocupada se responde sin tocar
@@ -1075,11 +1208,15 @@ customer.get("/:branchSlug/menu/items/:itemId/modifiers", async (c) => {
     );
   }
 
-  // Get linked modifier groups for this item
+  // El orden en que se le PREGUNTA al comensal no es cosmético: en un lomo el
+  // término va antes que los extras, y en una escala de picante el orden ES el
+  // significado. Sin estos dos `orderBy` salían como quisiera Postgres, y podían
+  // cambiar entre dos miradas a la misma pantalla.
   const links = await db
     .select()
     .from(schema.menuItemModifierGroups)
-    .where(eq(schema.menuItemModifierGroups.item_id, itemId));
+    .where(eq(schema.menuItemModifierGroups.item_id, itemId))
+    .orderBy(asc(schema.menuItemModifierGroups.sort_order));
 
   if (links.length === 0) {
     return c.json({ success: true, data: [] });
@@ -1102,12 +1239,19 @@ customer.get("/:branchSlug/menu/items/:itemId/modifiers", async (c) => {
       groupIds.length === 1
         ? eq(schema.modifiers.group_id, groupIds[0])
         : inArray(schema.modifiers.group_id, groupIds),
-    );
+    )
+    .orderBy(asc(schema.modifiers.sort_order), asc(schema.modifiers.name));
 
-  const result = groups.map((g) => ({
-    ...g,
-    modifiers: allModifiers.filter((m) => m.group_id === g.id && m.is_available),
-  }));
+  // Se recorre `links` y no `groups`: el orden lo manda el vínculo con ESTE
+  // plato, no el orden en que la base devolvió los grupos.
+  const porGrupo = new Map(groups.map((g) => [g.id, g]));
+  const result = links
+    .map((l) => porGrupo.get(l.group_id))
+    .filter((g): g is NonNullable<typeof g> => !!g)
+    .map((g) => ({
+      ...g,
+      modifiers: allModifiers.filter((m) => m.group_id === g.id && m.is_available),
+    }));
 
   return c.json({ success: true, data: result });
 });
@@ -1230,6 +1374,11 @@ customer.post(
 
     // Sede de baja: mismo error genérico que un código inválido.
     if (!branch.is_active) return invalid;
+
+    // En modo carta estática no se abren visitas ni entrando por correo.
+    if (esCartaEstatica(branch)) {
+      return c.json(ERROR_CARTA_ESTATICA, 409);
+    }
 
     const customer_record = await findByEmail({
       organizationId: branch.organization_id,
@@ -1536,7 +1685,7 @@ customer.get("/my-coupons", customerAuth, async (c) => {
 });
 
 // POST /orders - Create order (customer auth)
-customer.post("/orders", customerAuth, requireActiveSession, zValidator("json", createOrderSchema), async (c) => {
+customer.post("/orders", customerAuth, requireActiveSession, bloquearSiCartaEstatica, zValidator("json", createOrderSchema), async (c) => {
   const body = c.req.valid("json");
   const user = c.get("user") as any;
   const session = c.get("session") as any;
@@ -1995,6 +2144,7 @@ customer.post(
   "/table-action",
   customerAuth,
   requireActiveSession,
+  bloquearSiCartaEstatica,
   zValidator(
     "json",
     z.object({

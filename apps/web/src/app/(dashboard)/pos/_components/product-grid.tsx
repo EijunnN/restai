@@ -42,6 +42,13 @@ function ProductGridComponent({
   errorMessage?: string;
   onRetry?: () => void;
 }) {
+  // El orden en que llegan las categorías YA es el de la carta: la API las
+  // devuelve por `sort_order`. Aquí solo se convierte en un índice consultable.
+  const posicionDeCategoria = useMemo(
+    () => new Map(categories.map((c, i) => [c.id, i])),
+    [categories],
+  );
+
   const filteredItems = useMemo(() => {
     const term = search.trim().toLocaleLowerCase("es");
     return items
@@ -50,13 +57,19 @@ function ProductGridComponent({
         if (term) return item.name.toLocaleLowerCase("es").includes(term);
         return true;
       })
-      // `GET /api/menu/items` no ordena: sin esto los productos bailaban de sitio
-      // entre refrescos y el cajero tocaba el plato equivocado.
+      // Esta rejilla es PLANA: mezcla todas las categorías cuando no hay
+      // ninguna elegida. Por eso no basta con `sort_order` del plato, que es
+      // relativo a SU categoría: los postres colocados en 0,1,2 se colarían
+      // delante de los fondos que estén en 3 y siguientes. Manda primero la
+      // posición de la categoría en la carta, y dentro de ella la del plato.
       .sort((a, b) => {
+        const catA = posicionDeCategoria.get(a.category_id ?? "") ?? Number.MAX_SAFE_INTEGER;
+        const catB = posicionDeCategoria.get(b.category_id ?? "") ?? Number.MAX_SAFE_INTEGER;
+        if (catA !== catB) return catA - catB;
         const order = (a.sort_order ?? 0) - (b.sort_order ?? 0);
         return order !== 0 ? order : a.name.localeCompare(b.name, "es");
       });
-  }, [items, search]);
+  }, [items, search, posicionDeCategoria]);
 
   const cartItemsCount = useMemo(
     () => cart.reduce((sum, item) => sum + item.quantity, 0),

@@ -127,6 +127,7 @@ settings.patch("/branch", requirePermission("branch:update"), zValidator("json",
       tax_rate: schema.branches.tax_rate,
       timezone: schema.branches.timezone,
       currency: schema.branches.currency,
+      menu_mode: schema.branches.menu_mode,
       settings: schema.branches.settings,
     })
     .from(schema.branches)
@@ -144,6 +145,9 @@ settings.patch("/branch", requirePermission("branch:update"), zValidator("json",
   if (body.taxRate !== undefined) updateData.tax_rate = body.taxRate;
   if (body.timezone !== undefined) updateData.timezone = body.timezone;
   if (body.currency !== undefined) updateData.currency = body.currency;
+  // Columna propia, no clave del jsonb: se escribe directa y no pasa por la
+  // fusión superficial de `settings`, que puede perder claves.
+  if (body.menuMode !== undefined) updateData.menu_mode = body.menuMode;
 
   // Un solo camino de escritura para los ajustes: primero se fusiona lo libre,
   // después se aplican los interruptores con nombre. Antes eran dos ramas y la
@@ -175,7 +179,11 @@ settings.patch("/branch", requirePermission("branch:update"), zValidator("json",
     summary:
       body.taxRate !== undefined && body.taxRate !== before.tax_rate
         ? `Cambio de IGV: ${(before.tax_rate / 100).toFixed(2)}% → ${(body.taxRate / 100).toFixed(2)}%`
-        : "Actualización de la configuración de la sede",
+        : body.menuMode !== undefined && body.menuMode !== before.menu_mode
+          ? body.menuMode === "static"
+            ? "La carta pasa a solo lectura: el QR deja de admitir pedidos"
+            : "La carta vuelve a admitir pedidos desde la mesa"
+          : "Actualización de la configuración de la sede",
     before,
     after: {
       name: updated.name,
@@ -184,6 +192,7 @@ settings.patch("/branch", requirePermission("branch:update"), zValidator("json",
       tax_rate: updated.tax_rate,
       timezone: updated.timezone,
       currency: updated.currency,
+      menu_mode: updated.menu_mode,
       settings: updated.settings,
     },
   });

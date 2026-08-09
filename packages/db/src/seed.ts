@@ -37,6 +37,9 @@ async function seed() {
       organization_id: org.id,
       name: "Sede Principal",
       slug: "principal",
+      // Único global: la carta pública de sede se resuelve por aquí y no por el
+      // slug, que solo es único dentro de su organización.
+      public_code: "MIRAFL",
       address: "Av. Javier Prado 1234, San Isidro, Lima",
       phone: "+51 1 234 5678",
       timezone: "America/Lima",

@@ -6,6 +6,14 @@ const TEST_PREFIX = `_test_${Date.now()}_`;
 let counter = 0;
 function uniq(base: string) { return `${TEST_PREFIX}${base}_${counter++}`; }
 
+/** Código público único por sede. 8 caracteres es el tope de la columna. */
+let codigoContador = 0;
+function codigoPublicoDePrueba() {
+  return `T${(Date.now() % 100000).toString(36)}${(codigoContador++).toString(36)}`
+    .toUpperCase()
+    .slice(0, 8);
+}
+
 export async function createTestOrg() {
   const [org] = await db.insert(schema.organizations).values({
     name: uniq("org"),
@@ -19,6 +27,9 @@ export async function createTestBranch(orgId: string, settings: Record<string, a
     organization_id: orgId,
     name: uniq("branch"),
     slug: uniq("branch"),
+    // Único global: la carta pública de sede se resuelve por aquí, no por slug,
+    // así que en las pruebas también tiene que ser distinto en cada sede.
+    public_code: codigoPublicoDePrueba(),
     settings,
   }).returning();
   return branch;

@@ -48,8 +48,13 @@ export interface PosMenuItem {
   /** Precio en CÉNTIMOS, como lo guarda la carta. */
   price: number;
   is_available: boolean;
-  /** Orden definido en la carta. `GET /api/menu/items` no ordena por sí solo. */
+  /**
+   * Posición del plato DENTRO de su categoría. La API ya ordena por ella, pero
+   * la rejilla del POS mezcla categorías cuando no hay ninguna elegida, así que
+   * necesita también la de la categoría para no intercalar postres entre fondos.
+   */
   sort_order?: number;
+  category_id?: string;
 }
 
 /** Cliente identificado en la venta: sin su id, la venta no otorga puntos. */

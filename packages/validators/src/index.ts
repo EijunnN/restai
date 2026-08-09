@@ -40,7 +40,15 @@ export const createCategorySchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(500).optional(),
   imageUrl: z.string().url().optional(),
-  sortOrder: z.number().int().min(0).default(0),
+  /**
+   * Posición en la carta. SIN valor por defecto a propósito.
+   *
+   * Con `.default(0)` todo lo que se creaba nacía en la posición 0, es decir,
+   * el primero de la carta. Un plato recién dado de alta se colaba delante del
+   * plato estrella sin que nadie lo pidiera. Omitirlo significa ahora "al
+   * final", que es lo que espera quien añade algo.
+   */
+  sortOrder: z.number().int().min(0).optional(),
   isActive: z.boolean().default(true),
 });
 
@@ -91,7 +99,15 @@ export const createMenuItemSchema = z.object({
   price: z.number().int().min(0, "El precio no puede ser negativo"),
   imageUrl: z.string().url().optional(),
   isAvailable: z.boolean().default(true),
-  sortOrder: z.number().int().min(0).default(0),
+  /**
+   * Posición en la carta. SIN valor por defecto a propósito.
+   *
+   * Con `.default(0)` todo lo que se creaba nacía en la posición 0, es decir,
+   * el primero de la carta. Un plato recién dado de alta se colaba delante del
+   * plato estrella sin que nadie lo pidiera. Omitirlo significa ahora "al
+   * final", que es lo que espera quien añade algo.
+   */
+  sortOrder: z.number().int().min(0).optional(),
   preparationTimeMin: z.number().int().min(1).max(120).optional(),
   /**
    * Alérgenos, dieta y picante.
@@ -158,6 +174,23 @@ export const bulkItemIdsSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
 });
 
+/**
+ * Reordenar: se envía la lista COMPLETA del ámbito, en su orden final.
+ *
+ * No se envía "este va al puesto 4". Con posiciones relativas, dos personas
+ * moviendo a la vez dejan dos elementos en el mismo puesto y un hueco; con la
+ * lista entera, el servidor puede comprobar que no falta ni sobra nadie y
+ * rechazar el envío si alguien creó algo mientras tanto.
+ */
+export const reorderSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+});
+
+/** Reordenar platos: siempre dentro de UNA categoría, nunca entre categorías. */
+export const reorderItemsSchema = reorderSchema.extend({
+  categoryId: z.string().uuid(),
+});
+
 export const bulkLinkModifierGroupSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   groupId: z.string().uuid(),
@@ -189,7 +222,15 @@ export const createSpaceSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(500).optional(),
   floorNumber: z.number().int().min(0).default(1),
-  sortOrder: z.number().int().min(0).default(0),
+  /**
+   * Posición en la carta. SIN valor por defecto a propósito.
+   *
+   * Con `.default(0)` todo lo que se creaba nacía en la posición 0, es decir,
+   * el primero de la carta. Un plato recién dado de alta se colaba delante del
+   * plato estrella sin que nadie lo pidiera. Omitirlo significa ahora "al
+   * final", que es lo que espera quien añade algo.
+   */
+  sortOrder: z.number().int().min(0).optional(),
   isActive: z.boolean().default(true),
 });
 
@@ -498,6 +539,16 @@ export const updateBranchSettingsSchema = z.object({
   settings: z.record(z.unknown()).optional(),
   inventoryEnabled: z.boolean().optional(),
   waiterTableAssignmentEnabled: z.boolean().optional(),
+  /**
+   * Modo de carta: `dynamic` (el comensal pide desde la mesa) o `static` (el QR
+   * solo enseña la carta).
+   *
+   * Es COLUMNA y no una clave del jsonb `settings`, a diferencia de los dos
+   * interruptores de arriba. La fusión de `settings` es superficial y no
+   * atómica: dos guardados a la vez pierden una clave en silencio, y un ajuste
+   * que decide si el local puede cobrar no puede desaparecer así.
+   */
+  menuMode: z.enum(["dynamic", "static"]).optional(),
 });
 
 // Query validators for GET endpoints

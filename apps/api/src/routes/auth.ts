@@ -4,6 +4,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { eq, and, gt } from "drizzle-orm";
 import { db, schema } from "@restai/db";
+import { generarCodigoPublicoDeSede } from "../lib/branch-code.js";
 import { registerOrgSchema, loginSchema } from "@restai/validators";
 import { hashPassword, verifyPassword } from "../lib/hash.js";
 import {
@@ -78,6 +79,7 @@ auth.post("/register", zValidator("json", registerOrgSchema), async (c) => {
         organization_id: org.id,
         name: "Sede Principal",
         slug: body.slug,
+        public_code: await generarCodigoPublicoDeSede(tx),
       })
       .returning({ id: schema.branches.id });
 

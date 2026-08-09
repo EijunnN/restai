@@ -44,6 +44,27 @@ export const branches = pgTable(
     timezone: varchar("timezone", { length: 50 }).default("America/Lima").notNull(),
     currency: varchar("currency", { length: 3 }).default("PEN").notNull(),
     tax_rate: integer("tax_rate").default(1800).notNull(), // 18.00%
+    /**
+     * Qué hace el QR de esta sede (migración 0018).
+     *
+     * `dynamic`: el comensal pide entrar, un mozo aprueba y se pide desde la
+     * mesa. `static`: la carta se sirve a quien escanee, sin sesión y sin
+     * carrito — el QR sustituye a la carta de papel y nada más.
+     *
+     * No es solo pantalla: en `static` el servidor rechaza abrir sesiones y
+     * crear pedidos desde el flujo público. Un enlace guardado en el navegador
+     * no puede saltarse el modo.
+     */
+    menu_mode: varchar("menu_mode", { length: 10 }).default("dynamic").notNull(),
+    /**
+     * Identificador público y único de la sede (migración 0018).
+     *
+     * El `slug` NO sirve: es único por organización, así que dos cadenas pueden
+     * tener su "miraflores". El flujo con mesa se salva resolviendo por el
+     * código de la mesa; una carta de sede no tiene esa ancla y necesita la
+     * suya. Mismo alfabeto sin caracteres ambiguos que los códigos de mesa.
+     */
+    public_code: varchar("public_code", { length: 8 }).notNull(),
     is_active: boolean("is_active").default(true).notNull(),
     settings: jsonb("settings").default({}).notNull(),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -51,5 +72,6 @@ export const branches = pgTable(
   },
   (table) => [
     unique("branches_org_slug_unique").on(table.organization_id, table.slug),
+    unique("uq_branches_public_code").on(table.public_code),
   ],
 );

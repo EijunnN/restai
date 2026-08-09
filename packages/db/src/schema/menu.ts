@@ -83,7 +83,16 @@ export const modifiers = pgTable("modifiers", {
   name: varchar("name", { length: 255 }).notNull(),
   price: integer("price").default(0).notNull(), // stored in cents
   is_available: boolean("is_available").default(true).notNull(),
-});
+  /**
+   * Posición dentro del grupo (migración 0018).
+   *
+   * En una escala —"Sin ají, Suave, Picante, Bien picante"— el orden ES el
+   * significado. Sin esta columna salían como quisiera Postgres.
+   */
+  sort_order: integer("sort_order").default(0).notNull(),
+}, (table) => [
+  index("idx_modifiers_group_order").on(table.group_id, table.sort_order),
+]);
 
 export const menuItemModifierGroups = pgTable(
   "menu_item_modifier_groups",
@@ -94,6 +103,14 @@ export const menuItemModifierGroups = pgTable(
     group_id: uuid("group_id")
       .notNull()
       .references(() => modifierGroups.id, { onDelete: "cascade" }),
+    /**
+     * En qué orden se le preguntan los grupos al comensal (migración 0018).
+     *
+     * Vive aquí y no en el grupo porque un mismo grupo se comparte entre platos
+     * y no va en el mismo sitio en todos: en un lomo el término va primero; en
+     * una parrillada, la guarnición.
+     */
+    sort_order: integer("sort_order").default(0).notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.item_id, table.group_id] }),

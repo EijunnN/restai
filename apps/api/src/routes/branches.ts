@@ -4,6 +4,7 @@ import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { eq, and, ne, inArray, asc, count } from "drizzle-orm";
 import { db, schema } from "@restai/db";
+import { generarCodigoPublicoDeSede } from "../lib/branch-code.js";
 import { createBranchSchema, updateBranchSchema, idParamSchema } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import {
@@ -157,6 +158,7 @@ branches.post(
             timezone: body.timezone,
             currency: body.currency,
             tax_rate: body.taxRate,
+            public_code: await generarCodigoPublicoDeSede(tx),
           })
           .returning();
 
