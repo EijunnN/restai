@@ -35,6 +35,8 @@ export async function connectOpenAI(
 
   let audioCtx: AudioContext | null = null;
   let raf: number | null = null;
+  let inputCtx: AudioContext | null = null;
+  let inputRaf: number | null = null;
 
   /**
    * Medidor de amplitud sobre la pista REMOTA: es la voz del agente la que debe
@@ -80,11 +82,55 @@ export async function connectOpenAI(
     }
   }
 
+  /**
+   * Medidor sobre el micrófono LOCAL: la voz del comensal.
+   *
+   * Reutiliza el contexto que ya abrió el medidor del agente si existe, y si no
+   * abre el suyo: en WebRTC la pista remota puede tardar en llegar, y el
+   * comensal empieza a hablar antes.
+   *
+   * Aquí NO hace falta terminar el grafo en el destino —una pista local sí
+   * bombea muestras al analizador por sí sola— y además conectarlo sería
+   * arriesgarse a sacar su propia voz por el altavoz.
+   */
+  function startInputMeter() {
+    if (!cb.onInputLevel) return;
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      inputCtx = audioCtx ?? new Ctx();
+      const source = inputCtx.createMediaStreamSource(mic);
+      const analyser = inputCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+
+      const buffer = new Uint8Array(analyser.frequencyBinCount);
+      let level = 0;
+      const tick = () => {
+        analyser.getByteTimeDomainData(buffer);
+        let sum = 0;
+        for (let i = 0; i < buffer.length; i++) {
+          const v = (buffer[i]! - 128) / 128;
+          sum += v * v;
+        }
+        level = smoothLevel(level, Math.sqrt(sum / buffer.length) * 3.5);
+        cb.onInputLevel?.(level);
+        inputRaf = requestAnimationFrame(tick);
+      };
+      inputRaf = requestAnimationFrame(tick);
+    } catch {
+      // Sin medidor la conversación funciona; solo se pierde la señal de escucha.
+    }
+  }
+
   pc.ontrack = (e) => {
     audioEl.srcObject = e.streams[0];
     startLevelMeter(e.streams[0]);
   };
   pc.addTrack(mic.getTracks()[0], mic);
+  startInputMeter();
 
   const dc = pc.createDataChannel("oai-events");
   const send = (event: RealtimeEvent) => {
@@ -226,12 +272,16 @@ export async function connectOpenAI(
   return {
     close() {
       if (raf !== null) cancelAnimationFrame(raf);
+      if (inputRaf !== null) cancelAnimationFrame(inputRaf);
       dc.close();
       pc.close();
       mic.getTracks().forEach((t) => t.stop());
       audioEl.srcObject = null;
       audioEl.remove();
       void audioCtx?.close().catch(() => {});
+      // Solo si es otro: si el medidor de entrada reutilizó el del agente,
+      // cerrarlo dos veces lanza.
+      if (inputCtx && inputCtx !== audioCtx) void inputCtx.close().catch(() => {});
     },
   };
 }

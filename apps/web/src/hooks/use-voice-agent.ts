@@ -48,6 +48,13 @@ export interface UseVoiceAgentResult {
   userTranscript: string;
   error: string | null;
   outputLevel: number;
+  /**
+   * Amplitud de la voz del COMENSAL, 0–1.
+   *
+   * Es lo único que le dice que el micrófono le está oyendo. Sin esto, hablarle
+   * a la pantalla es hablarle a algo que parece apagado.
+   */
+  inputLevel: number;
   /** Proveedor que atendió la conversación; útil para depurar en el local. */
   provider: string | null;
   connect: () => Promise<void>;
@@ -62,6 +69,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions): UseVoiceAgentResul
   const [userTranscript, setUserTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [outputLevel, setOutputLevel] = useState(0);
+  const [inputLevel, setInputLevel] = useState(0);
   const [provider, setProvider] = useState<string | null>(null);
 
   const handleRef = useRef<VoiceTransportHandle | null>(null);
@@ -81,6 +89,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions): UseVoiceAgentResul
     handleRef.current = null;
     connectingRef.current = false;
     setOutputLevel(0);
+    setInputLevel(0);
   }, []);
 
   const disconnect = useCallback(() => {
@@ -125,6 +134,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions): UseVoiceAgentResul
         onUserTranscript: (text: string) => setUserTranscript(text),
         onTranscriptReset: () => setTranscript(""),
         onLevel: setOutputLevel,
+        onInputLevel: setInputLevel,
         onToolCall: (name: string, args: Record<string, unknown>) =>
           onToolCallRef.current(name, args),
         onError: (message: string) => {
@@ -177,6 +187,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions): UseVoiceAgentResul
     userTranscript,
     error,
     outputLevel,
+    inputLevel,
     provider,
     connect,
     disconnect,

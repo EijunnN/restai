@@ -151,7 +151,7 @@ export default function VoiceOrderPage({
     setCatalog(entries);
   }, []);
 
-  const { state, transcript, userTranscript, error, outputLevel, connect, disconnect } =
+  const { state, transcript, userTranscript, error, outputLevel, inputLevel, connect, disconnect } =
     useVoiceAgent({
     token,
       onToolCall: handleToolCall,
@@ -324,7 +324,7 @@ export default function VoiceOrderPage({
               onChoose={handleChooseOption}
             />
 
-            <VoicePresence state={state} level={outputLevel} />
+            <VoicePresence state={state} level={outputLevel} inputLevel={inputLevel} />
 
             {/* Los controles flotan sobre la foto con el mismo cristal que el
                 resto: como texto suelto se perdían sobre las imágenes claras. */}

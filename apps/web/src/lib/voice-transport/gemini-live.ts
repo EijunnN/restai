@@ -3,6 +3,7 @@
 import {
   MIC_CONSTRAINTS,
   smoothLevel,
+  pcmLevel,
   type VoiceGrant,
   type VoiceTransportCallbacks,
   type VoiceTransportHandle,
@@ -225,8 +226,22 @@ export async function connectGemini(
     levelRaf = requestAnimationFrame(tick);
   }
 
+  let nivelEntrada = 0;
+
   // ── Envío del micrófono ────────────────────────────────────────────────────
   capture.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+    /*
+      La amplitud de la voz del comensal sale del PCM que YA se está enviando:
+      no hace falta un segundo analizador ni otro contexto de audio. Se mide
+      antes del corte por `setupComplete` a propósito —la pantalla debe reaccionar
+      desde el primer instante, aunque la sesión todavía se esté negociando— y
+      antes de que el buffer viaje por `postMessage`, que lo deja inservible.
+    */
+    if (cb.onInputLevel) {
+      nivelEntrada = smoothLevel(nivelEntrada, pcmLevel(new Int16Array(event.data)));
+      cb.onInputLevel(nivelEntrada);
+    }
+
     if (!setupComplete || ws.readyState !== WebSocket.OPEN) return;
     ws.send(
       JSON.stringify({
