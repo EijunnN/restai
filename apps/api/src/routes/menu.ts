@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, inArray, isNull, sql } from "drizzle-orm";
+import { eq, and, asc, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@restai/db";
 import {
   createCategorySchema,
@@ -14,6 +14,7 @@ import {
   updateModifierGroupSchema,
   updateModifierSchema,
   idParamSchema,
+  bulkUpdateMenuItemsSchema,
 } from "@restai/validators";
 import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch } from "../middleware/tenant.js";
@@ -205,13 +206,105 @@ menu.get("/items", requirePermission("menu:read"), async (c) => {
     conditions.push(eq(schema.menuItems.category_id, categoryId));
   }
 
+  // `sort_order` existía en la tabla y en los validadores, pero nadie ordenaba
+  // por él: el listado salía en el orden que quisiera Postgres y la carta se
+  // recolocaba sola entre recargas. El nombre desempata para que dos productos
+  // con la misma posición no bailen entre peticiones.
   const items = await db
     .select()
     .from(schema.menuItems)
-    .where(and(...conditions));
+    .where(and(...conditions))
+    .orderBy(asc(schema.menuItems.sort_order), asc(schema.menuItems.name));
 
   return c.json({ success: true, data: items });
 });
+
+/**
+ * Cambia varios productos de una vez, dentro de UNA transacción.
+ *
+ * El caso que lo justifica es diario: se acabó la merluza y hay que agotar los
+ * tres platos que la llevan. Uno a uno son tres peticiones sin atomicidad —si
+ * la segunda falla, quedan una aplicada y dos sin aplicar, y la pantalla no
+ * tiene forma de saber cuáles.
+ *
+ * Devuelve las filas ANTES y DESPUÉS: el "deshacer" de la pantalla necesita el
+ * estado previo, y sin él solo podría adivinarlo.
+ */
+menu.patch(
+  "/items/bulk",
+  requirePermission("menu:update"),
+  zValidator("json", bulkUpdateMenuItemsSchema),
+  async (c) => {
+    const { ids, patch } = c.req.valid("json");
+    const tenant = c.get("tenant") as any;
+
+    const updateData: Record<string, any> = {};
+    if (patch.isAvailable !== undefined) updateData.is_available = patch.isAvailable;
+    if (patch.categoryId !== undefined) updateData.category_id = patch.categoryId;
+    if (patch.spiceLevel !== undefined) updateData.spice_level = patch.spiceLevel;
+    if (patch.allergens !== undefined) updateData.allergens = patch.allergens;
+    if (patch.dietaryTags !== undefined) updateData.dietary_tags = patch.dietaryTags;
+
+    if (Object.keys(updateData).length === 0) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "Nada que actualizar" } },
+        400,
+      );
+    }
+
+    const ambito = and(
+      inArray(schema.menuItems.id, ids),
+      eq(schema.menuItems.branch_id, tenant.branchId),
+      eq(schema.menuItems.organization_id, tenant.organizationId),
+      isNull(schema.menuItems.deleted_at),
+    );
+
+    const result = await db.transaction(async (tx) => {
+      // El "antes" se lee dentro de la transacción: fuera, otro cambio entre
+      // la lectura y la escritura haría que el deshacer restaurase un valor
+      // que ya no era el vigente.
+      const before = await tx
+        .select({
+          id: schema.menuItems.id,
+          is_available: schema.menuItems.is_available,
+          category_id: schema.menuItems.category_id,
+          spice_level: schema.menuItems.spice_level,
+          allergens: schema.menuItems.allergens,
+          dietary_tags: schema.menuItems.dietary_tags,
+        })
+        .from(schema.menuItems)
+        .where(ambito)
+        .for("update");
+
+      // Un id de otra sede simplemente no está en `before`. Se responde 404 en
+      // vez de aplicar el cambio a medias sobre los que sí existen.
+      if (before.length !== ids.length) {
+        return { error: true as const, before: [], after: [] };
+      }
+
+      const after = await tx.update(schema.menuItems).set(updateData).where(ambito).returning();
+      return { error: false as const, before, after };
+    });
+
+    if (result.error) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "NOT_FOUND",
+            message: "Alguno de los productos no existe en esta sede",
+          },
+        },
+        404,
+      );
+    }
+
+    return c.json({
+      success: true,
+      data: { updated: result.after.length, before: result.before, items: result.after },
+    });
+  },
+);
 
 // POST /items
 menu.post(
@@ -254,6 +347,11 @@ menu.post(
         is_available: body.isAvailable,
         sort_order: body.sortOrder,
         preparation_time_min: body.preparationTimeMin,
+        // La carta del comensal ya pinta estos tres, pero hasta ahora no había
+        // forma de cargarlos: solo los ponía el seed.
+        allergens: body.allergens ?? [],
+        dietary_tags: body.dietaryTags ?? [],
+        spice_level: body.spiceLevel ?? null,
       })
       .returning();
 
@@ -281,6 +379,18 @@ menu.patch(
     if (body.isAvailable !== undefined) updateData.is_available = body.isAvailable;
     if (body.sortOrder !== undefined) updateData.sort_order = body.sortOrder;
     if (body.preparationTimeMin !== undefined) updateData.preparation_time_min = body.preparationTimeMin;
+    if (body.allergens !== undefined) updateData.allergens = body.allergens;
+    if (body.dietaryTags !== undefined) updateData.dietary_tags = body.dietaryTags;
+    if (body.spiceLevel !== undefined) updateData.spice_level = body.spiceLevel;
+
+    // Un `null` explícito VACÍA el campo. Antes el esquema lo rechazaba y no
+    // había manera de quitarle la foto a un plato una vez puesta.
+    if (Object.keys(updateData).length === 0) {
+      return c.json(
+        { success: false, error: { code: "BAD_REQUEST", message: "Nada que actualizar" } },
+        400,
+      );
+    }
 
     const [updated] = await db
       .update(schema.menuItems)
@@ -520,13 +630,113 @@ menu.get("/modifier-groups", requirePermission("menu:read"), async (c) => {
       );
   }
 
+  /*
+    Cuántos productos usa cada grupo.
+
+    Un grupo de modificadores se comparte entre platos, así que cambiar su
+    mínimo o su obligatoriedad alcanza a todos a la vez. Sin este número, quien
+    edita "Término de la carne" no tiene forma de saber si toca un plato o doce.
+
+    Va en UNA consulta agrupada, no en una por grupo. La tabla puente no lleva
+    columnas de sede, de ahí el join contra `menu_items` para no contar platos
+    de otra sede ni archivados.
+  */
+  const usage =
+    groupIds.length > 0
+      ? await db
+          .select({
+            group_id: schema.menuItemModifierGroups.group_id,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(schema.menuItemModifierGroups)
+          .innerJoin(
+            schema.menuItems,
+            eq(schema.menuItems.id, schema.menuItemModifierGroups.item_id),
+          )
+          .where(
+            and(
+              inArray(schema.menuItemModifierGroups.group_id, groupIds),
+              eq(schema.menuItems.branch_id, tenant.branchId),
+              eq(schema.menuItems.organization_id, tenant.organizationId),
+              isNull(schema.menuItems.deleted_at),
+            ),
+          )
+          .groupBy(schema.menuItemModifierGroups.group_id)
+      : [];
+
+  const usageByGroup = new Map(usage.map((u) => [u.group_id, Number(u.count)]));
+
   const result = groups.map((g) => ({
     ...g,
     modifiers: allModifiers.filter((m) => m.group_id === g.id),
+    used_in_items: usageByGroup.get(g.id) ?? 0,
   }));
 
   return c.json({ success: true, data: result });
 });
+
+/**
+ * Qué productos usan este grupo.
+ *
+ * Es el sentido que faltaba: la API sabía decir qué grupos tiene un plato, pero
+ * no qué platos tiene un grupo. Sin eso, el diálogo de borrado prometía la
+ * consecuencia en prosa —"los productos vinculados perderán este grupo"— sin
+ * poder nombrar ni uno.
+ */
+menu.get(
+  "/modifier-groups/:id/items",
+  requirePermission("menu:read"),
+  zValidator("param", idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const tenant = c.get("tenant") as any;
+
+    // La tabla puente no tiene sede: sin comprobar antes que el grupo es de
+    // esta, se podrían enumerar los platos de otro cliente pasando su uuid.
+    const [group] = await db
+      .select({ id: schema.modifierGroups.id, name: schema.modifierGroups.name })
+      .from(schema.modifierGroups)
+      .where(
+        and(
+          eq(schema.modifierGroups.id, id),
+          eq(schema.modifierGroups.branch_id, tenant.branchId),
+          eq(schema.modifierGroups.organization_id, tenant.organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!group) {
+      return c.json(
+        { success: false, error: { code: "NOT_FOUND", message: "Grupo no encontrado" } },
+        404,
+      );
+    }
+
+    const items = await db
+      .select({
+        id: schema.menuItems.id,
+        name: schema.menuItems.name,
+        category_id: schema.menuItems.category_id,
+        is_available: schema.menuItems.is_available,
+      })
+      .from(schema.menuItemModifierGroups)
+      .innerJoin(
+        schema.menuItems,
+        eq(schema.menuItems.id, schema.menuItemModifierGroups.item_id),
+      )
+      .where(
+        and(
+          eq(schema.menuItemModifierGroups.group_id, id),
+          eq(schema.menuItems.branch_id, tenant.branchId),
+          eq(schema.menuItems.organization_id, tenant.organizationId),
+          isNull(schema.menuItems.deleted_at),
+        ),
+      )
+      .orderBy(asc(schema.menuItems.name));
+
+    return c.json({ success: true, data: { group, items } });
+  },
+);
 
 // PATCH /modifier-groups/:id
 menu.patch(

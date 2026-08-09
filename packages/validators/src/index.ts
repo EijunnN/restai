@@ -46,6 +46,44 @@ export const createCategorySchema = z.object({
 
 export const updateCategorySchema = createCategorySchema.partial();
 
+/**
+ * Alérgenos con los que trabaja la carta.
+ *
+ * Lista cerrada a propósito: el comensal los lee traducidos, y con texto libre
+ * cada sede escribiría "mariscos", "marisco" y "shellfish" para lo mismo, con lo
+ * que el filtro por alergia dejaría de ser fiable justo donde importa.
+ */
+export const ALLERGENS = [
+  "gluten",
+  "crustaceans",
+  "eggs",
+  "fish",
+  "peanuts",
+  "soy",
+  "milk",
+  "nuts",
+  "celery",
+  "mustard",
+  "sesame",
+  "sulphites",
+  "lupin",
+  "molluscs",
+  "shellfish",
+] as const;
+
+/** Etiquetas dietéticas. Mismo criterio que los alérgenos. */
+export const DIETARY_TAGS = [
+  "vegetarian",
+  "vegan",
+  "gluten_free",
+  "dairy_free",
+  "nut_free",
+  "halal",
+  "kosher",
+  "keto",
+  "low_carb",
+] as const;
+
 export const createMenuItemSchema = z.object({
   categoryId: z.string().uuid(),
   name: z.string().min(1).max(255),
@@ -55,9 +93,51 @@ export const createMenuItemSchema = z.object({
   isAvailable: z.boolean().default(true),
   sortOrder: z.number().int().min(0).default(0),
   preparationTimeMin: z.number().int().min(1).max(120).optional(),
+  /**
+   * Alérgenos, dieta y picante.
+   *
+   * Las tres columnas existen desde la migración 0012 y la carta del comensal ya
+   * las pinta, pero NO había forma de escribirlas: no estaban en este esquema ni
+   * en la ruta, así que solo las poblaba el seed. El resultado era una carta que
+   * prometía avisar de alergias y nunca tenía el dato.
+   *
+   * El picante va de 0 a 3 porque así lo restringe el CHECK de la base.
+   */
+  allergens: z.array(z.enum(ALLERGENS)).max(15).optional(),
+  dietaryTags: z.array(z.enum(DIETARY_TAGS)).max(9).optional(),
+  spiceLevel: z.number().int().min(0).max(3).nullable().optional(),
 });
 
-export const updateMenuItemSchema = createMenuItemSchema.partial();
+/**
+ * Edición de un producto.
+ *
+ * Los opcionales aceptan `null` para poder VACIARLOS: sin esto no había manera
+ * de quitarle la foto a un plato ni de borrar una descripción una vez escrita,
+ * porque `undefined` se omite del update y el esquema rechazaba el nulo.
+ */
+export const updateMenuItemSchema = createMenuItemSchema.partial().extend({
+  description: z.string().max(1000).nullable().optional(),
+  imageUrl: z.string().url().nullable().optional(),
+  preparationTimeMin: z.number().int().min(1).max(120).nullable().optional(),
+});
+
+/**
+ * Cambio de varios productos a la vez.
+ *
+ * Existe para el caso real que lo justifica: se acabó la merluza y hay que
+ * agotar los tres platos que la llevan. Uno a uno son tres peticiones sin
+ * atomicidad, y si la segunda falla nadie sabe qué quedó aplicado.
+ */
+export const bulkUpdateMenuItemsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200),
+  patch: z.object({
+    isAvailable: z.boolean().optional(),
+    categoryId: z.string().uuid().optional(),
+    spiceLevel: z.number().int().min(0).max(3).nullable().optional(),
+    allergens: z.array(z.enum(ALLERGENS)).max(15).optional(),
+    dietaryTags: z.array(z.enum(DIETARY_TAGS)).max(9).optional(),
+  }),
+});
 
 export const createModifierGroupSchema = z.object({
   name: z.string().min(1).max(255),
