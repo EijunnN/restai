@@ -12,26 +12,20 @@ import { cn, formatCurrency } from "@/lib/utils";
 import { Minus, Plus, Trash2, ArrowLeft, ShoppingBag, Ticket, Check, X, ChevronDown, Gift, ChevronRight, UtensilsCrossed, AlertCircle, ClipboardList } from "lucide-react";
 import { toast } from "sonner";
 import { describeReward } from "@/components/customer/reward-label";
+import {
+  computeCouponDiscount,
+  computeRedemptionDiscount,
+  computeTotals,
+  effectiveUnitPrice,
+  effectiveLineTotal,
+  type PendingRedemption,
+} from "@/lib/cart-discounts";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 // Default IGV (18%, stored in basis points: 1800/10000). All totals computed
 // here are DISPLAY-ONLY ESTIMATES — the server recomputes and is authoritative.
 // We prefer the branch's tax_rate from the public /menu response when present.
 const DEFAULT_TAX_RATE = 1800; // 18% IGV
-
-/**
- * Canje pendiente tal y como lo sirve GET /my-redemptions. `reward_type` es lo
- * que permite distinguir un producto gratis (discount_value = 0) de un
- * descuento: sin él, la recompensa se anunciaba como "S/ 0.00 de descuento".
- */
-interface PendingRedemption {
-  id: string;
-  reward_name: string;
-  reward_type?: string | null;
-  discount_type: string | null;
-  discount_value: number | null;
-  menu_item_id?: string | null;
-}
 
 function useCartPageLocalState() {
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -277,12 +271,14 @@ export default function CartPage({
   const {
     items,
     updateLineQuantity,
-    removeLine,
+    updateLineNotes,
     clearCart,
     getSubtotal,
     getTax,
     getTotal,
+    getItemCount,
   } = useCartStore();
+  const unitCount = getItemCount();
   // Order type: QR table orders default to dine-in ("en local"). The customer
   // can switch to takeout ("para llevar"). Sent to the server on confirm.
   const [orderType, setOrderType] = useState<"dine_in" | "takeout">("dine_in");
@@ -470,170 +466,34 @@ export default function CartPage({
       });
   };
 
-  // Effective per-unit price of a cart line INCLUDING its modifiers. Mirrors the
-  // server's effectiveUnitPrice (line total / quantity) so free-item and
-  // buy-x-get-y estimates match the confirmed total.
-  const effectiveUnitPrice = (item: (typeof items)[number]): number => {
-    const modifiersTotal = item.modifiers.reduce((ms, m) => ms + m.price, 0);
-    return item.unitPrice + modifiersTotal;
-  };
-  // Effective line total (modifier-inclusive, × quantity). Matches server `total`.
-  const effectiveLineTotal = (item: (typeof items)[number]): number =>
-    effectiveUnitPrice(item) * item.quantity;
-
-  // Honest coupon preview. Returns the estimated discount AND, when the coupon
-  // cannot apply yet (min order not met), a human hint instead of pretending it
-  // is applied. All math mirrors apps/api/src/services/order.service.ts so the
-  // previewed total matches the server's confirmed total. Still an ESTIMATE —
-  // the server recomputes and is authoritative.
-  //
-  // `serverOnly` marca los cupones cuyo descuento NO se puede estimar aquí: la
-  // validación pública no devuelve `buy_quantity`/`get_quantity`/`category_id`,
-  // así que el importe lo pone el servidor al confirmar. Esos SÍ se envían (si
-  // allí tampoco aplican, el pedido pasa igual y el cupón no se consume); los
-  // demás, cuando se puede demostrar que no descuentan nada, se retienen con un
-  // motivo legible en vez de tumbar el pedido entero.
-  function computeCouponDiscount(): {
-    discount: number;
-    blockedReason: string | null;
-    serverOnly: boolean;
-  } {
-    if (!appliedCoupon) return { discount: 0, blockedReason: null, serverOnly: false };
-
-    // Min order amount gate (server rejects the coupon below this threshold).
-    if (
-      appliedCoupon.min_order_amount != null &&
-      subtotal < appliedCoupon.min_order_amount
-    ) {
-      const faltan = appliedCoupon.min_order_amount - subtotal;
-      return {
-        discount: 0,
-        serverOnly: false,
-        blockedReason: `Pedido mínimo ${formatCurrency(appliedCoupon.min_order_amount)} · faltan ${formatCurrency(faltan)}`,
-      };
-    }
-
-    /** Cupón que exige un plato concreto que no está en el carrito. */
-    const faltaElPlato = (): string => {
-      const nombre = appliedCoupon.menu_item_id
-        ? menuItemNames[appliedCoupon.menu_item_id]
-        : null;
-      return nombre
-        ? `Agrega ${nombre} al carrito para usar este cupón`
-        : "Agrega al carrito el producto de este cupón";
-    };
-
-    let discount = 0;
-    switch (appliedCoupon.type) {
-      case "percentage":
-        discount = Math.round(subtotal * (appliedCoupon.discount_value / 100));
-        break;
-      case "fixed":
-        discount = Math.min(appliedCoupon.discount_value, subtotal);
-        break;
-      case "item_free": {
-        // 1 unit free at the modifier-inclusive effective unit price.
-        if (appliedCoupon.menu_item_id) {
-          const match = items.find((i) => i.menuItemId === appliedCoupon.menu_item_id);
-          if (!match) return { discount: 0, blockedReason: faltaElPlato(), serverOnly: false };
-          discount = effectiveUnitPrice(match);
-        } else if (items.length > 0) {
-          const cheapest = items.reduce(
-            (min, i) => (effectiveUnitPrice(i) < effectiveUnitPrice(min) ? i : min),
-            items[0],
-          );
-          discount = effectiveUnitPrice(cheapest);
-        }
-        break;
-      }
-      case "item_discount": {
-        // Percentage off a specific item's modifier-inclusive line total.
-        if (appliedCoupon.menu_item_id) {
-          const match = items.find((i) => i.menuItemId === appliedCoupon.menu_item_id);
-          if (!match) return { discount: 0, blockedReason: faltaElPlato(), serverOnly: false };
-          discount = Math.round(effectiveLineTotal(match) * (appliedCoupon.discount_value / 100));
-        }
-        break;
-      }
-      // 2x1 y descuento por categoría: el importe lo calcula el servidor.
-      case "buy_x_get_y":
-      case "category_discount":
-        return { discount: 0, blockedReason: null, serverOnly: true };
-      default:
-        discount = 0;
-    }
-
-    // Apply max discount cap, then clamp to subtotal (matches server order).
-    if (appliedCoupon.max_discount_amount != null && discount > appliedCoupon.max_discount_amount) {
-      discount = appliedCoupon.max_discount_amount;
-    }
-    discount = Math.min(discount, subtotal);
-
-    // Descuento nulo demostrable (cupón mal configurado, valor 0): no se envía,
-    // para no gastar un uso del cupón a cambio de nada.
-    if (discount <= 0) {
-      return {
-        discount: 0,
-        blockedReason: "Este cupón no descuenta nada en tu pedido actual",
-        serverOnly: false,
-      };
-    }
-
-    return { discount, blockedReason: null, serverOnly: false };
-  }
-
+  // El cálculo de descuentos vive en `lib/cart-discounts.ts`: el mesero por voz
+  // necesita EXACTAMENTE el mismo para poder decir el total en voz alta, y dos
+  // copias de la misma aritmética de dinero acaban divergiendo.
   const {
     discount: couponDiscount,
     blockedReason: couponBlockedReason,
     serverOnly: couponServerOnly,
-  } = computeCouponDiscount();
-
-  /**
-   * Estimación del canje, calcada de applyRedemption() en el servidor.
-   *
-   * Un canje de PRODUCTO GRATIS solo descuenta si ese plato está en el carrito:
-   * si no lo está, el servidor descuenta 0 y el comensal se llevaría la sorpresa
-   * al pagar. Aquí se dice antes, con el nombre del plato que falta.
-   */
-  function getRedemptionDiscount(): { discount: number; blockedReason: string | null } {
-    if (!appliedRedemption) return { discount: 0, blockedReason: null };
-    const remaining = subtotal - couponDiscount;
-    if (remaining <= 0) return { discount: 0, blockedReason: null };
-
-    if (appliedRedemption.reward_type === "free_item") {
-      const itemId = appliedRedemption.menu_item_id;
-      const match = itemId ? items.find((i) => i.menuItemId === itemId) : undefined;
-      if (!match) {
-        const name = itemId ? menuItemNames[itemId] : null;
-        return {
-          discount: 0,
-          blockedReason: name
-            ? `Agrega ${name} al carrito para aprovechar esta recompensa`
-            : "Agrega al carrito el producto de esta recompensa",
-        };
-      }
-      return { discount: Math.min(effectiveUnitPrice(match), remaining), blockedReason: null };
-    }
-
-    if (appliedRedemption.discount_type === "percentage") {
-      return {
-        discount: Math.round(remaining * ((appliedRedemption.discount_value ?? 0) / 100)),
-        blockedReason: null,
-      };
-    }
-    return {
-      discount: Math.min(appliedRedemption.discount_value ?? 0, remaining),
-      blockedReason: null,
-    };
-  }
+  } = computeCouponDiscount({ coupon: appliedCoupon, items, subtotal, menuItemNames });
 
   const { discount: redemptionDiscount, blockedReason: redemptionBlockedReason } =
-    getRedemptionDiscount();
+    computeRedemptionDiscount({
+      redemption: appliedRedemption,
+      items,
+      subtotal,
+      couponDiscount,
+      menuItemNames,
+    });
+
   const totalDiscount = couponDiscount + redemptionDiscount;
-  // IGV is calculated on (subtotal - discount) to match backend logic
-  const taxableBase = subtotal - totalDiscount;
-  const adjustedTax = totalDiscount > 0 ? Math.round((taxableBase * taxRate) / 10000) : tax;
-  const adjustedTotal = totalDiscount > 0 ? taxableBase + adjustedTax : total;
+  const { taxableBase, tax: computedTax, total: computedTotal } = computeTotals({
+    subtotal,
+    totalDiscount,
+    taxRate,
+  });
+  // Sin descuento se conservan las cifras del store, para no cambiar por un
+  // redondeo distinto lo que ya se venía mostrando.
+  const adjustedTax = totalDiscount > 0 ? computedTax : tax;
+  const adjustedTotal = totalDiscount > 0 ? computedTotal : total;
 
   const handleConfirmOrder = () => {
     setLoading(true);
@@ -650,7 +510,13 @@ export default function CartPage({
         items: items.map((item) => ({
           menuItemId: item.menuItemId,
           quantity: item.quantity,
-          notes: notes[item.lineId] || undefined,
+          // El `??` importa: las notas que dictó el comensal al mesero por voz
+          // viven en la línea del carrito, no en este estado local, que solo se
+          // llena al escribir aquí. Con `||` se perdía en silencio un "sin
+          // cebolla" dicho en voz alta si luego se confirmaba desde esta
+          // pantalla. El estado local sigue mandando cuando existe, para que
+          // borrar la nota a mano de verdad la borre.
+          notes: (notes[item.lineId] ?? item.notes) || undefined,
           modifiers: item.modifiers.map((m) => ({
             modifierId: m.modifierId,
           })),
@@ -738,8 +604,9 @@ export default function CartPage({
         </Button>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-xl font-bold">Tu pedido</h1>
+          {/* Unidades, no líneas: dos ceviches y un lomo son 3 platos, no 2. */}
           <p className="text-xs text-muted-foreground">
-            {items.length} {items.length === 1 ? "producto" : "productos"}
+            {unitCount} {unitCount === 1 ? "plato" : "platos"}
           </p>
         </div>
         <Button
@@ -820,10 +687,23 @@ export default function CartPage({
                     variant="outline"
                     size="icon"
                     className="h-10 w-10 rounded-full"
-                    aria-label={`Quitar una unidad de ${item.name}`}
+                    /*
+                      A una unidad este botón no resta: elimina la línea entera
+                      (`updateLineQuantity(.., 0)` borra). Decir "quitar una
+                      unidad" engañaba a quien navega con lector de pantalla.
+                    */
+                    aria-label={
+                      item.quantity === 1
+                        ? `Quitar ${item.name} del pedido`
+                        : `Quitar una unidad de ${item.name}`
+                    }
                     onClick={() => updateLineQuantity(item.lineId, item.quantity - 1)}
                   >
-                    <Minus className="h-4 w-4" />
+                    {item.quantity === 1 ? (
+                      <Trash2 className="h-4 w-4" />
+                    ) : (
+                      <Minus className="h-4 w-4" />
+                    )}
                   </Button>
                   <span className="w-7 text-center font-bold text-sm tabular-nums">
                     {item.quantity}
@@ -841,14 +721,6 @@ export default function CartPage({
                   <p className="font-bold text-sm tabular-nums">
                     {formatCurrency(effectiveLineTotal(item))}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => removeLine(item.lineId)}
-                    aria-label={`Quitar ${item.name} del carrito`}
-                    className="ml-auto mt-1 flex h-10 w-10 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
                 </div>
               </div>
               <div className="mt-3">
@@ -856,10 +728,17 @@ export default function CartPage({
                   placeholder="Notas (ej: sin cebolla)"
                   aria-label={`Notas para ${item.name}`}
                   className="text-sm h-10"
-                  value={notes[item.lineId] || ""}
+                  value={notes[item.lineId] ?? item.notes ?? ""}
                   onChange={(e) =>
                     setNotes({ ...notes, [item.lineId]: e.target.value })
                   }
+                  /*
+                    La nota también va al carrito, que persiste en sessionStorage.
+                    Antes vivía solo en este estado local: quien escribía "sin
+                    cebolla", volvía a la carta a añadir algo y regresaba, se
+                    encontraba el campo vacío sin que nada lo avisara.
+                  */
+                  onBlur={(e) => updateLineNotes(item.lineId, e.target.value)}
                 />
               </div>
             </CardContent>

@@ -1,7 +1,16 @@
 "use client";
 
 import { useCartStore } from "@/stores/cart-store";
+import { useCustomerStore } from "@/stores/customer-store";
+import type { CartItem } from "@restai/types";
 import type { VoiceCatalogEntry } from "@/hooks/use-voice-agent";
+import {
+  computeCouponDiscount,
+  computeRedemptionDiscount,
+  computeTotals,
+  type AppliedCoupon,
+  type PendingRedemption,
+} from "@/lib/cart-discounts";
 
 /**
  * Herramientas del mesero por voz.
@@ -56,6 +65,16 @@ export interface VoiceToolDeps {
   visuals: {
     showItems: (itemIds: string[], title?: string) => void;
     focusItem: (itemId: string) => void;
+    /**
+     * Enseña las opciones de un plato mientras el mesero pregunta por ellas.
+     *
+     * Sin esto, el agente decía "¿lo quieres con ají extra o sin cebolla?" y la
+     * pantalla seguía enseñando la foto: el comensal tenía que retener de
+     * memoria una lista hablada, que es justo lo que una pantalla evita.
+     */
+    showOptions: (itemId: string, groups: ModifierGroup[]) => void;
+    /** Opciones ya resueltas: se marcan las elegidas y el panel se retira. */
+    resolveOptions: (chosen: string[]) => void;
   };
   onOrderPlaced: (order: { id: string; orderNumber: string }) => void;
 }
@@ -64,7 +83,7 @@ export interface VoiceToolDeps {
 function normalize(text: string): string {
   return text
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
 }
@@ -94,6 +113,22 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
    */
   const modifierCache = new Map<string, ModifierGroup[]>();
 
+  const menuItemNames: Record<string, string> = Object.fromEntries(
+    menuItems.map((item) => [item.id, item.name]),
+  );
+
+  /**
+   * Cupón y canje elegidos durante la conversación.
+   *
+   * Viven en el closure y no en el store del carrito porque son de ESTA
+   * conversación: si el comensal abandona la voz y termina en la carta táctil,
+   * allí vuelve a elegirlos a mano, como siempre. Guardarlos en el carrito haría
+   * que un descuento hablado apareciera aplicado en una pantalla que nunca lo
+   * mostró.
+   */
+  let appliedCoupon: AppliedCoupon | null = null;
+  let appliedRedemption: PendingRedemption | null = null;
+
   function resolveRef(ref: unknown): VoiceCatalogEntry | null {
     if (typeof ref !== "string" && typeof ref !== "number") return null;
     return byRef.get(String(ref).replace(/[^\d]/g, "")) ?? byRef.get(String(ref)) ?? null;
@@ -112,6 +147,78 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
     return groups;
   }
 
+  /**
+   * Encuentra LA línea del carrito sobre la que actuar.
+   *
+   * El mismo plato puede estar dos veces con opciones distintas —un ceviche con
+   * ají y otro sin—, y son líneas separadas. Antes se cogía la primera que
+   * coincidiera por producto: si el comensal decía "quítame el que lleva ají",
+   * se borraba el otro y nadie se enteraba hasta que llegaba la comida.
+   *
+   * Con varias candidatas y sin pistas se devuelve un error que enumera las
+   * variantes, para que el agente PREGUNTE en vez de adivinar.
+   */
+  function resolveLine(
+    menuItemId: string,
+    hint: unknown,
+  ): { line: CartItem } | { error: string; variantes?: string[] } {
+    const lines = useCartStore.getState().items.filter((i) => i.menuItemId === menuItemId);
+    if (lines.length === 0) return { error: "Ese plato no está en el pedido." };
+    if (lines.length === 1) return { line: lines[0] };
+
+    const hints = Array.isArray(hint)
+      ? (hint as unknown[]).map((h) => normalize(String(h)))
+      : typeof hint === "string" && hint
+        ? [normalize(hint)]
+        : [];
+
+    const describe = (line: CartItem) =>
+      line.modifiers.length > 0 ? line.modifiers.map((m) => m.name).join(" + ") : "sin opciones";
+
+    if (hints.length > 0) {
+      const matches = lines.filter((line) => {
+        const names = line.modifiers.map((m) => normalize(m.name));
+        return hints.every((h) => names.some((n) => n.includes(h) || h.includes(n)));
+      });
+      if (matches.length === 1) return { line: matches[0] };
+    }
+
+    return {
+      error:
+        "Ese plato está en el pedido más de una vez, con opciones distintas. Pregúntale al comensal a cuál se refiere y vuelve a llamarme indicando las opciones.",
+      variantes: lines.map(describe),
+    };
+  }
+
+  /**
+   * Descuentos vigentes, con la MISMA aritmética que la pantalla del carrito
+   * (`lib/cart-discounts.ts`), que a su vez replica la del servidor. Es lo que
+   * garantiza que el total dicho en voz alta sea el que se cobra.
+   */
+  function currentDiscounts() {
+    const cart = useCartStore.getState();
+    const subtotal = cart.getSubtotal();
+
+    const coupon = computeCouponDiscount({
+      coupon: appliedCoupon,
+      items: cart.items,
+      subtotal,
+      menuItemNames,
+    });
+    const redemption = computeRedemptionDiscount({
+      redemption: appliedRedemption,
+      items: cart.items,
+      subtotal,
+      couponDiscount: coupon.discount,
+      menuItemNames,
+    });
+
+    const totalDiscount = coupon.discount + redemption.discount;
+    const totals = computeTotals({ subtotal, totalDiscount, taxRate });
+
+    return { subtotal, coupon, redemption, totalDiscount, ...totals };
+  }
+
   /** Estado real del carrito, en la forma en que el modelo lo entiende. */
   function readCart() {
     const cart = useCartStore.getState();
@@ -123,14 +230,38 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
       subtotal_centimos:
         (line.unitPrice + line.modifiers.reduce((sum, m) => sum + m.price, 0)) * line.quantity,
     }));
-    const total = cart.getTotal(taxRate);
+
+    const d = currentDiscounts();
+
     return {
       items,
       vacio: items.length === 0,
-      subtotal_centimos: cart.getSubtotal(),
-      igv_centimos: cart.getTax(taxRate),
-      total_centimos: total,
-      total_texto: money(total),
+      subtotal_centimos: d.subtotal,
+      descuento_centimos: d.totalDiscount,
+      igv_centimos: d.tax,
+      total_centimos: d.total,
+      total_texto: money(d.total),
+      cupon: appliedCoupon
+        ? {
+            codigo: appliedCoupon.code,
+            nombre: appliedCoupon.name,
+            descuento: money(d.coupon.discount),
+            no_aplica_porque: d.coupon.blockedReason ?? undefined,
+            // Cuando el importe lo pone el servidor no se puede prometer un
+            // total exacto: decirlo es la diferencia entre informar y mentir.
+            importe_lo_calcula_el_servidor: d.coupon.serverOnly || undefined,
+          }
+        : undefined,
+      canje: appliedRedemption
+        ? {
+            recompensa: appliedRedemption.reward_name,
+            descuento: money(d.redemption.discount),
+            no_aplica_porque: d.redemption.blockedReason ?? undefined,
+          }
+        : undefined,
+      aviso_total_estimado: d.coupon.serverOnly
+        ? "Este cupón lo calcula la caja al confirmar. Di el total SIN ese descuento y avisa de que el descuento se aplicará al enviar el pedido."
+        : undefined,
     };
   }
 
@@ -222,6 +353,10 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
         if (!entry) return { error: "Esa referencia no existe en la carta." };
         const item = itemById.get(entry.id);
         const groups = entry.hasModifiers ? await loadModifiers(entry.id) : [];
+
+        // La pantalla enseña las opciones a la vez que el mesero las pregunta.
+        visuals.focusItem(entry.id);
+        if (groups.length > 0) visuals.showOptions(entry.id, groups);
 
         return {
           ref: entry.ref,
@@ -323,6 +458,9 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
         });
 
         visuals.focusItem(entry.id);
+        // Las opciones elegidas se marcan en pantalla antes de que el panel se
+        // retire: el comensal ve confirmado lo que acaba de decir en voz alta.
+        visuals.resolveOptions(selected.map((s) => s.name));
         return { ok: true, agregado: entry.name, cantidad: quantity, carrito: readCart() };
       }
 
@@ -331,8 +469,9 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
         if (!entry) return { error: "Esa referencia no existe en la carta." };
 
         const cart = useCartStore.getState();
-        const line = cart.items.find((i) => i.menuItemId === entry.id);
-        if (!line) return { error: `${entry.name} no está en el pedido.` };
+        const resolved = resolveLine(entry.id, args.opciones);
+        if ("error" in resolved) return resolved;
+        const { line } = resolved;
 
         const remove = Number(args.cantidad);
         if (Number.isFinite(remove) && remove > 0 && remove < line.quantity) {
@@ -343,8 +482,277 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
         return { ok: true, quitado: entry.name, carrito: readCart() };
       }
 
+      case "cambiar_cantidad": {
+        const entry = resolveRef(args.ref);
+        if (!entry) return { error: "Esa referencia no existe en la carta." };
+
+        const target = Number(args.cantidad);
+        if (!Number.isFinite(target) || target < 0) {
+          return { error: "Cantidad inválida." };
+        }
+
+        const resolved = resolveLine(entry.id, args.opciones);
+        if ("error" in resolved) return resolved;
+
+        // Se FIJA la cantidad en vez de sumar o restar. "Que sean tres" no
+        // obliga al agente a calcular cuántos faltaban, que es justo donde se
+        // equivocaría y donde el error acaba en la cocina.
+        useCartStore.getState().updateLineQuantity(resolved.line.lineId, Math.min(99, target));
+        return { ok: true, plato: entry.name, cantidad: target, carrito: readCart() };
+      }
+
+      case "poner_nota": {
+        const entry = resolveRef(args.ref);
+        if (!entry) return { error: "Esa referencia no existe en la carta." };
+
+        const resolved = resolveLine(entry.id, args.opciones);
+        if ("error" in resolved) return resolved;
+
+        const note = typeof args.notas === "string" ? args.notas : "";
+        useCartStore.getState().updateLineNotes(resolved.line.lineId, note);
+        return {
+          ok: true,
+          plato: entry.name,
+          nota: note || "(sin nota)",
+          aviso:
+            "Una indicación no cambia el precio ni garantiza que la cocina pueda cumplirla. No prometas que sí.",
+        };
+      }
+
+      case "vaciar_carrito": {
+        useCartStore.getState().clearCart();
+        return { ok: true, mensaje: "Pedido vaciado. Empiecen de nuevo." };
+      }
+
+      case "llamar_mozo": {
+        const sessionId = useCustomerStore.getState().sessionId;
+        if (!sessionId) return { error: "No hay sesión de mesa activa." };
+
+        const action = args.motivo === "cuenta" ? "request_bill" : "call_waiter";
+        const res = await fetch(`${API_URL}/api/customer/table-action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action, tableSessionId: sessionId }),
+        });
+        const payload = await res.json();
+
+        if (!res.ok || !payload?.success) {
+          // 409 = ya hay un aviso pendiente para esta mesa. No es un fallo:
+          // significa que el mozo ya viene, y eso es lo que hay que decirle al
+          // comensal en vez de insistir.
+          if (res.status === 409) {
+            return { ok: true, ya_avisado: true, mensaje: "Ya hay un aviso pendiente; el mozo ya viene." };
+          }
+          return { error: payload?.error?.message || "No se pudo avisar al personal." };
+        }
+
+        return {
+          ok: true,
+          mensaje:
+            action === "request_bill"
+              ? "Pedimos la cuenta. Avísale que el mozo se acerca."
+              : "Llamamos al mozo. Avísale que ya viene.",
+        };
+      }
+
       case "leer_carrito":
         return readCart();
+
+      // ── Cupones y fidelidad ──────────────────────────────────────────────
+      case "aplicar_cupon": {
+        const code = typeof args.codigo === "string" ? args.codigo.trim().toUpperCase() : "";
+        if (!code) return { error: "No entendí el código del cupón." };
+
+        const res = await fetch(`${API_URL}/api/customer/validate-coupon`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ code }),
+        });
+        const payload = await res.json();
+
+        if (!res.ok || !payload?.success) {
+          return {
+            error: payload?.error?.message || "Ese cupón no es válido.",
+            // El agente no debe insistir ni buscarle la vuelta: el cupón lo
+            // valida el servidor y su palabra es definitiva.
+            sugerencia: "Dilo con naturalidad y sigue con el pedido.",
+          };
+        }
+
+        appliedCoupon = payload.data as AppliedCoupon;
+        const d = currentDiscounts();
+
+        if (d.coupon.blockedReason) {
+          // Se conserva aplicado: el motivo suele ser "faltan S/ 10 para el
+          // mínimo", y el descuento entra solo en cuanto se agregue algo más.
+          return {
+            ok: true,
+            cupon: appliedCoupon.name,
+            aplicado: false,
+            motivo: d.coupon.blockedReason,
+            carrito: readCart(),
+          };
+        }
+
+        return {
+          ok: true,
+          cupon: appliedCoupon.name,
+          aplicado: true,
+          descuento: d.coupon.serverOnly ? "lo calcula la caja al confirmar" : money(d.coupon.discount),
+          carrito: readCart(),
+        };
+      }
+
+      case "quitar_cupon": {
+        if (!appliedCoupon) return { error: "No hay ningún cupón aplicado." };
+        const name = appliedCoupon.name;
+        appliedCoupon = null;
+        return { ok: true, quitado: name, carrito: readCart() };
+      }
+
+      case "ver_mis_puntos": {
+        const res = await fetch(`${API_URL}/api/customer/my-loyalty`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await res.json();
+
+        // `data: null` significa que este comensal no tiene cuenta de fidelidad
+        // (entró por QR sin registrarse). No es un error: es que no aplica.
+        if (!res.ok || !payload?.success || !payload.data) {
+          return {
+            sin_cuenta: true,
+            mensaje:
+              "Este comensal no tiene cuenta de fidelidad. Puede registrarse desde la carta con su correo; no insistas si no le interesa.",
+          };
+        }
+
+        const data = payload.data as {
+          points_balance: number;
+          program_name?: string;
+          tier_name?: string | null;
+          rewards?: {
+            id: string;
+            name: string;
+            points_cost: number;
+            description?: string | null;
+          }[];
+        };
+
+        const rewards = data.rewards ?? [];
+        return {
+          puntos: data.points_balance,
+          nivel: data.tier_name ?? undefined,
+          recompensas: rewards.map((r) => ({
+            nombre: r.name,
+            cuesta_puntos: r.points_cost,
+            alcanza: data.points_balance >= r.points_cost,
+            descripcion: r.description ?? undefined,
+          })),
+        };
+      }
+
+      case "canjear_recompensa": {
+        const wanted = typeof args.recompensa === "string" ? normalize(args.recompensa) : "";
+        if (!wanted) return { error: "No entendí qué recompensa quiere canjear." };
+
+        const listRes = await fetch(`${API_URL}/api/customer/my-loyalty`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const listPayload = await listRes.json();
+        if (!listRes.ok || !listPayload?.success || !listPayload.data) {
+          return { error: "Este comensal no tiene cuenta de fidelidad." };
+        }
+
+        const rewards = (listPayload.data.rewards ?? []) as {
+          id: string;
+          name: string;
+          points_cost: number;
+        }[];
+        const match =
+          rewards.find((r) => normalize(r.name) === wanted) ??
+          rewards.find((r) => normalize(r.name).includes(wanted) || wanted.includes(normalize(r.name)));
+
+        if (!match) {
+          return {
+            error: "No encontré esa recompensa.",
+            disponibles: rewards.map((r) => r.name),
+          };
+        }
+
+        // Canjear GASTA los puntos de forma irreversible, aunque después el
+        // pedido no llegue a enviarse. Por eso la herramienta exige que el
+        // comensal lo haya confirmado y el prompt obliga a preguntarlo.
+        const res = await fetch(`${API_URL}/api/customer/redeem-reward`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ rewardId: match.id }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload?.success) {
+          return { error: payload?.error?.message || "No se pudo canjear la recompensa." };
+        }
+
+        const redemption = payload.data as PendingRedemption & { reward_name?: string };
+        appliedRedemption = {
+          id: redemption.id,
+          reward_name: redemption.reward_name ?? match.name,
+          reward_type: redemption.reward_type ?? null,
+          discount_type: redemption.discount_type ?? null,
+          discount_value: redemption.discount_value ?? null,
+          menu_item_id: redemption.menu_item_id ?? null,
+        };
+
+        const d = currentDiscounts();
+        return {
+          ok: true,
+          recompensa: appliedRedemption.reward_name,
+          puntos_gastados: match.points_cost,
+          descuento: money(d.redemption.discount),
+          no_aplica_porque: d.redemption.blockedReason ?? undefined,
+          carrito: readCart(),
+        };
+      }
+
+      // ── Después de enviar ────────────────────────────────────────────────
+      case "estado_del_pedido": {
+        const res = await fetch(`${API_URL}/api/customer/my-orders`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload?.success) {
+          return { error: "No pude consultar el estado del pedido." };
+        }
+
+        const orders = (payload.data ?? []) as {
+          order_number: string;
+          status: string;
+          items: { name: string; quantity: number; status: string }[];
+        }[];
+        if (orders.length === 0) {
+          return { sin_pedidos: true, mensaje: "Esta mesa todavía no ha enviado nada a cocina." };
+        }
+
+        const LABELS: Record<string, string> = {
+          pending: "recibido, aún no empieza",
+          confirmed: "confirmado",
+          preparing: "en preparación",
+          ready: "listo, sale en breve",
+          served: "servido",
+          completed: "cerrado",
+          cancelled: "anulado",
+        };
+
+        return {
+          pedidos: orders.map((o) => ({
+            comanda: o.order_number,
+            estado: LABELS[o.status] ?? o.status,
+            platos: o.items.map((i) => `${i.quantity}× ${i.name} (${LABELS[i.status] ?? i.status})`),
+          })),
+          // Sin esto el agente se inventa un "sale en cinco minutos" que nadie
+          // le ha dicho, y el comensal lo toma por una promesa del local.
+          aviso: "No inventes tiempos de espera. Si insisten, usa llamar_mozo.",
+        };
+      }
 
       case "confirmar_pedido": {
         const cart = useCartStore.getState();
@@ -352,7 +760,8 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
           return { error: "El pedido está vacío. No hay nada que enviar." };
         }
 
-        const realTotal = cart.getTotal(taxRate);
+        const d = currentDiscounts();
+        const realTotal = d.total;
         const claimed = Number(args.total_esperado_centimos);
 
         // ── La salvaguarda del cierre por voz ──────────────────────────────
@@ -385,6 +794,16 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
               notes: line.notes || undefined,
               modifiers: line.modifiers.map((m) => ({ modifierId: m.modifierId })),
             })),
+            // El cupón se manda solo si de verdad descuenta algo, o si el
+            // importe lo decide el servidor. Enviar uno que se puede demostrar
+            // que no aplica gastaría un uso a cambio de nada — misma regla que
+            // la carta táctil.
+            ...(appliedCoupon && (!d.coupon.blockedReason || d.coupon.serverOnly)
+              ? { couponCode: appliedCoupon.code }
+              : {}),
+            ...(appliedRedemption && !d.redemption.blockedReason
+              ? { redemptionId: appliedRedemption.id }
+              : {}),
           }),
         });
         const payload = await res.json();
@@ -399,11 +818,28 @@ export function createVoiceTools(deps: VoiceToolDeps): VoiceToolExecutor {
         }
 
         cart.clearCart();
+        // El cupón y el canje quedaron consumidos por el servidor: dejarlos
+        // aquí haría que un segundo pedido de la misma mesa intentara volver a
+        // usarlos y fuera rechazado sin que nadie entendiera por qué.
+        const usedCoupon = appliedCoupon;
+        appliedCoupon = null;
+        appliedRedemption = null;
+
         onOrderPlaced({ id: payload.data.id, orderNumber: payload.data.order_number });
+
+        // El total AUTORITATIVO es el que devuelve el servidor. Con un cupón
+        // cuyo importe solo él conoce (2x1, por categoría), puede no coincidir
+        // con lo que el agente acaba de decir: se le devuelve para que lo diga.
+        const chargedTotal = payload.data.total as number | undefined;
+        const differs = typeof chargedTotal === "number" && chargedTotal !== realTotal;
 
         return {
           ok: true,
           numero_pedido: payload.data.order_number,
+          total_cobrado: typeof chargedTotal === "number" ? money(chargedTotal) : undefined,
+          corregir_total: differs
+            ? `El total final es ${money(chargedTotal!)}${usedCoupon ? ` con el cupón ${usedCoupon.name} ya aplicado` : ""}. Dilo en voz alta.`
+            : undefined,
           mensaje:
             "Pedido enviado a cocina. Confírmaselo al comensal y avísale que puede cancelarlo desde la pantalla si se equivocó.",
         };

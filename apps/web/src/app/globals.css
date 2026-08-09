@@ -95,6 +95,17 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /*
+    Fuente de titular de la pantalla de voz.
+
+    `next/font` ya definía `--font-display` sobre el <html>, pero Tailwind v4
+    solo crea la utilidad `font-display` si la variable está registrada AQUÍ. Sin
+    esta línea la clase no existe, y los `className="font-display"` caían en la
+    Inter de la aplicación sin avisar: la identidad tipográfica de la voz estaba
+    apagada y nada fallaba.
+  */
+  --font-display: var(--font-display), ui-serif, Georgia, serif;
 }
 
 @layer base {

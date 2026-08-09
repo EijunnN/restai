@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
@@ -19,6 +20,12 @@ export const metadata: Metadata = {
  * después de hidratar. En una tablet de cocina que se recarga sola varias veces
  * por turno, ese parpadeo se nota. Debe ser un script bloqueante y sin
  * dependencias — por eso va en línea y no en un componente.
+ *
+ * Se inyecta con `next/script` + `beforeInteractive` y NO como un `<script>`
+ * suelto dentro del `<head>`: React avisa por consola de que los scripts que
+ * renderiza un componente no se ejecutan en el cliente, y aunque aquí eso daba
+ * igual (solo hace falta en la carga del documento), el aviso ensuciaba la
+ * consola en cada pantalla y tapaba errores de verdad.
  *
  * La clave `restai_theme` es la misma que usa `useTheme`.
  */
@@ -43,10 +50,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es" suppressHydrationWarning className="dark">
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
-      </head>
       <body className={inter.className}>
+        <Script
+          id="restai-theme-init"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{ __html: THEME_INIT }}
+        />
         <Providers>
           {children}
           {/* `theme="system"` deja que el toaster siga la clase del <html>, en

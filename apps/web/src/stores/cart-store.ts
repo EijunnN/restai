@@ -23,6 +23,15 @@ interface CartState {
   addItem: (item: Omit<CartItem, "lineId">) => void;
   removeLine: (lineId: string) => void;
   updateLineQuantity: (lineId: string, quantity: number) => void;
+  /**
+   * Cambia la indicación para cocina de una línea ya añadida.
+   *
+   * Lo necesita el mesero por voz: "al ceviche ponle poca cebolla" llega DESPUÉS
+   * de haber añadido el plato, y sin esto la única salida era quitar la línea y
+   * volver a crearla, que en medio de una conversación es una forma cara de
+   * perder el pedido.
+   */
+  updateLineNotes: (lineId: string, notes: string) => void;
   clearCart: () => void;
   /** Quantity of the plain (no-modifier) line for a product; used by the grid. */
   getItemQty: (menuItemId: string) => number;
@@ -84,6 +93,13 @@ export const useCartStore = create<CartState>()(
     set({
       items: get().items.map((i) =>
         i.lineId === lineId ? { ...i, quantity } : i
+      ),
+    });
+  },
+  updateLineNotes: (lineId, notes) => {
+    set({
+      items: get().items.map((i) =>
+        i.lineId === lineId ? { ...i, notes: notes.trim() || undefined } : i
       ),
     });
   },

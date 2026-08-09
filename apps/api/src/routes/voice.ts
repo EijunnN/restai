@@ -7,12 +7,10 @@ import { rateLimiter } from "../middleware/rate-limit.js";
 import { redis, redisSupported } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 import {
-  mintClientSecret,
-  RealtimeProviderError,
-  realtimeModel,
-  realtimeVoice,
+  activeVoiceProvider,
   voiceAgentEnabled,
-} from "../lib/openai-realtime.js";
+  VoiceProviderError,
+} from "../lib/voice-providers/index.js";
 import { buildVoiceAgentContext } from "../services/voice-agent.service.js";
 
 /**
@@ -82,17 +80,20 @@ async function consumeVoiceBudget(sessionId: string): Promise<{ ok: boolean; rem
  * es justo lo que la pantalla necesita saber ANTES de tener sesión de mesa (el
  * modo tablet de pared arranca sin ella). No expone nada más.
  */
-voice.get("/config", (c) =>
-  c.json({
+voice.get("/config", (c) => {
+  const enabled = voiceAgentEnabled();
+  const provider = enabled ? activeVoiceProvider() : null;
+  return c.json({
     success: true,
     data: {
-      enabled: voiceAgentEnabled(),
-      model: voiceAgentEnabled() ? realtimeModel() : null,
-      voice: voiceAgentEnabled() ? realtimeVoice() : null,
+      enabled,
+      provider: provider?.id ?? null,
+      model: provider?.model() ?? null,
+      voice: provider?.voice() ?? null,
       maxMinutesPerSession: maxMinutesPerSession(),
     },
-  }),
-);
+  });
+});
 
 /**
  * POST /api/voice/session — credencial efímera para la tablet.
@@ -183,18 +184,29 @@ voice.post(
       );
     }
 
-    let secret;
+    const provider = activeVoiceProvider();
+    if (!provider) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "VOICE_DISABLED", message: "El mesero por voz no está disponible" },
+        },
+        503,
+      );
+    }
+
+    let grant;
     try {
-      secret = await mintClientSecret({
+      grant = await provider.createSession({
         instructions: context.instructions,
         tools: context.tools,
         // La sesión de mesa es un uuid rotatorio, no identifica a una persona:
-        // sirve a OpenAI para correlacionar abuso sin que le mandemos datos
+        // sirve al proveedor para correlacionar abuso sin que le mandemos datos
         // personales del comensal.
         safetyIdentifier: `session_${session.id}`,
       });
     } catch (err) {
-      if (err instanceof RealtimeProviderError) {
+      if (err instanceof VoiceProviderError) {
         return c.json(
           { success: false, error: { code: "VOICE_UNAVAILABLE", message: err.message } },
           err.status as 429 | 503,
@@ -206,10 +218,15 @@ voice.post(
     return c.json({
       success: true,
       data: {
-        clientSecret: secret.value,
-        expiresAt: secret.expiresAt,
-        model: secret.model,
-        voice: secret.voice,
+        clientSecret: grant.clientSecret,
+        expiresAt: grant.expiresAt,
+        model: grant.model,
+        voice: grant.voice,
+        // El cliente elige transporte con esto: WebRTC y WebSocket+PCM no se
+        // parecen en nada, y fingir que sí saldría peor que decirlo.
+        provider: provider.id,
+        transport: grant.transport,
+        connection: grant.connection,
         remainingMinutes: budget.remainingMinutes,
         catalog: context.catalog,
       },

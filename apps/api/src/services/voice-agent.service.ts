@@ -1,6 +1,6 @@
 import { eq, and, asc, isNull, inArray } from "drizzle-orm";
 import { db, schema } from "@restai/db";
-import type { RealtimeToolDefinition } from "../lib/openai-realtime.js";
+import type { VoiceToolDefinition } from "../lib/voice-providers/types.js";
 
 /**
  * Configuración del mesero por voz de una sede.
@@ -54,7 +54,7 @@ export interface VoiceCatalogItem extends VoiceCatalogEntry {
 export interface VoiceAgentContext {
   instructions: string;
   catalog: VoiceCatalogEntry[];
-  tools: RealtimeToolDefinition[];
+  tools: VoiceToolDefinition[];
 }
 
 function currencySymbol(currency: string): string {
@@ -227,11 +227,24 @@ export function buildInstructions(params: BuildInstructionsParams): string {
 
 # Cómo hablas
 - Español peruano, cálido y natural. Tutea. Sin formalidades acartonadas.
-- FRASES CORTAS. Esto es una conversación hablada, no un folleto: una o dos
-  frases por turno y devuelves la palabra.
-- Nunca leas la carta entera de corrido. Ofrece dos o tres cosas y pregunta.
+- **Una o dos frases por turno. Nunca más.** Después callas y esperas. Al otro
+  lado hay alguien mirando una pantalla, no leyendo un folleto: si te extiendes,
+  cansas y dejan de escucharte.
+- **La pantalla ya enseña el plato. No lo describas.** Enseña y di lo justo:
+  "El ceviche, nuestro clásico." Ya está. Solo detallas si te preguntan.
+- Ofrece de UNO en UNO, o dos como mucho. Recitar cinco platos seguidos no ayuda
+  a elegir: abruma.
+- Cabe una frase simpática de vez en cuando —eres un mesero, no una máquina—,
+  pero nunca dos seguidas ni a costa de alargar el pedido.
 - No digas los precios a menos que te pregunten o que estés cerrando el pedido.
 - Nada de emojis, markdown ni listas: todo lo tuyo se escucha.
+
+# Ejemplos del tono que quiero
+Bien: "Tenemos un ceviche que sale volando. ¿Te lo pongo?"
+Bien: "Va uno. ¿Algo para acompañar?"
+Mal: "¡Claro que sí! Te cuento que nuestro ceviche de pescado se prepara con
+pescado fresco del día, marinado en limón, con cebolla roja, ají limo y
+camote..." — demasiado largo, y encima la pantalla ya lo está mostrando.
 
 # REGLA DE ORO: enseña antes de hablar
 Antes de mencionar CUALQUIER plato, llama a \`mostrar_platos\` con sus
@@ -239,13 +252,43 @@ referencias. Primero la herramienta, después la frase. La pantalla acompaña tu
 voz y el comensal ve aquello de lo que le hablas justo cuando se lo nombras.
 Si hablas de un solo plato en detalle, usa \`enfocar_plato\`.
 
+# Corregir el pedido
+El comensal cambiará de idea, y eso es normal. Tienes una herramienta para cada
+caso, úsalas en vez de improvisar:
+- "quítame el ceviche" → \`quitar_del_carrito\`
+- "que sean tres" → \`cambiar_cantidad\` (fija el número; NO calcules tú la resta)
+- "ponle poca sal" a algo ya pedido → \`poner_nota\`
+- "mejor empecemos de nuevo" → \`vaciar_carrito\`, confirmando antes
+
+Si el mismo plato está pedido dos veces con opciones distintas, la herramienta te
+lo dirá: pregunta a cuál se refiere en vez de elegir tú.
+
 # Lo que no puedes hacer
 - No inventes platos, ingredientes ni precios: solo existe lo que está abajo.
 - Si algo está AGOTADO HOY, dilo con naturalidad y ofrece una alternativa.
 - Si un plato "tiene opciones", llama a \`ver_detalle_plato\` y pregunta al
   comensal por ellas ANTES de agregarlo: hay opciones obligatorias.
 - Si te preguntan por alergias, responde solo con lo declarado en la carta. Ante
-  la duda, di que confirmarás con cocina y ofrece llamar a un mozo.
+  la duda, NO adivines: di que lo confirmas con el personal y usa \`llamar_mozo\`.
+- Una indicación como "sin cebolla" es una petición a cocina, no una garantía.
+  Dila como tal; no prometas que se podrá cumplir.
+- No inventas descuentos ni cambias precios. Puedes aplicar un cupón que te dé
+  el comensal (\`aplicar_cupon\`) o canjear sus puntos (\`canjear_recompensa\`),
+  pero el importe lo decide el sistema, nunca tú.
+- No prometas tiempos de espera: no los sabes. Para saber en qué va un pedido ya
+  enviado usa \`estado_del_pedido\` y di solo lo que te devuelva.
+- No puedes cambiar algo que ya está en cocina, ni cobrar. Para eso, y para
+  cualquier cosa que se te escape, usa \`llamar_mozo\`.
+
+# Cupones y puntos
+- Solo si el comensal los saca. No ofrezcas el programa de fidelidad a alguien
+  que solo quiere comer.
+- Canjear puntos los GASTA aunque después no se envíe el pedido. Dilo y espera
+  un sí claro antes de canjear.
+- Si al leer el pedido te avisan de que el importe del cupón lo calcula la caja,
+  NO des el total como definitivo: di el total sin ese descuento y avisa de que
+  el cupón se aplicará al enviarlo. Y si al confirmar te devuelven un total
+  distinto, dilo en voz alta.
 
 # Cómo cierras el pedido
 Cuando el comensal diga que ya está:
@@ -277,9 +320,8 @@ provoca. Si no sabe qué pedir, ofrece lo más representativo de la carta
  * CUÁNDO usar cada una, porque es la parte que el modelo se salta si no se le
  * insiste.
  */
-export const VOICE_TOOLS: RealtimeToolDefinition[] = [
+export const VOICE_TOOLS: VoiceToolDefinition[] = [
   {
-    type: "function",
     name: "mostrar_platos",
     description:
       "Muestra platos en la pantalla. Llámala ANTES de nombrar cualquier plato en voz alta, nunca después. Acepta de 1 a 6 platos.",
@@ -300,7 +342,6 @@ export const VOICE_TOOLS: RealtimeToolDefinition[] = [
     },
   },
   {
-    type: "function",
     name: "enfocar_plato",
     description:
       "Lleva un plato al centro de la pantalla, en grande. Úsala cuando vayas a hablar de UN plato en detalle.",
@@ -313,7 +354,6 @@ export const VOICE_TOOLS: RealtimeToolDefinition[] = [
     },
   },
   {
-    type: "function",
     name: "buscar_platos",
     description:
       "Busca en la carta por texto, categoría o restricción alimentaria. Úsala cuando el comensal pida algo por características ('algo sin gluten', 'un pescado') en vez de por nombre.",
@@ -337,7 +377,6 @@ export const VOICE_TOOLS: RealtimeToolDefinition[] = [
     },
   },
   {
-    type: "function",
     name: "ver_detalle_plato",
     description:
       "Devuelve la descripción completa y las opciones (guarniciones, término, extras) de un plato. OBLIGATORIA antes de agregar un plato marcado como 'tiene opciones'.",
@@ -350,7 +389,6 @@ export const VOICE_TOOLS: RealtimeToolDefinition[] = [
     },
   },
   {
-    type: "function",
     name: "agregar_al_carrito",
     description:
       "Agrega un plato al pedido. Los modificadores se pasan por su NOMBRE exacto, tal como los devolvió ver_detalle_plato.",
@@ -373,7 +411,6 @@ export const VOICE_TOOLS: RealtimeToolDefinition[] = [
     },
   },
   {
-    type: "function",
     name: "quitar_del_carrito",
     description: "Quita un plato del pedido, entero o reduciendo su cantidad.",
     parameters: {
@@ -385,19 +422,125 @@ export const VOICE_TOOLS: RealtimeToolDefinition[] = [
           description: "Unidades a quitar. Si se omite, se quita la línea completa.",
           minimum: 1,
         },
+        opciones: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Opciones de la variante concreta, si el mismo plato está pedido más de una vez con opciones distintas.",
+        },
       },
       required: ["ref"],
     },
   },
   {
-    type: "function",
+    name: "cambiar_cantidad",
+    description:
+      "Fija cuántas unidades de un plato quedan en el pedido. Úsala cuando el comensal corrija un número ('que sean tres'): NO calcules tú la diferencia. Con 0 se quita del pedido.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "Referencia del plato." },
+        cantidad: { type: "integer", description: "Cantidad final que debe quedar.", minimum: 0 },
+        opciones: {
+          type: "array",
+          items: { type: "string" },
+          description: "Opciones de la variante concreta, si hay más de una del mismo plato.",
+        },
+      },
+      required: ["ref", "cantidad"],
+    },
+  },
+  {
+    name: "poner_nota",
+    description:
+      "Cambia la indicación para cocina de un plato YA agregado, p. ej. 'poca sal' o 'sin cebolla'. Para reemplazarla por nada, manda la nota vacía.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "Referencia del plato." },
+        notas: { type: "string", description: "La indicación, tal como la dijo el comensal." },
+        opciones: {
+          type: "array",
+          items: { type: "string" },
+          description: "Opciones de la variante concreta, si hay más de una del mismo plato.",
+        },
+      },
+      required: ["ref", "notas"],
+    },
+  },
+  {
+    name: "vaciar_carrito",
+    description:
+      "Borra el pedido entero. Solo si el comensal lo pide claramente ('empecemos de nuevo', 'bórralo todo'). Confirma antes de usarla.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "aplicar_cupon",
+    description:
+      "Valida y aplica un cupón de descuento al pedido. Úsala cuando el comensal mencione un código promocional. Si el cupón aún no aplica (p. ej. falta pedido mínimo) se queda puesto y entra solo al llegar al importe.",
+    parameters: {
+      type: "object",
+      properties: {
+        codigo: { type: "string", description: "El código, tal como lo dictó el comensal." },
+      },
+      required: ["codigo"],
+    },
+  },
+  {
+    name: "quitar_cupon",
+    description: "Quita el cupón aplicado al pedido.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "ver_mis_puntos",
+    description:
+      "Consulta los puntos de fidelidad del comensal y qué recompensas puede canjear. Solo si él saca el tema: no ofrezcas el programa sin que pregunte.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "canjear_recompensa",
+    description:
+      "Canjea una recompensa por puntos y la aplica al pedido. GASTA los puntos de forma irreversible, aunque el pedido no llegue a enviarse: pregúntale y espera un sí claro ANTES de llamarla.",
+    parameters: {
+      type: "object",
+      properties: {
+        recompensa: {
+          type: "string",
+          description: "Nombre de la recompensa, tal como la devolvió ver_mis_puntos.",
+        },
+      },
+      required: ["recompensa"],
+    },
+  },
+  {
+    name: "estado_del_pedido",
+    description:
+      "Consulta en qué va lo que ya se mandó a cocina. Úsala cuando pregunten '¿cuánto falta?' o '¿ya salió?'.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "llamar_mozo",
+    description:
+      "Avisa a una persona del salón. Úsala cuando el comensal quiera la cuenta, pida ayuda, pregunte algo que no está en la carta, o cuando algo falle y no puedas resolverlo tú.",
+    parameters: {
+      type: "object",
+      properties: {
+        motivo: {
+          type: "string",
+          enum: ["cuenta", "ayuda"],
+          description: "'cuenta' para pedir la cuenta; 'ayuda' para cualquier otra cosa.",
+        },
+      },
+      required: ["motivo"],
+    },
+  },
+  {
     name: "leer_carrito",
     description:
       "Devuelve el pedido real con cantidades y total. Llámala antes de resumir el pedido en voz alta: es la única fuente fiable, tu memoria de la conversación no lo es.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
-    type: "function",
     name: "confirmar_pedido",
     description:
       "Envía el pedido a cocina. Solo después de haber leído el resumen en voz alta y recibido un sí claro. El total debe ser EXACTAMENTE el que acabas de decir; si no coincide, la llamada se rechaza y tendrás que volver a leer el pedido.",
