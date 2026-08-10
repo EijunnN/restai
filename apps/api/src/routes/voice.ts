@@ -4,7 +4,7 @@ import { db, schema } from "@restai/db";
 import type { AppEnv } from "../types.js";
 import { customerAuth, requireActiveSession } from "../middleware/customer-auth.js";
 import { rateLimiter } from "../middleware/rate-limit.js";
-import { redis, redisSupported } from "../lib/redis.js";
+import { redis, redisSupported, intentarRedis } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 import {
   activeVoiceProvider,
@@ -55,16 +55,28 @@ async function consumeVoiceBudget(sessionId: string): Promise<{ ok: boolean; rem
   if (!redisSupported) return { ok: true, remainingMinutes: max };
 
   const key = `voice:budget:${sessionId}`;
-  try {
+  /*
+    Sin bloquear: con Redis caido esta llamada esperaba los reintentos de
+    ioredis y el comensal se quedaba mirando la pantalla antes de poder hablar.
+    Si no hay respuesta se concede el minuto — el presupuesto es una salvaguarda
+    de coste, no una puerta de seguridad, y negar el servicio porque la cache no
+    esta seria peor que gastar de mas.
+  */
+  const gastado = await intentarRedis(async () => {
     const spent = await redis.incrby(key, MINUTES_PER_GRANT);
     // La sesión de mesa vive como mucho unas horas; la clave se va sola.
     if (spent === MINUTES_PER_GRANT) {
       await redis.expire(key, 6 * 60 * 60);
     }
-    if (spent > max) {
+    return spent;
+  });
+
+  try {
+    if (gastado === null) throw new Error("Redis no disponible");
+    if (gastado > max) {
       return { ok: false, remainingMinutes: 0 };
     }
-    return { ok: true, remainingMinutes: max - spent };
+    return { ok: true, remainingMinutes: max - gastado };
   } catch (err) {
     logger.warn("Voice budget check skipped (Redis unavailable)", {
       error: err instanceof Error ? err.message : String(err),

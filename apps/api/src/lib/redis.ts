@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { crearCircuito } from "./circuit-breaker.js";
 import { logger } from "./logger.js";
 
 // Mismo patrón de detección de Workers que en packages/db/src/index.ts.
@@ -88,6 +89,66 @@ export const createSubscriber = (): Redis => {
 
 /** ¿Este runtime puede hablar con Redis? (Workers no: no hay sockets TCP). */
 export const redisSupported = !isWorkers;
+
+/*
+  Un solo cortacircuitos para todo el proceso: Redis es UNA dependencia, y si no
+  responde para el limitador tampoco responde para el resto.
+
+  Sin esto, cada sitio que hablaba con Redis pagaba los tres reintentos de
+  ioredis en cada llamada. Medido con Redis caido en la maquina de desarrollo:
+  /health tardaba 15 s (6 ms sano) y la suite de la API pasaba de 3 s a 182 s.
+  Una caida de la CACHE paraba el servicio entero — en un local, quince segundos
+  por cada toque en la caja y ningun mensaje que lo explique.
+*/
+const circuito = crearCircuito({
+  umbral: 3,
+  descansoMs: 10_000,
+  alAbrir: () =>
+    logger.warn("Redis no responde: se degrada sin el y se reintenta en 10 s"),
+  alCerrar: () => logger.info("Redis recuperado"),
+});
+
+/**
+ * Cuanto se le concede a Redis para responder una operacion.
+ *
+ * Un INCR contra un Redis sano tarda menos de un milisegundo; 250 ms es
+ * generosisimo. El tope importa porque el cortacircuitos necesita fallos para
+ * aprender: sin el, los PRIMEROS de cada caida costaban cinco segundos cada uno.
+ * Agotarlo no cancela el comando de ioredis —terminara solo, sin efecto—: lo
+ * unico que se abandona es la ESPERA.
+ */
+const PRESUPUESTO_MS = 250;
+
+/**
+ * Habla con Redis sin poder bloquear al que llama.
+ *
+ * Devuelve `null` cuando Redis no esta disponible —circuito abierto, tiempo
+ * agotado o error—, y quien llama decide como degradar. `null` es un valor
+ * legitimo de "no hay respuesta", asi que las operaciones que puedan devolver
+ * null de verdad deben envolverlo.
+ */
+export async function intentarRedis<T>(operacion: () => Promise<T>): Promise<T | null> {
+  if (isWorkers || !circuito.permite()) return null;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const valor = await Promise.race([
+      operacion(),
+      new Promise<never>((_, rechazar) => {
+        timer = setTimeout(() => rechazar(new Error("Redis tardo demasiado")), PRESUPUESTO_MS);
+      }),
+    ]);
+    circuito.exito();
+    return valor;
+  } catch {
+    // El aviso lo emite el cortacircuitos al ABRIR, una sola vez: con Redis
+    // caido, un log por operacion inunda la salida y esconde lo que si importa.
+    circuito.fallo();
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Sonda activa de Redis para /health.

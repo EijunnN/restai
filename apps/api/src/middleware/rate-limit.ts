@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
-import { redis } from "../lib/redis.js";
+import { redis, intentarRedis } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 import { verifyAccessToken } from "../lib/jwt.js";
 
@@ -154,9 +154,30 @@ interface CounterResult {
  * Redis (INCR + EXPIRE) so limits hold across instances; falls back to the
  * in-memory Map if Redis is unavailable.
  */
+/** Contador en memoria. Es el plan B, y tambien el camino con Redis caido. */
+function contarEnMemoria(key: string, windowMs: number): CounterResult {
+  const now = Date.now();
+  prune(now);
+  let entry = store.get(key);
+  if (!entry || entry.resetAt <= now) {
+    entry = { count: 0, resetAt: now + windowMs };
+    store.set(key, entry);
+  }
+  entry.count++;
+  return { count: entry.count, resetAt: entry.resetAt };
+}
+
 async function incrementCounter(key: string, windowMs: number): Promise<CounterResult> {
   const windowSec = Math.ceil(windowMs / 1000);
-  try {
+
+  /*
+    `intentarRedis` no puede bloquear: si Redis no responde devuelve null
+    enseguida y se cuenta en memoria. Aceptar memoria relaja el limite —cada
+    instancia cuenta por su cuenta— y es la eleccion correcta: el limitador
+    existe para que un abuso no tumbe el local, no para tumbarlo el mismo cuando
+    falla la cache.
+  */
+  const resultado = await intentarRedis(async () => {
     // INCR returns the new count; on the first hit (count === 1) we set the TTL.
     const count = await redis.incr(key);
     if (count === 1) {
@@ -169,21 +190,9 @@ async function incrementCounter(key: string, windowMs: number): Promise<CounterR
       ttl = windowMs;
     }
     return { count, resetAt: Date.now() + ttl };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown Redis error";
-    logger.warn("Rate limiter Redis unavailable, falling back to in-memory store", {
-      error: message,
-    });
-    const now = Date.now();
-    prune(now);
-    let entry = store.get(key);
-    if (!entry || entry.resetAt <= now) {
-      entry = { count: 0, resetAt: now + windowMs };
-      store.set(key, entry);
-    }
-    entry.count++;
-    return { count: entry.count, resetAt: entry.resetAt };
-  }
+  });
+
+  return resultado ?? contarEnMemoria(key, windowMs);
 }
 
 /**
