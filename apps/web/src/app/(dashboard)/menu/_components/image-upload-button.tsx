@@ -9,10 +9,13 @@ export function ImageUploadButton({
   currentUrl,
   onUploaded,
   uploadType = "menu",
+  showPreview = true,
 }: {
   currentUrl?: string | null;
   onUploaded: (url: string) => void;
   uploadType?: "menu" | "category";
+  /** La miniatura sobra cuando quien monta el botón ya muestra la foto. */
+  showPreview?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const uploadImage = useUploadImage();
@@ -32,7 +35,7 @@ export function ImageUploadButton({
 
   return (
     <div className="flex items-center gap-2">
-      {currentUrl && (
+      {showPreview && currentUrl && (
         <img
           src={currentUrl}
           alt=""

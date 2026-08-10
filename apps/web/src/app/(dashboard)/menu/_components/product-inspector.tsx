@@ -176,32 +176,45 @@ export function ProductInspector({
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-muted/35">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="p-4">
-          {/* Foto */}
-          <div className="relative flex h-32 items-end overflow-hidden rounded-xl bg-muted p-2.5">
-            {producto.imageUrl ? (
-              <img
-                src={producto.imageUrl}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <UtensilsCrossed className="h-8 w-8 text-muted-foreground/40" />
-              </div>
-            )}
-            {puedeEditar && (
-              <div className="relative flex items-center gap-1.5">
-                <div className="rounded-lg bg-background/80 px-2 py-1 backdrop-blur">
-                  <ImageUploadButton
-                    currentUrl={producto.imageUrl}
-                    onUploaded={cambiarFoto}
+          {/* Foto
+              El plato se ve ENTERO (`object-contain`): esta foto es lo que el
+              comensal verá en la carta, así que recortarla aquí escondía
+              justo lo que hay que revisar. Los botones van debajo, fuera de
+              la imagen, porque flotando encima tapaban el plato. */}
+          <div className="space-y-2">
+            <div className="relative flex h-40 items-center justify-center overflow-hidden rounded-xl bg-muted">
+              {producto.imageUrl ? (
+                <>
+                  {/* Copia difuminada para rellenar los lados en vez de dejar
+                      dos franjas muertas cuando la foto no es apaisada. */}
+                  <img
+                    src={producto.imageUrl}
+                    alt=""
+                    aria-hidden
+                    className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl"
                   />
-                </div>
+                  <img
+                    src={producto.imageUrl}
+                    alt=""
+                    className="relative h-full w-full object-contain"
+                  />
+                </>
+              ) : (
+                <UtensilsCrossed className="h-8 w-8 text-muted-foreground/40" />
+              )}
+            </div>
+            {puedeEditar && (
+              <div className="flex items-center gap-3">
+                <ImageUploadButton
+                  currentUrl={producto.imageUrl}
+                  onUploaded={cambiarFoto}
+                  showPreview={false}
+                />
                 {producto.imageUrl && (
                   <button
                     type="button"
                     onClick={quitarFoto}
-                    className="rounded-lg bg-background/80 px-2 py-1 text-[11.5px] font-semibold text-muted-foreground backdrop-blur transition-colors hover:text-destructive"
+                    className="text-[11.5px] font-semibold text-muted-foreground transition-colors hover:text-destructive"
                   >
                     Quitar
                   </button>

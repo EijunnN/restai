@@ -4,7 +4,15 @@ import { memo, useEffect, useMemo, useState } from "react";
 import { Input } from "@restai/ui/components/input";
 import { Button } from "@restai/ui/components/button";
 import { Badge } from "@restai/ui/components/badge";
-import { AlertTriangle, Loader2, RefreshCw, Search, UtensilsCrossed, X } from "lucide-react";
+import {
+  AlertTriangle,
+  EyeOff,
+  Loader2,
+  RefreshCw,
+  Search,
+  UtensilsCrossed,
+  X,
+} from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import {
   componerSecciones,
@@ -140,6 +148,7 @@ function ProductGridComponent({
               nombre={cat.name}
               cuenta={conteo.get(cat.id) ?? 0}
               activa={categoriaActiva(cat.id)}
+              oculta={cat.is_active === false}
               onClick={() => onCategoryChange(cat.id)}
             />
           ))}
@@ -287,6 +296,12 @@ function ProductGridComponent({
                     <span className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-muted-foreground">
                       {seccion.titulo}
                     </span>
+                    {seccion.oculta && (
+                      <span className="flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                        <EyeOff className="h-3 w-3" />
+                        Fuera de la carta
+                      </span>
+                    )}
                     <span className="h-px flex-1 bg-border/70" />
                     <span className="text-[11.5px] text-muted-foreground">{seccion.nota}</span>
                   </div>
@@ -377,11 +392,14 @@ function FilaDeCategoria({
   nombre,
   cuenta,
   activa,
+  oculta,
   onClick,
 }: {
   nombre: string;
   cuenta: number;
   activa: boolean;
+  /** El dueño la sacó de la carta: se puede vender, pero el comensal no la ve. */
+  oculta?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -394,6 +412,12 @@ function FilaDeCategoria({
       }`}
     >
       <span className="min-w-0 flex-1 truncate">{nombre}</span>
+      {oculta && (
+        <EyeOff
+          className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-label="Fuera de la carta del comensal"
+        />
+      )}
       <span className={`text-[11.5px] tabular-nums ${activa ? "" : "text-muted-foreground/60"}`}>
         {cuenta}
       </span>

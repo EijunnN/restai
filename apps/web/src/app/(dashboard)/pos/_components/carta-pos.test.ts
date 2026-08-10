@@ -160,6 +160,40 @@ describe("secciones", () => {
     expect(secciones).toEqual([]);
   });
 
+  test("una categoría fuera de la carta se marca, pero se sigue pudiendo vender", () => {
+    // El dueño la despublicó: el comensal no la ve por QR (`customer.ts` filtra
+    // por is_active). En caja sí se puede cantar —a veces hay motivo— pero la
+    // pantalla tiene que decirlo, o se vende creyendo que está publicada.
+    const secciones = componerSecciones({
+      platos: [plato({ id: "x", name: "Menú del personal", category_id: "ent" })],
+      categorias: [{ id: "ent", name: "Entradas", is_active: false }],
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    expect(secciones).toHaveLength(1);
+    expect(secciones[0]!.oculta).toBe(true);
+  });
+
+  test("una categoría publicada no se marca", () => {
+    const secciones = componerSecciones({
+      platos: [plato({ id: "x", name: "Causa", category_id: "ent" })],
+      categorias: [{ id: "ent", name: "Entradas", is_active: true }],
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    expect(secciones[0]!.oculta).toBe(false);
+  });
+
+  test("sin el dato, se asume publicada: no se inventa una alarma", () => {
+    const secciones = componerSecciones({
+      platos: [plato({ id: "x", name: "Causa", category_id: "ent" })],
+      categorias: [{ id: "ent", name: "Entradas" }],
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    expect(secciones[0]!.oculta).toBe(false);
+  });
+
   test("un plato sin categoría no desaparece, cae al final", () => {
     // Es el plato que alguien creó con prisa. Que no se venda por no verse sería
     // peor que enseñarlo en un cajón de sastre.

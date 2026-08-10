@@ -27,6 +27,7 @@ import { CartSidebar } from "./_components/cart-sidebar";
 import { ModifierDialog, type CartModifier } from "./_components/modifier-dialog";
 import { SuccessDialog } from "./_components/success-dialog";
 import { ChargeDialog } from "./_components/charge-dialog";
+import { TurnoResumen } from "./_components/turno-resumen";
 import { OpenAccounts } from "./_components/open-accounts";
 import { componerCuentas, type CuentaAbierta } from "./_components/pos-accounts";
 import { CobrarDialog } from "../tables/_components/cobrar-dialog";
@@ -255,10 +256,16 @@ export default function PosPage() {
     [cuentas, claveCuenta],
   );
 
-  // Tasa de IGV de la sede. Se lee de /api/branches (permiso `branch:read`, que
-  // sí tienen cajero y mozo) y NO de /api/settings/branch, que exige
-  // `settings:read`: justo los dos roles que viven en el POS no lo tienen, así
-  // que ahí la tasa habría vuelto siempre al 18 % cableado.
+  /*
+    Tasa de IGV de la sede, leída de /api/branches (`branch:read`).
+
+    OJO, aquí hubo un comentario FALSO durante meses: decía que cajero y mozo no
+    tenían `settings:read`. Sí lo tienen (packages/config/src/index.ts, líneas 53
+    y 76), y cada uno por un motivo escrito al lado. La razón real para usar
+    /api/branches es otra y sigue siendo buena: esta pantalla YA carga la lista
+    de sedes para saber en cuál está, así que la tasa viene sin una petición de
+    más.
+  */
   const selectedBranchId = useAuthStore((state) => state.selectedBranchId);
   const role = useAuthStore((state) => state.user?.role);
   const { data: branches } = useBranches();
@@ -797,6 +804,7 @@ export default function PosPage() {
         cart={cart}
         onItemClick={handleItemClick}
         pendingItemIds={pendingItemIds}
+        pieDelCarril={<TurnoResumen />}
       />
 
       <div className="hidden lg:flex lg:w-[24rem] xl:w-[28rem]">

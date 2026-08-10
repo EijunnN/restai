@@ -115,11 +115,17 @@ export interface PaymentSummary {
   pending: { total: number; count: number };
 }
 
-/** Resumen del DÍA operativo de Lima (lo calcula la API, no admite rango). */
-export function usePaymentSummary() {
+/**
+ * Resumen del DÍA operativo de Lima (lo calcula la API, no admite rango).
+ *
+ * @param enabled Se apaga para quien no tenga `payments:read`, en vez de pedirlo
+ *        y comerse un 403 en cada carga.
+ */
+export function usePaymentSummary(enabled = true) {
   return useQuery<PaymentSummary>({
     queryKey: ["payments", "summary"],
     queryFn: () => apiFetch<PaymentSummary>("/api/payments/summary"),
+    enabled,
   });
 }
 

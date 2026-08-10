@@ -49,11 +49,19 @@ export interface CashSession {
   totals?: CashTotals;
 }
 
-/** La caja abierta de la sede, o `null` si el turno aún no empezó. */
-export function useCurrentCashSession() {
+/**
+ * La caja abierta de la sede, o `null` si el turno aún no empezó.
+ *
+ * @param enabled Permite apagarla para roles sin `cash:read`. El MOZO no lo
+ *        tiene, y el punto de venta es una pantalla que comparten cajero y
+ *        mozo: sin este interruptor, la tablet del mozo acumulaba un 403 cada
+ *        treinta segundos durante todo el servicio.
+ */
+export function useCurrentCashSession(enabled = true) {
   return useQuery<CashSession | null>({
     queryKey: ["cash", "current"],
     queryFn: () => apiFetch<CashSession | null>("/api/cash/current"),
+    enabled,
     // Los totales cambian con cada cobro: se refrescan solos mientras la
     // pantalla está abierta, sin que el cajero tenga que pulsar nada.
     refetchInterval: 30_000,

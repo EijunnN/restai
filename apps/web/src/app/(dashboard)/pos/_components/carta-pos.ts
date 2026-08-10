@@ -27,6 +27,13 @@ export interface PlatoDeCarta {
 export interface CategoriaDeCarta {
   id: string;
   name: string;
+  /**
+   * Si es `false`, el dueño la sacó de la carta y el comensal NO la ve por QR
+   * (`customer.ts` filtra por `is_active`). El punto de venta sí la deja vender
+   * —a veces hay motivo: personal, temporada a medio montar— pero la marca, para
+   * que nadie la cante creyendo que está publicada.
+   */
+  is_active?: boolean;
 }
 
 export interface SeccionDeCarta {
@@ -34,6 +41,8 @@ export interface SeccionDeCarta {
   titulo: string;
   /** "9 platos", "2 coinciden". Lo que va a la derecha de la cabecera. */
   nota: string;
+  /** La categoría no está publicada en la carta del comensal. */
+  oculta: boolean;
   platos: PlatoDeCarta[];
 }
 
@@ -119,6 +128,7 @@ export function componerSecciones({
 
   const orden = [...categorias.map((c) => c.id), ""];
   const nombres = new Map(categorias.map((c) => [c.id, c.name]));
+  const ocultas = new Set(categorias.filter((c) => c.is_active === false).map((c) => c.id));
 
   const secciones: SeccionDeCarta[] = [];
   for (const id of orden) {
@@ -133,6 +143,7 @@ export function componerSecciones({
     secciones.push({
       id: id || "sin-categoria",
       titulo: nombres.get(id) ?? "Sin categoría",
+      oculta: ocultas.has(id),
       nota: termino
         ? `${suyos.length} ${suyos.length === 1 ? "coincide" : "coinciden"}`
         : `${suyos.length} ${suyos.length === 1 ? "plato" : "platos"}`,
