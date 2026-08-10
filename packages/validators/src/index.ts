@@ -208,6 +208,11 @@ export const createModifierSchema = z.object({
   name: z.string().min(1).max(255),
   price: z.number().int().min(0).default(0),
   isAvailable: z.boolean().default(true),
+  /**
+   * Viene marcada de serie: lo que el plato lleva salvo que digan lo contrario.
+   * El punto de venta la premarca, así que el cajero solo toca las excepciones.
+   */
+  isDefault: z.boolean().default(false),
 });
 
 export const updateModifierGroupSchema = createModifierGroupSchema.partial();
@@ -215,6 +220,7 @@ export const updateModifierSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   price: z.number().int().min(0).optional(),
   isAvailable: z.boolean().optional(),
+  isDefault: z.boolean().optional(),
 });
 
 // Space validators

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@restai/ui/components/input";
 import { Button } from "@restai/ui/components/button";
@@ -16,6 +16,7 @@ import { Badge } from "@restai/ui/components/badge";
 import { Check, ChevronDown, Plus, Minus, Loader2, UtensilsCrossed } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { apiFetch } from "@/lib/fetcher";
+import { alternarNota, tieneNota, NOTAS_RAPIDAS } from "./notas-rapidas";
 import type { PosMenuItem } from "../page";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,9 @@ export function ModifierDialog({
   const [quantity, setQuantity] = useState(1);
   const [notes, setNotes] = useState("");
 
+  /** Grupos ya sembrados con sus opciones por defecto en esta apertura. */
+  const sembrado = useRef<string | null>(null);
+
   // Reset on open
   useEffect(() => {
     if (open) {
@@ -66,8 +70,37 @@ export function ModifierDialog({
       setOpenGroups({});
       setQuantity(1);
       setNotes("");
+      sembrado.current = null;
     }
   }, [open]);
+
+  /*
+    Lo que el plato lleva de serie viene ya marcado.
+
+    Un pollo a la brasa sale con papas, ají y huacatay salvo que digan otra cosa:
+    obligar a marcarlo son tres toques por plato y, sobre todo, una comanda que
+    dice menos de lo que va a salir del horno cuando alguien se olvida.
+
+    Se siembra UNA vez por apertura (`sembrado`), y no en cada repintado: si no,
+    quitar una opción por defecto la devolvería marcada al instante siguiente y
+    el cajero no podría quitarla nunca.
+  */
+  useEffect(() => {
+    if (!open || !item || modifierGroups.length === 0) return;
+    if (sembrado.current === item.id) return;
+    sembrado.current = item.id;
+
+    const inicial: Record<string, string[]> = {};
+    for (const grupo of modifierGroups) {
+      const tope = grupo.max_selections || 1;
+      const porDefecto = (grupo.modifiers ?? [])
+        .filter((m: any) => m.is_default && m.is_available !== false)
+        .slice(0, tope)
+        .map((m: any) => m.id);
+      if (porDefecto.length > 0) inicial[grupo.id] = porDefecto;
+    }
+    if (Object.keys(inicial).length > 0) setSelected(inicial);
+  }, [open, item?.id, modifierGroups]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!item) return null;
 
@@ -258,7 +291,7 @@ export function ModifierDialog({
 
             {/* Notes */}
             <div>
-              <p className="text-sm font-semibold mb-1.5">Notas (opcional)</p>
+              <p className="text-sm font-semibold mb-1.5">Nota a cocina (opcional)</p>
               <Input
                 placeholder="Sin cebolla, extra picante…"
                 value={notes}
@@ -266,6 +299,32 @@ export function ModifierDialog({
                 className="h-11 text-sm"
                 aria-label="Notas para la cocina sobre este producto"
               />
+              {/*
+                Las cinco notas que se escriben todas las noches, a un toque.
+                Teclear "sin sal" en una tablet con el cliente delante es lento y
+                se escribe de cinco formas distintas: la cocina lee mejor una
+                frase que siempre es la misma.
+              */}
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {NOTAS_RAPIDAS.map((nota) => {
+                  const puesta = tieneNota(notes, nota);
+                  return (
+                    <button
+                      key={nota}
+                      type="button"
+                      onClick={() => setNotes((actual) => alternarNota(actual, nota))}
+                      aria-pressed={puesta}
+                      className={`h-9 rounded-lg border px-3 text-xs font-semibold transition-colors ${
+                        puesta
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border text-muted-foreground hover:border-primary/40"
+                      }`}
+                    >
+                      {nota}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}

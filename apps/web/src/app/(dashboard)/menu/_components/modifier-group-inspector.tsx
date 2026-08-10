@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "@restai/ui/components/button";
 import { Input } from "@restai/ui/components/input";
 import { Label } from "@restai/ui/components/label";
-import { Check, Copy, GripVertical, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, Copy, GripVertical, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { formatCurrency } from "@/lib/utils";
 import {
@@ -185,6 +185,31 @@ export function ModifierGroupInspector({
       setAnadiendo(false);
     } catch (err: any) {
       toast.error("No se pudo añadir", { description: err?.message });
+    }
+  };
+
+  /**
+   * Marca o desmarca "de serie".
+   *
+   * En un grupo de elección única, marcar una implica desmarcar las demás: dos
+   * "de serie" en un "elige 1" dejarían al punto de venta escogiendo por su
+   * cuenta la primera que le llegue, que es justo el tipo de decisión silenciosa
+   * que acaba en un plato equivocado.
+   */
+  const alternarDeSerie = async (opcion: { id: string; is_default?: boolean }) => {
+    const encender = !opcion.is_default;
+    const unicaEleccion = (grupo.max_selections ?? 1) === 1;
+    try {
+      if (encender && unicaEleccion) {
+        for (const otra of opciones) {
+          if (otra.id !== opcion.id && otra.is_default) {
+            await actualizarOpcion.mutateAsync({ id: otra.id, isDefault: false });
+          }
+        }
+      }
+      await actualizarOpcion.mutateAsync({ id: opcion.id, isDefault: encender });
+    } catch (err: any) {
+      toast.error("No se pudo cambiar la opción de serie", { description: err?.message });
     }
   };
 
@@ -416,6 +441,30 @@ export function ModifierGroupInspector({
                   </span>
                   {puedeEditar && (
                     <>
+                      {/*
+                        "De serie": lo que el plato lleva salvo que digan lo
+                        contrario. El punto de venta abre con ello ya marcado, y
+                        el cajero solo toca las excepciones.
+                      */}
+                      <button
+                        type="button"
+                        aria-pressed={!!o.is_default}
+                        aria-label={`${o.is_default ? "Quitar de serie" : "Marcar de serie"}: ${o.name}`}
+                        title={
+                          o.is_default
+                            ? "Viene marcada de serie en el punto de venta"
+                            : "Marcar como lo que lleva de serie"
+                        }
+                        disabled={actualizarOpcion.isPending}
+                        onClick={() => alternarDeSerie(o)}
+                        className={`shrink-0 transition-colors ${
+                          o.is_default
+                            ? "text-amber-500"
+                            : "text-muted-foreground/40 hover:text-muted-foreground"
+                        }`}
+                      >
+                        <Star className={`h-3.5 w-3.5 ${o.is_default ? "fill-current" : ""}`} />
+                      </button>
                       <Interruptor
                         tamano="sm"
                         activo={o.is_available ?? true}

@@ -1029,6 +1029,7 @@ menu.post(
         name: body.name,
         price: body.price,
         is_available: body.isAvailable,
+        is_default: body.isDefault,
         // Al final del grupo: quien añade "Bien picante" a una escala lo quiere
         // detrás de "Picante", no delante de "Sin ají".
         sort_order: await siguientePosicion(
@@ -1460,6 +1461,7 @@ menu.patch(
     if (body.name !== undefined) updateData.name = body.name;
     if (body.price !== undefined) updateData.price = body.price;
     if (body.isAvailable !== undefined) updateData.is_available = body.isAvailable;
+    if (body.isDefault !== undefined) updateData.is_default = body.isDefault;
 
     const [updated] = await db
       .update(schema.modifiers)

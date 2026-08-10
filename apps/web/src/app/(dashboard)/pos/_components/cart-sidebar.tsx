@@ -16,12 +16,13 @@ import {
   Plus,
   Minus,
   Trash2,
-  Check,
   Loader2,
   UtensilsCrossed,
   Phone,
   MapPin,
   Truck,
+  ChefHat,
+  Wallet,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -32,6 +33,9 @@ import { useAuthStore } from "@/stores/auth-store";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { TablePicker } from "./table-picker";
 import { CustomerPicker } from "./customer-picker";
+import { AccountBar } from "./account-bar";
+import { SentLines } from "./sent-lines";
+import { accionPrincipal, type CuentaAbierta, type TipoCuenta } from "./pos-accounts";
 import type { PosCartItem, PosCustomer } from "../page";
 
 /** 1800 -> "18", 1850 -> "18,5". La tasa se pinta tal cual la tiene la sede. */
@@ -60,6 +64,11 @@ export function CartSidebar({
   onRemove,
   onClearCart,
   onCreateOrder,
+  onCobrar,
+  cuenta,
+  cuentasAbiertas,
+  onVerCuentas,
+  onSoltarCuenta,
   deliveryPhone,
   onDeliveryPhoneChange,
   deliveryAddress,
@@ -92,7 +101,16 @@ export function CartSidebar({
   onUpdateQty: (lineId: string, qty: number) => void;
   onRemove: (lineId: string) => void;
   onClearCart: () => void;
+  /** Manda lo cantado a cocina: abre la cuenta o la amplía, y NO cobra. */
   onCreateOrder: () => void;
+  /** Cierra la venta: manda lo que falte y abre el cobro. */
+  onCobrar: () => void;
+  /** Cuenta abierta sobre la que se está cantando. `null` = venta nueva. */
+  cuenta: CuentaAbierta | null;
+  /** Cuántas cuentas hay abiertas en el local ahora mismo. */
+  cuentasAbiertas: number;
+  onVerCuentas: () => void;
+  onSoltarCuenta: () => void;
   deliveryPhone: string;
   onDeliveryPhoneChange: (v: string) => void;
   deliveryAddress: string;
@@ -142,6 +160,43 @@ export function CartSidebar({
   const total = subtotal + tax + deliveryFeeCents;
   const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
 
+  /*
+    Qué hace el botón grande.
+
+    En salón lo que cierra el momento es mandar a cocina —se cobra al final, y a
+    veces media hora después—; en mostrador es cobrar, porque el cliente está
+    delante esperando su bolsa. Tratar los dos igual obligaba a uno de los dos a
+    dar un rodeo, y ese rodeo se da cincuenta veces por servicio.
+  */
+  const tipoCuenta: TipoCuenta = cuenta
+    ? cuenta.tipo
+    : orderType === "dine_in"
+      ? "mesa"
+      : orderType === "takeout"
+        ? "llevar"
+        : "delivery";
+  const saldoCuenta = cuenta?.saldo ?? 0;
+  // En salón el botón de cobrar solo aparece con el carrito vacío, y entonces
+  // cobra el saldo de la cuenta. En mostrador cobra lo ya abierto MÁS lo que
+  // acaba de cantarse, porque va todo en el mismo movimiento.
+  const importeACobrar =
+    tipoCuenta === "mesa" ? (cart.length > 0 ? total : saldoCuenta) : saldoCuenta + total;
+  const accion = accionPrincipal({
+    tipo: tipoCuenta,
+    platosPorEnviar: cart.length,
+    totalCentimos: importeACobrar,
+    formatearImporte: formatCurrency,
+  });
+  const bloqueado = isPending || deliveryFeeInvalid;
+  // La salida que el botón grande deja fuera: cobrar una mesa que ya no espera
+  // nada más, o mandar a cocina sin cobrar todavía en mostrador.
+  const secundaria =
+    accion?.clave === "enviar" && saldoCuenta > 0
+      ? ({ clave: "cobrar", etiqueta: `Cobrar ${formatCurrency(saldoCuenta)}` } as const)
+      : accion?.clave === "cobrar" && cart.length > 0
+        ? ({ clave: "enviar", etiqueta: "Solo mandar a cocina" } as const)
+        : null;
+
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       <div className="flex items-center justify-between mb-3">
@@ -181,64 +236,93 @@ export function CartSidebar({
         }}
       />
 
-      {/* Tipo de pedido */}
-      <div className="mb-3 grid grid-cols-3 gap-1.5">
-        <Button
-          variant={orderType === "dine_in" ? "default" : "outline"}
-          size="sm"
-          className="h-11"
-          onClick={() => onOrderTypeChange("dine_in")}
-        >
-          Aquí
-        </Button>
-        <Button
-          variant={orderType === "takeout" ? "default" : "outline"}
-          size="sm"
-          className="h-11"
-          onClick={() => onOrderTypeChange("takeout")}
-        >
-          Llevar
-        </Button>
-        <Button
-          variant={orderType === "delivery" ? "default" : "outline"}
-          size="sm"
-          className="h-11"
-          onClick={() => onOrderTypeChange("delivery")}
-        >
-          <Truck className="h-3.5 w-3.5 mr-1" />
-          Delivery
-        </Button>
-      </div>
+      <AccountBar
+        cuenta={cuenta}
+        abiertas={cuentasAbiertas}
+        onVerTodas={onVerCuentas}
+        onSoltar={onSoltarCuenta}
+      />
 
       {/*
-        Mesa: solo tiene sentido en el pedido "Aquí". Sin mesa el pedido nace sin
-        visita, no entra en la cuenta del salón y liberar la mesa no lo cierra.
+        Tipo y mesa: los elige quien ABRE la cuenta. Sobre una cuenta que ya
+        existe no son preguntas, son hechos —cambiarlos ahí no movería el pedido
+        de sitio, solo mentiría sobre dónde va—, así que desaparecen.
       */}
-      {orderType === "dine_in" && (
-        <div className="mb-3">
-          <TablePicker value={tableId} onChange={onTableChange} />
+      {!cuenta && (
+        <>
+          <div className="mb-3 grid grid-cols-3 gap-1.5">
+            <Button
+              variant={orderType === "dine_in" ? "default" : "outline"}
+              size="sm"
+              className="h-11"
+              onClick={() => onOrderTypeChange("dine_in")}
+            >
+              Aquí
+            </Button>
+            <Button
+              variant={orderType === "takeout" ? "default" : "outline"}
+              size="sm"
+              className="h-11"
+              onClick={() => onOrderTypeChange("takeout")}
+            >
+              Llevar
+            </Button>
+            <Button
+              variant={orderType === "delivery" ? "default" : "outline"}
+              size="sm"
+              className="h-11"
+              onClick={() => onOrderTypeChange("delivery")}
+            >
+              <Truck className="h-3.5 w-3.5 mr-1" />
+              Delivery
+            </Button>
+          </div>
+
+          {/*
+            Mesa: solo tiene sentido en el pedido "Aquí". Sin mesa el pedido nace
+            sin visita, no entra en la cuenta del salón y liberar la mesa no lo
+            cierra.
+          */}
+          {orderType === "dine_in" && (
+            <div className="mb-3">
+              <TablePicker value={tableId} onChange={onTableChange} />
+            </div>
+          )}
+        </>
+      )}
+
+      {/*
+        Cliente: identificarlo es lo que hace que la venta otorgue puntos.
+
+        Sobre un pedido de mostrador ya abierto no se pregunta: la ampliación
+        añade líneas a una orden que ya tiene su cliente, y volver a pedirlo
+        sugeriría que se puede cambiar. En una mesa sí, porque cada ronda es una
+        comanda nueva y todavía se puede identificar a quien paga.
+      */}
+      {(!cuenta || cuenta.tipo === "mesa") && (
+        <div className="mb-3 space-y-2">
+          <CustomerPicker customer={customer} onChange={onCustomerChange} />
+          {!customer && (
+            <div className="relative">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Nombre para la comanda (opcional)"
+                value={customerName}
+                onChange={(e) => onCustomerNameChange(e.target.value)}
+                className="h-11 pl-9 text-sm"
+                aria-label="Nombre del cliente para la comanda"
+              />
+            </div>
+          )}
         </div>
       )}
 
-      {/* Cliente: identificarlo es lo que hace que la venta otorgue puntos. */}
-      <div className="mb-3 space-y-2">
-        <CustomerPicker customer={customer} onChange={onCustomerChange} />
-        {!customer && (
-          <div className="relative">
-            <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Nombre para la comanda (opcional)"
-              value={customerName}
-              onChange={(e) => onCustomerNameChange(e.target.value)}
-              className="h-11 pl-9 text-sm"
-              aria-label="Nombre del cliente para la comanda"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Datos del delivery */}
-      {orderType === "delivery" && (
+      {/*
+        Datos del reparto: viajan con la orden que se crea. Al ampliar un reparto
+        ya despachado no se vuelven a preguntar —la dirección es la que es— y el
+        endpoint de ampliación tampoco los aceptaría.
+      */}
+      {orderType === "delivery" && !cuenta && (
         <div className="space-y-2 mb-3 p-2.5 rounded-lg border border-dashed">
           <div className="relative">
             <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -322,10 +406,18 @@ export function CartSidebar({
 
       {/* Líneas del pedido */}
       <div className="mb-3 flex-1 space-y-1.5 overflow-y-auto pr-1">
+        {/*
+          Lo que la cuenta YA pidió, antes de lo que está por mandarse. Sin esto,
+          la segunda ronda repite un plato que ya está en la mesa.
+        */}
+        {cuenta && <SentLines cuenta={cuenta} />}
+
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <ShoppingCart className="h-10 w-10 mb-2 opacity-20" />
-            <p className="text-sm">Toca un producto para agregar</p>
+            <p className="text-sm">
+              {cuenta ? "Toca un producto para ampliar esta cuenta" : "Toca un producto para agregar"}
+            </p>
           </div>
         ) : (
           cart.map((item) => {
@@ -457,24 +549,59 @@ export function CartSidebar({
         </div>
       )}
 
-      {/* Crear la orden */}
-      <Button
-        className="h-12 w-full rounded-2xl text-base font-semibold"
-        disabled={cart.length === 0 || isPending || deliveryFeeInvalid}
-        onClick={onCreateOrder}
-      >
-        {isPending ? (
-          <>
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            Creando...
-          </>
-        ) : (
-          <>
-            <Check className="h-5 w-5 mr-2" />
-            Crear Orden {cart.length > 0 && `· ${formatCurrency(total)}`}
-          </>
-        )}
-      </Button>
+      {/*
+        La acción que cierra este momento, y debajo la que no.
+
+        Sin nada cantado y sin nada que cobrar no hay botón: un "Crear Orden"
+        apagado ocupaba el mismo sitio sin decir qué falta para encenderlo.
+      */}
+      {accion ? (
+        <div className="space-y-2">
+          <Button
+            className="h-14 w-full rounded-2xl text-base font-bold"
+            disabled={bloqueado}
+            onClick={accion.clave === "cobrar" ? onCobrar : onCreateOrder}
+          >
+            {isPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {accion.clave === "cobrar" ? "Cobrando…" : "Mandando…"}
+              </>
+            ) : (
+              <span className="flex min-w-0 flex-col items-center leading-tight">
+                <span className="flex items-center gap-2">
+                  {accion.clave === "cobrar" ? (
+                    <Wallet className="h-5 w-5" />
+                  ) : (
+                    <ChefHat className="h-5 w-5" />
+                  )}
+                  {accion.etiqueta}
+                </span>
+                {accion.detalle && (
+                  <span className="text-[11px] font-medium opacity-80">{accion.detalle}</span>
+                )}
+              </span>
+            )}
+          </Button>
+
+          {secundaria && (
+            <Button
+              variant="outline"
+              className="h-11 w-full rounded-2xl text-sm font-semibold"
+              disabled={bloqueado}
+              onClick={secundaria.clave === "cobrar" ? onCobrar : onCreateOrder}
+            >
+              {secundaria.etiqueta}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <p className="rounded-2xl border border-dashed py-4 text-center text-xs text-muted-foreground">
+          {cuenta
+            ? "Esta cuenta no debe nada. Canta un plato para ampliarla."
+            : "Toca un plato para empezar la cuenta"}
+        </p>
+      )}
     </div>
   );
 }

@@ -90,6 +90,15 @@ export const modifiers = pgTable("modifiers", {
    * significado. Sin esta columna salían como quisiera Postgres.
    */
   sort_order: integer("sort_order").default(0).notNull(),
+  /**
+   * Viene marcada de serie (migración 0020).
+   *
+   * Un pollo a la brasa sale con papas, ají y huacatay salvo que digan lo
+   * contrario: el cajero solo debería tocar lo que se sale de la norma. Sigue
+   * siendo una elección explícita —viaja a `order_item_modifiers` como
+   * cualquier otra— y su precio, si lo tiene, se ve en la línea.
+   */
+  is_default: boolean("is_default").default(false).notNull(),
 }, (table) => [
   index("idx_modifiers_group_order").on(table.group_id, table.sort_order),
 ]);

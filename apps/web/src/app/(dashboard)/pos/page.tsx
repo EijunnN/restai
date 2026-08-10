@@ -11,10 +11,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@restai/ui/components/sheet";
-import { ShoppingCart } from "lucide-react";
+import { LayoutList, Plus, ShoppingCart } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { useCategories, useMenuItems } from "@/hooks/use-menu";
-import { useCreateOrder } from "@/hooks/use-orders";
+import { useAddOrderItems, useCreateOrder, useOrders } from "@/hooks/use-orders";
+import { useTables, type TableRow } from "@/hooks/use-tables";
+import { useServiceRequests } from "@/hooks/use-service-requests";
 import { useBranches, type OrgSettings } from "@/hooks/use-settings";
 import { useAuthStore } from "@/stores/auth-store";
 import { hasPermission } from "@/lib/permissions";
@@ -25,6 +27,9 @@ import { CartSidebar } from "./_components/cart-sidebar";
 import { ModifierDialog, type CartModifier } from "./_components/modifier-dialog";
 import { SuccessDialog } from "./_components/success-dialog";
 import { ChargeDialog } from "./_components/charge-dialog";
+import { OpenAccounts } from "./_components/open-accounts";
+import { componerCuentas, type CuentaAbierta } from "./_components/pos-accounts";
+import { CobrarDialog } from "../tables/_components/cobrar-dialog";
 
 // ---------------------------------------------------------------------------
 // Types (exported for child components)
@@ -154,6 +159,25 @@ export default function PosPage() {
   const [isPaid, setIsPaid] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
 
+  /*
+    Sobre qué cuenta se está cantando.
+
+    Se guarda la CLAVE y no la cuenta entera: los saldos se refrescan cada pocos
+    segundos y una copia congelada acabaría cobrando el importe de hace tres
+    rondas. La cuenta viva se busca por clave en cada repintado.
+  */
+  const [claveCuenta, setClaveCuenta] = useState<string | null>(null);
+  const [cuentasAbiertasOpen, setCuentasAbiertasOpen] = useState(false);
+  /** Mesa cuyo cobro completo (dividir, facturar) está abierto. */
+  const [mesaACobrar, setMesaACobrar] = useState<TableRow | null>(null);
+  /**
+   * Lo que queda por cobrar de `lastOrder`, cuando no es su total.
+   *
+   * Solo pasa al ampliar una cuenta que ya recibió un adelanto: el diálogo debe
+   * abrirse con lo que falta, no con el total nuevo entero.
+   */
+  const [pendienteCobro, setPendienteCobro] = useState<number | undefined>(undefined);
+
   // Modifier dialog state
   const [modDialogItem, setModDialogItem] = useState<PosMenuItem | null>(null);
   const [modDialogOpen, setModDialogOpen] = useState(false);
@@ -177,7 +201,42 @@ export default function PosPage() {
     refetch: refetchItems,
   } = useMenuItems(selectedCategory || undefined);
   const createOrder = useCreateOrder();
+  const addOrderItems = useAddOrderItems();
   const printKitchenTicket = usePrintKitchenTicket();
+
+  /*
+    Las cuentas abiertas del local.
+
+    Dos fuentes, porque el servidor guarda dos cosas distintas: las mesas traen
+    el saldo YA agregado de su visita (suma sus órdenes y resta lo cobrado sin
+    anular), y los pedidos de mostrador y reparto no tienen visita, así que son
+    su propia cuenta. Mezclar los dos saldos sin cuidado contaría dos veces el
+    dinero del salón: de eso se encarga `componerCuentas`.
+  */
+  const { data: tablesData, isLoading: tablesLoading } = useTables();
+  const { data: openOrders, isLoading: ordersLoading } = useOrders({
+    scope: "open",
+    limit: 100,
+  });
+  // Qué mesas han pedido la cuenta: es lo que separa "esperan cobro" de "siguen
+  // comiendo tranquilas".
+  const { data: avisosDeCuenta } = useServiceRequests({ type: "request_bill" });
+
+  const cuentas = useMemo(
+    () =>
+      componerCuentas({
+        mesas: tablesData?.tables ?? [],
+        ordenes: (openOrders?.orders ?? []) as any[],
+        mesasConCuentaPedida: new Set(
+          (avisosDeCuenta ?? []).map((a) => a.table_id).filter((id): id is string => !!id),
+        ),
+      }),
+    [tablesData, openOrders, avisosDeCuenta],
+  );
+  const cuentaActiva = useMemo(
+    () => cuentas.find((c) => c.clave === claveCuenta) ?? null,
+    [cuentas, claveCuenta],
+  );
 
   // Tasa de IGV de la sede. Se lee de /api/branches (permiso `branch:read`, que
   // sí tienen cajero y mozo) y NO de /api/settings/branch, que exige
@@ -337,22 +396,208 @@ export default function PosPage() {
       };
     });
 
-  const handleCreateOrder = async () => {
-    if (cart.length === 0) return;
+  /**
+   * Manda lo cantado al servidor y devuelve la foto de la cuenta resultante.
+   *
+   * Tres caminos, y el tipo de cuenta decide cuál:
+   *
+   * - Sin cuenta activa: nace una cuenta nueva (`POST /orders`).
+   * - Cuenta de MESA: cada ronda es su propia comanda colgada de la misma visita
+   *   (`POST /orders` con `tableId`). La cocina recibe un ticket por ronda, que
+   *   es como se trabaja en el pase.
+   * - Cuenta de mostrador o reparto: no hay visita de la que colgar nada, así
+   *   que las líneas se añaden a la orden que ya existe (`POST /orders/:id/items`).
+   *
+   * Devuelve `null` si no se envió nada, para que quien llame no siga adelante.
+   *
+   * @param silencioso No abre el resumen con "imprimir comanda". Lo usa el
+   *        cobro, que va a abrir su propia pantalla justo después: dos diálogos
+   *        encadenados son un toque extra en el momento de más prisa.
+   */
+  const enviarPedido = async (silencioso = false): Promise<PosOrderSnapshot | null> => {
+    if (cart.length === 0) return null;
+    if (creatingOrderRef.current) return null;
+
+    // Ampliación de un pedido de mostrador o reparto ya abierto.
+    if (cuentaActiva && cuentaActiva.tipo !== "mesa") {
+      const orderId = cuentaActiva.orderIds[0];
+      if (!orderId) {
+        toast.error("Esta cuenta ya no tiene un pedido al que añadir");
+        return null;
+      }
+      creatingOrderRef.current = true;
+      try {
+        const res = await addOrderItems.mutateAsync({
+          orderId,
+          items: cart.map((item) => ({
+            menuItemId: item.menuItemId,
+            quantity: item.quantity,
+            notes: item.notes || undefined,
+            modifiers: item.modifiers.map((m) => ({ modifierId: m.modifierId })),
+          })),
+        });
+
+        const snapshot: PosOrderSnapshot = {
+          id: res.id,
+          orderNumber: res.order_number ?? "",
+          createdAt: new Date().toISOString(),
+          type: cuentaActiva.tipo === "delivery" ? "delivery" : "takeout",
+          tableNumber: null,
+          customerName: cuentaActiva.cliente,
+          notes: orderNotes.trim() || undefined,
+          // La comanda que se imprime es la de ESTA ronda: lo anterior ya salió.
+          items: buildTicketLines(cart),
+          subtotal: res.subtotal,
+          discount: res.discount ?? 0,
+          tax: res.tax,
+          deliveryFee: 0,
+          total: res.total,
+        };
+        setLastOrder(snapshot);
+        // El total de la respuesta es el de la orden ENTERA; lo que el cliente
+        // debe ahora es eso menos lo que ya había entregado.
+        setPendienteCobro(Math.max(0, res.total - cuentaActiva.pagado));
+        setCart([]);
+        setOrderNotes("");
+        setMobileCartOpen(false);
+        if (!silencioso) setSuccessDialog(true);
+        toast.success(`Añadido a ${cuentaActiva.nombre}`);
+        return snapshot;
+      } catch (err: any) {
+        toast.error(err?.message || "No se pudo añadir a la cuenta");
+        return null;
+      } finally {
+        creatingOrderRef.current = false;
+      }
+    }
+
+    return handleCreateOrder(silencioso);
+  };
+
+  /**
+   * Cierra la venta: manda lo que quede por mandar y abre el cobro.
+   *
+   * El cobro tiene dos tamaños. El de mesa es el completo —dividir por producto,
+   * cobros parciales, liberar la mesa al saldar—, porque una mesa casi nunca
+   * paga de una sola forma. El de mostrador es el rápido: un método, un importe,
+   * el vuelto y a por el siguiente.
+   */
+  const handleCobrar = async () => {
+    /*
+      La cuenta se congela ANTES de mandar nada.
+
+      Mandar una ronda suelta la cuenta activa (el carrito queda limpio para el
+      siguiente), así que leer `cuentaActiva` después del envío daría null y una
+      mesa acabaría cobrando solo su última comanda en vez de la visita entera.
+    */
+    const cuenta = cuentaActiva;
+    let orden: PosOrderSnapshot | null = null;
+    // El resumen de la comanda anterior no puede quedar encima del cobro: son
+    // dos diálogos apilados y el de abajo se lleva los toques.
+    setSuccessDialog(false);
+
+    if (cart.length > 0) {
+      const enviada = await enviarPedido(true);
+      if (!enviada) return;
+      orden = enviada;
+    }
+
+    // Mesa: el cobro completo trabaja sobre la visita entera, no sobre la última
+    // comanda. Cobrar solo la última ronda dejaría el resto de la mesa sin pagar.
+    const claveMesa = cuenta?.tipo === "mesa" ? cuenta.tableId : null;
+    if (claveMesa) {
+      const mesa = (tablesData?.tables ?? []).find((t) => t.id === claveMesa);
+      if (!mesa) {
+        toast.error("La mesa de esta cuenta ya no está disponible");
+        return;
+      }
+      setMesaACobrar(mesa);
+      return;
+    }
+
+    // Mostrador y reparto: cobro rápido sobre la orden.
+    if (!orden && cuenta) {
+      const orderId = cuenta.orderIds[0];
+      if (!orderId) {
+        toast.error("Esta cuenta ya no tiene un pedido que cobrar");
+        return;
+      }
+      const cargada = await cargarOrdenParaCobro(orderId);
+      if (!cargada) return;
+      orden = cargada;
+      setPendienteCobro(cuenta.saldo);
+    }
+
+    if (!orden) return;
+    setLastOrder(orden);
+    setChargeDialog(true);
+  };
+
+  /** Trae del servidor una orden ya existente en el formato que cobra el POS. */
+  const cargarOrdenParaCobro = async (orderId: string): Promise<PosOrderSnapshot | null> => {
+    try {
+      const orden = await queryClient.fetchQuery<any>({
+        queryKey: ["orders", orderId],
+        queryFn: () => apiFetch<any>(`/api/orders/${orderId}`),
+      });
+      return {
+        id: orden.id,
+        orderNumber: orden.order_number ?? "",
+        createdAt: orden.created_at ?? new Date().toISOString(),
+        type: orden.type,
+        tableNumber: orden.table_number ?? null,
+        customerName: orden.customer_name ?? null,
+        notes: orden.notes || undefined,
+        items: (orden.items ?? [])
+          // Una línea anulada ("86") no se cobra ni se imprime en el recibo.
+          .filter((i: any) => i.status !== "cancelled")
+          .map((i: any) => ({
+            name: i.name,
+            quantity: i.quantity,
+            unit_price: i.unit_price,
+            total: i.total,
+            notes: i.notes || undefined,
+            modifiers: (i.modifiers ?? []).map((m: any) => ({ name: m.name })),
+          })),
+        subtotal: orden.subtotal ?? 0,
+        discount: orden.discount ?? 0,
+        tax: orden.tax ?? 0,
+        deliveryFee: orden.delivery_fee ?? 0,
+        total: orden.total ?? 0,
+      };
+    } catch (err: any) {
+      toast.error(err?.message || "No se pudo abrir la cuenta para cobrarla");
+      return null;
+    }
+  };
+
+  const handleCreateOrder = async (silencioso = false): Promise<PosOrderSnapshot | null> => {
+    if (cart.length === 0) return null;
     // Guarda síncrona contra el doble toque: `isPending` deshabilita el botón en
     // el siguiente repintado, y en una tablet lenta caben dos toques antes. Una
     // orden duplicada en hora punta es el peor fallo posible del POS.
-    if (creatingOrderRef.current) return;
-    if (orderType === "delivery" && deliveryFeeInvalid) {
+    if (creatingOrderRef.current) return null;
+
+    /*
+      Sobre una cuenta de mesa ya abierta, el tipo y la mesa NO los decide el
+      formulario: los decide la cuenta. Cantar una ronda sobre la mesa 7 y que
+      saliera como venta de mostrador porque el selector se había quedado en
+      "Llevar" es exactamente el error que la barra de cuenta viene a evitar.
+    */
+    const enMesa = cuentaActiva?.tipo === "mesa";
+    const tipoEfectivo = enMesa ? "dine_in" : orderType;
+    const mesaEfectiva = enMesa ? cuentaActiva!.tableId : tableId;
+
+    if (tipoEfectivo === "delivery" && deliveryFeeInvalid) {
       toast.error("La tarifa de delivery debe ser un importe en soles (ej. 8.50)");
-      return;
+      return null;
     }
     const effectiveCustomerName = customer?.name || customerName.trim() || "Cliente POS";
     creatingOrderRef.current = true;
 
     try {
       const orderData: Record<string, unknown> = {
-        type: orderType,
+        type: tipoEfectivo,
         customerName: effectiveCustomerName,
         items: cart.map((item) => ({
           menuItemId: item.menuItemId,
@@ -365,11 +610,11 @@ export default function PosPage() {
 
       // Mesa: solo en el pedido de salón. El backend cuelga el pedido de la visita
       // abierta de la mesa o abre una nueva.
-      if (orderType === "dine_in" && tableId) orderData.tableId = tableId;
+      if (tipoEfectivo === "dine_in" && mesaEfectiva) orderData.tableId = mesaEfectiva;
       // Cliente: es este id, y no el nombre, lo que hace que la venta sume puntos.
       if (customer) orderData.customerId = customer.id;
 
-      if (orderType === "delivery") {
+      if (tipoEfectivo === "delivery") {
         if (deliveryPhone) orderData.deliveryPhone = deliveryPhone;
         if (deliveryAddress) orderData.deliveryAddress = deliveryAddress;
         if (deliveryFeeCents > 0) orderData.deliveryFee = deliveryFeeCents;
@@ -386,16 +631,16 @@ export default function PosPage() {
       // ocupada: sin invalidar estas cachés, el plano del salón y el selector de
       // mesa siguen enseñando la foto anterior (`useCreateOrder` solo invalida
       // ["orders"]).
-      if (orderType === "dine_in" && tableId) {
+      if (tipoEfectivo === "dine_in" && mesaEfectiva) {
         void queryClient.invalidateQueries({ queryKey: ["tables"] });
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
       }
 
-      setLastOrder({
+      const snapshot: PosOrderSnapshot = {
         id: result.id,
         orderNumber: result.order_number ?? "",
         createdAt: result.created_at ?? new Date().toISOString(),
-        type: orderType,
+        type: tipoEfectivo,
         tableNumber: result.table_number ?? null,
         customerName: result.customer_name ?? effectiveCustomerName,
         notes: orderNotes.trim() || undefined,
@@ -405,7 +650,10 @@ export default function PosPage() {
         tax: result.tax ?? tax,
         deliveryFee: result.delivery_fee ?? deliveryFeeCents,
         total: result.total ?? total,
-      });
+      };
+      setLastOrder(snapshot);
+      // Una orden recién nacida no ha cobrado nada: debe su total entero.
+      setPendienteCobro(undefined);
 
       setCart([]);
       setCustomerName("");
@@ -419,12 +667,45 @@ export default function PosPage() {
       setPaymentMethod("");
       setIsPaid(false);
       setMobileCartOpen(false);
-      setSuccessDialog(true);
-      toast.success("Orden creada correctamente");
+      if (!silencioso) setSuccessDialog(true);
+      /*
+        Mandado el pedido, el carrito vuelve a estar limpio y la cuenta se suelta.
+
+        Quedarse pegado a la cuenta recién enviada es como se cantan las bebidas
+        del siguiente cliente en la cuenta del anterior: en el mostrador se
+        atiende a otra persona en cuanto se cierra la venta, y en el salón el
+        mozo se va a otra mesa. Volver a entrar a una cuenta cuesta un toque
+        desde la lista; equivocarse de cuenta cuesta una discusión.
+      */
+      setClaveCuenta(null);
+      toast.success(
+        tipoEfectivo === "dine_in" ? "Comanda enviada a cocina" : "Orden creada correctamente",
+      );
+      return snapshot;
     } catch (err: any) {
       toast.error(err?.message || "No se pudo crear la orden");
+      return null;
     } finally {
       creatingOrderRef.current = false;
+    }
+  };
+
+  /**
+   * Entra en una cuenta abierta.
+   *
+   * El carrito NO se vacía: lo normal es venir de cantar dos platos y darse
+   * cuenta de que van a la mesa 7. Lo que sí se ajusta es el tipo de pedido, que
+   * a partir de aquí lo manda la cuenta.
+   */
+  const elegirCuenta = (cuenta: CuentaAbierta) => {
+    setClaveCuenta(cuenta.clave);
+    setCuentasAbiertasOpen(false);
+    if (cuenta.tipo === "mesa") {
+      setOrderType("dine_in");
+      setTableId(cuenta.tableId);
+    } else {
+      setOrderType(cuenta.tipo === "delivery" ? "delivery" : "takeout");
+      setTableId(null);
     }
   };
 
@@ -458,7 +739,15 @@ export default function PosPage() {
     onUpdateQty: updateCartQty,
     onRemove: removeFromCart,
     onClearCart: () => setCart([]),
-    onCreateOrder: handleCreateOrder,
+    onCreateOrder: () => void enviarPedido(),
+    onCobrar: () => void handleCobrar(),
+    cuenta: cuentaActiva,
+    cuentasAbiertas: cuentas.length,
+    onVerCuentas: () => {
+      setMobileCartOpen(false);
+      setCuentasAbiertasOpen(true);
+    },
+    onSoltarCuenta: () => setClaveCuenta(null),
     deliveryPhone,
     onDeliveryPhoneChange: setDeliveryPhone,
     deliveryAddress,
@@ -500,16 +789,34 @@ export default function PosPage() {
         />
       </div>
 
-      <div className="fixed inset-x-0 bottom-16 z-30 p-3 lg:hidden">
+      <div className="fixed inset-x-0 bottom-16 z-30 flex gap-2 p-3 lg:hidden">
+        {/*
+          Las cuentas abiertas también en el móvil. En una tablet de mano el
+          carrito vive detrás de una hoja, así que sin este botón la única
+          entrada a la lista quedaba a dos toques de profundidad.
+        */}
+        {cuentas.length > 0 && (
+          <Button
+            variant="outline"
+            className="h-14 shrink-0 rounded-2xl border-foreground/15 bg-background px-3.5 text-sm font-semibold shadow-lg"
+            onClick={() => setCuentasAbiertasOpen(true)}
+            aria-label={`Ver las ${cuentas.length} cuentas abiertas`}
+          >
+            <LayoutList className="mr-1.5 h-5 w-5" />
+            {cuentas.length}
+          </Button>
+        )}
         <Button
-          className="h-14 w-full justify-between rounded-2xl border border-foreground/10 bg-foreground px-4 text-base font-semibold text-background shadow-lg hover:bg-foreground/90"
+          className="h-14 min-w-0 flex-1 justify-between rounded-2xl border border-foreground/10 bg-foreground px-4 text-base font-semibold text-background shadow-lg hover:bg-foreground/90"
           onClick={() => setMobileCartOpen(true)}
         >
-          <span className="flex items-center gap-2">
-            <ShoppingCart className="h-5 w-5" />
-            {totalQty > 0 ? `${totalQty} productos` : "Abrir pedido"}
+          <span className="flex min-w-0 items-center gap-2">
+            <ShoppingCart className="h-5 w-5 shrink-0" />
+            <span className="truncate">
+              {cuentaActiva ? cuentaActiva.nombre : totalQty > 0 ? `${totalQty} productos` : "Abrir pedido"}
+            </span>
           </span>
-          <span>{totalQty > 0 ? formatCurrency(total) : "Sin productos"}</span>
+          <span className="shrink-0">{totalQty > 0 ? formatCurrency(total) : "Sin productos"}</span>
         </Button>
       </div>
 
@@ -540,10 +847,46 @@ export default function PosPage() {
         onPrintKitchenTicket={handlePrintKitchenTicket}
       />
 
+      {cuentasAbiertasOpen && (
+        <OpenAccounts
+          cuentas={cuentas}
+          claveActiva={claveCuenta}
+          cargando={tablesLoading || ordersLoading}
+          onElegir={elegirCuenta}
+          onCerrar={() => setCuentasAbiertasOpen(false)}
+          acciones={
+            <Button
+              variant="outline"
+              className="h-10 shrink-0 rounded-xl px-3.5 text-sm font-semibold"
+              onClick={() => {
+                setClaveCuenta(null);
+                setCuentasAbiertasOpen(false);
+              }}
+            >
+              <Plus className="mr-1.5 h-4 w-4" />
+              Cuenta nueva
+            </Button>
+          }
+        />
+      )}
+
+      {/*
+        Cobro completo de una mesa: dividir por producto, cobros parciales y
+        liberar la mesa al saldar. Es el mismo diálogo que usa el plano del
+        salón — una mesa no se cobra distinto según desde qué pantalla la mires.
+      */}
+      <CobrarDialog table={mesaACobrar} onClose={() => setMesaACobrar(null)} />
+
       <ChargeDialog
         open={chargeDialog}
-        onOpenChange={setChargeDialog}
+        onOpenChange={(abierto) => {
+          setChargeDialog(abierto);
+          // Cerrado el cobro, la cuenta se suelta: lo siguiente que se cante es
+          // de otro cliente. Si quedó saldo, sigue en la lista a un toque.
+          if (!abierto) setClaveCuenta(null);
+        }}
         order={lastOrder}
+        pendiente={pendienteCobro}
         taxRate={taxRate}
         businessName={org?.legal_name || org?.name || branch?.name || "RestAI"}
         ruc={org?.ruc || undefined}

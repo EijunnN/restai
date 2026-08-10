@@ -39,6 +39,12 @@ export function useServiceRequests(params?: {
   status?: ServiceRequestStatus;
   tableId?: string;
   /**
+   * Un solo tipo de aviso. El punto de venta solo quiere saber qué mesas han
+   * pedido la cuenta: traerse también los "llama al mozo" para descartarlos en
+   * el cliente es pedir de más veinte veces por minuto en una sala llena.
+   */
+  type?: ServiceRequestType;
+  /**
    * Permite apagar la consulta para roles sin `tables:read` (cocina). Sin esto,
    * la campana la disparaba en TODAS las pantallas cada 20 s y la tablet de la
    * cocina acumulaba un 403 cada veinte segundos durante todo el servicio.
@@ -48,6 +54,7 @@ export function useServiceRequests(params?: {
   const qs = new URLSearchParams();
   if (params?.status) qs.set("status", params.status);
   if (params?.tableId) qs.set("tableId", params.tableId);
+  if (params?.type) qs.set("type", params.type);
   const query = qs.toString();
 
   return useQuery<ServiceRequest[]>({

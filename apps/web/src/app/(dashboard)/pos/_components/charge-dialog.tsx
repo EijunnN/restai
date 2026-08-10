@@ -88,6 +88,7 @@ export function ChargeDialog({
   open,
   onOpenChange,
   order,
+  pendiente,
   taxRate,
   businessName,
   ruc,
@@ -97,6 +98,15 @@ export function ChargeDialog({
   onOpenChange: (open: boolean) => void;
   /** Orden recién creada en el POS. */
   order: PosOrderSnapshot | null;
+  /**
+   * Lo que queda por cobrar, si no es el total.
+   *
+   * Una orden recién creada debe su total entero, y ese es el valor por defecto.
+   * Pero una cuenta de mostrador que ya recibió un adelanto debe MENOS: sin esto
+   * el formulario se abría con el total, el cajero pulsaba cobrar y el servidor
+   * recortaba en silencio a lo que faltaba de verdad.
+   */
+  pendiente?: number;
   /** Tasa de IGV de la sede, en centésimas de punto (1800 = 18 %). */
   taxRate: number;
   businessName: string;
@@ -133,9 +143,10 @@ export function ChargeDialog({
     setReference("");
     setResult(null);
     setChangeGiven(0);
-    setOwed(order.total);
-    setAmount(centsToInput(order.total));
-  }, [open, order?.id, order?.total]); // eslint-disable-line react-hooks/exhaustive-deps
+    const debido = pendiente ?? order.total;
+    setOwed(debido);
+    setAmount(centsToInput(debido));
+  }, [open, order?.id, order?.total, pendiente]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!order) return null;
 

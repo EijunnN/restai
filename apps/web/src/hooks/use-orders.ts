@@ -121,6 +121,42 @@ export function useCreateOrder() {
   });
 }
 
+/**
+ * Añade platos a una cuenta YA abierta.
+ *
+ * Es la segunda ronda: el pedido de mostrador que suma una gaseosa antes de
+ * salir, o la mesa que pide otra jarra sobre la misma cuenta. El servidor
+ * revalida precios contra la carta y recalcula el descuento entero, así que la
+ * respuesta trae los importes nuevos de toda la orden, no solo los de lo
+ * añadido.
+ */
+export function useAddOrderItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, items }: { orderId: string; items: unknown[] }) =>
+      apiFetch<{
+        id: string;
+        order_number: string;
+        subtotal: number;
+        discount: number;
+        tax: number;
+        total: number;
+        added: unknown[];
+      }>(`/api/orders/${orderId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["kitchen"] });
+      // El saldo de la mesa cambió: el plano del salón y la lista de cuentas
+      // abiertas del POS lo leen del agregado de la visita.
+      qc.invalidateQueries({ queryKey: ["tables"] });
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+}
+
 export function useUpdateOrderStatus() {
   const qc = useQueryClient();
   return useMutation({
