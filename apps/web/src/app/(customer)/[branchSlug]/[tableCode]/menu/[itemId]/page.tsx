@@ -92,6 +92,10 @@ export default function ProductDetailPage({
   const [showNotes, setShowNotes] = useState(false);
   const [atLimitGroup, setAtLimitGroup] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
+  // Proporción real de la foto, medida al cargarla. El marco se adapta a ella
+  // en vez de imponer un alto fijo: así la foto llena el ancho sin recortarse
+  // ni dejar franjas. Hasta que carga se asume apaisada, que es lo habitual.
+  const [fotoRatio, setFotoRatio] = useState(16 / 9);
   const cartItems = useCartStore((s) => s.items);
 
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -225,21 +229,68 @@ export default function ProductDetailPage({
   const puedeAgregar = !agotado && !groupsError && !blocked;
 
   return (
-    <div className="relative pb-32">
-      {/* ── Foto ─────────────────────────────────────────────────────────── */}
-      <div className="relative h-[224px] bg-muted">
+    /*
+      La pantalla es alta fija y quien scrollea es SOLO la hoja de abajo. Con
+      la página entera scrolleando, un plato con varios grupos de opciones se
+      llevaba la foto fuera de pantalla justo mientras el comensal decide, y
+      parecía que se movía todo. Aquí la foto y el pie no se mueven nunca.
+    */
+    <div className="flex h-[100dvh] flex-col overflow-hidden">
+      {/* ── Foto ───────────────────────────────────────────────────────────
+          El `pb-7` es el hueco que la hoja de abajo se superpone: sin él, el
+          redondeo de la hoja taparía el borde inferior del plato. */}
+      <div className="relative shrink-0 overflow-hidden bg-muted pb-7">
         {item.image_url ? (
           <>
-            <Image src={item.image_url} alt="" fill unoptimized className="object-cover" />
+            {/* Copia difuminada: rellena los lados cuando el tope de alto
+                obliga a encoger la foto, en vez de dejar franjas muertas. */}
+            <Image
+              src={item.image_url}
+              alt=""
+              aria-hidden="true"
+              fill
+              unoptimized
+              className="scale-110 object-cover opacity-40 blur-xl"
+            />
+            {/*
+              El marco toma la PROPORCIÓN de la foto, así que la foto entera
+              llena el ancho: `object-cover` con alto fijo le cortaba la mitad
+              al plato, y `object-contain` con alto fijo lo dejaba flotando
+              entre dos franjas negras.
+
+              El tope de alto es para las fotos verticales, que si no se
+              comerían la pantalla; ahí sí encoge y el desenfoque de atrás
+              rellena los lados.
+            */}
+            <div
+              className="relative max-h-[42vh] w-full"
+              style={{ aspectRatio: String(fotoRatio) }}
+            >
+              <Image
+                src={item.image_url}
+                alt=""
+                fill
+                unoptimized
+                onLoad={(e) => {
+                  const img = e.currentTarget;
+                  if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                    setFotoRatio(img.naturalWidth / img.naturalHeight);
+                  }
+                }}
+                className="object-contain"
+              />
+            </div>
             {/* Sin esto la foto termina en una línea recta contra el panel. El
                 degradado la funde con el fondo y el redondeo se lee. */}
             <span
               aria-hidden="true"
-              className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background to-transparent"
+              className="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent"
             />
           </>
         ) : (
-          <span className="flex h-full items-center justify-center">
+          /* Sin foto el marco no tiene proporción que seguir, así que reserva
+             un alto propio en vez de colapsar contra la hoja. */
+          <span className="flex h-36 items-center justify-center">
             <UtensilsCrossed className="h-10 w-10 text-muted-foreground/40" aria-hidden="true" />
           </span>
         )}
@@ -253,8 +304,11 @@ export default function ProductDetailPage({
         </button>
       </div>
 
-      {/* ── Cabecera del plato ───────────────────────────────────────────── */}
-      <div className="relative -mt-7 rounded-t-[28px] bg-background px-5 pb-2 pt-6">
+      {/* ── Cabecera del plato: fija, como la foto ────────────────────────
+          Qué plato es, cuánto cuesta y qué lleva es la referencia con la que
+          el comensal elige entre las opciones de abajo; si se va con el
+          scroll, hay que subir para recordarla. */}
+      <div className="relative -mt-7 shrink-0 rounded-t-[28px] bg-background px-5 pb-4 pt-6">
         <div className="flex items-start justify-between gap-4">
           <h1 className="text-[26px] font-medium leading-tight">{item.name}</h1>
           <span className="whitespace-nowrap pt-1 text-[18px] font-semibold">
@@ -277,7 +331,12 @@ export default function ProductDetailPage({
           allergens={item.allergens}
           hasOptions={groups.length > 0}
         />
+      </div>
 
+      {/* ── Opciones del plato: lo único que scrollea ─────────────────────
+          `min-h` reserva sitio para que la foto y la cabecera no dejen la
+          lista reducida a una rendija en pantallas bajas. */}
+      <div className="min-h-[26vh] flex-1 overflow-y-auto overscroll-contain bg-background px-5 pb-6">
         <InCartNote
           menuItemId={item.id}
           currency={currency}
@@ -475,8 +534,10 @@ export default function ProductDetailPage({
         />
       </div>
 
-      {/* ── Pie: cantidad y añadir ───────────────────────────────────────── */}
-      <div className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 border-t border-border bg-background px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+      {/* ── Pie: cantidad y añadir ─────────────────────────────────────────
+          Última fila del alto fijo, no `fixed`: así el pie se apoya en el
+          borde real de la pantalla y no tapa el final de la lista. */}
+      <div className="flex shrink-0 items-center gap-3 border-t border-border bg-background px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
         <div className="flex h-14 shrink-0 items-center rounded-full border border-border px-1.5">
           <button
             type="button"
