@@ -66,7 +66,7 @@ export function CartSidebar({
   onCreateOrder,
   onCobrar,
   cuenta,
-  cuentasAbiertas,
+  cuentas,
   onVerCuentas,
   onSoltarCuenta,
   deliveryPhone,
@@ -107,8 +107,8 @@ export function CartSidebar({
   onCobrar: () => void;
   /** Cuenta abierta sobre la que se está cantando. `null` = venta nueva. */
   cuenta: CuentaAbierta | null;
-  /** Cuántas cuentas hay abiertas en el local ahora mismo. */
-  cuentasAbiertas: number;
+  /** Todas las cuentas abiertas del local ahora mismo. */
+  cuentas: CuentaAbierta[];
   onVerCuentas: () => void;
   onSoltarCuenta: () => void;
   deliveryPhone: string;
@@ -238,9 +238,9 @@ export function CartSidebar({
 
       <AccountBar
         cuenta={cuenta}
-        abiertas={cuentasAbiertas}
+        cuentas={cuentas}
         onVerTodas={onVerCuentas}
-        onSoltar={onSoltarCuenta}
+        onNuevaCuenta={onSoltarCuenta}
       />
 
       {/*
@@ -411,6 +411,23 @@ export function CartSidebar({
           la segunda ronda repite un plato que ya está en la mesa.
         */}
         {cuenta && <SentLines cuenta={cuenta} />}
+
+        {/*
+          Con una cuenta abierta, el carrito deja de ser "el pedido" y pasa a ser
+          "lo que falta por mandar": sin esta cabecera, las dos listas se leen
+          como una sola y no se sabe qué está ya en el horno.
+        */}
+        {cuenta && cart.length > 0 && (
+          <div className="flex items-center gap-2.5 pb-0.5 pt-1">
+            <span className="text-[10.5px] font-extrabold uppercase tracking-[0.16em] text-primary">
+              Por enviar
+            </span>
+            <span className="h-px flex-1 bg-border/70" />
+            <span className="text-[11.5px] text-muted-foreground">
+              {cart.length} {cart.length === 1 ? "línea" : "líneas"}
+            </span>
+          </div>
+        )}
 
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">

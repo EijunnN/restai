@@ -60,6 +60,12 @@ export interface PosMenuItem {
    */
   sort_order?: number;
   category_id?: string;
+  /**
+   * Cuántos grupos de opciones cuelgan del plato. Ya venía en `GET /menu/items`
+   * y nadie lo miraba: es lo que permite avisar en la ficha de que tocarlo abre
+   * un diálogo en vez de añadirlo directo al carrito.
+   */
+  modifier_group_count?: number;
 }
 
 /** Cliente identificado en la venta: sin su id, la venta no otorga puntos. */
@@ -193,13 +199,24 @@ export default function PosPage() {
 
   const queryClient = useQueryClient();
   const { data: categories } = useCategories();
+  /*
+    La carta ENTERA, siempre, y el filtrado por categoría en el cliente.
+
+    Dos razones. El carril lateral dice cuántos platos tiene cada categoría, y
+    eso no se puede saber si el servidor solo devuelve la que estás mirando. Y
+    cambiar de categoría deja de ser una petición: en una caja, "Bebidas" tiene
+    que aparecer en el mismo toque, no cuando conteste la red del local.
+
+    La carta de un restaurante son decenas de platos, no miles: cabe de sobra en
+    una respuesta.
+  */
   const {
     data: menuItems,
     isLoading: itemsLoading,
     isError: itemsError,
     error: itemsErrorObj,
     refetch: refetchItems,
-  } = useMenuItems(selectedCategory || undefined);
+  } = useMenuItems();
   const createOrder = useCreateOrder();
   const addOrderItems = useAddOrderItems();
   const printKitchenTicket = usePrintKitchenTicket();
@@ -742,7 +759,7 @@ export default function PosPage() {
     onCreateOrder: () => void enviarPedido(),
     onCobrar: () => void handleCobrar(),
     cuenta: cuentaActiva,
-    cuentasAbiertas: cuentas.length,
+    cuentas,
     onVerCuentas: () => {
       setMobileCartOpen(false);
       setCuentasAbiertasOpen(true);
