@@ -18,9 +18,13 @@ import { hayCambio, indiceSoltar, moverElemento } from "./reorder";
  * 2. `touchAction: "none"` en la manija: sin él, el navegador se queda el gesto
  *    para hacer scroll y el arrastre no llega a ocurrir. La lista TIENE scroll,
  *    así que el conflicto es seguro, no hipotético.
- * 3. Los centros se miden UNA vez, al empezar: medirlos en cada movimiento
- *    mientras las filas se recolocan produce un baile en el que la fila
- *    arrastrada persigue su propio hueco.
+ * 3. Los centros se miden UNA vez, al empezar, y cada movimiento recompone la
+ *    lista DESDE el orden inicial —nunca encadenando sobre el resultado del
+ *    movimiento anterior—. Encadenar parecía equivalente y no lo es: en cuanto
+ *    la fila se movía una vez, su índice actual dejaba de coincidir con el hueco
+ *    que miden los centros, y volver hacia atrás la dejaba clavada. Bajabas dos
+ *    puestos, subías de nuevo y ya no volvía. Recomponer desde el principio es
+ *    además idempotente: el mismo píxel da siempre el mismo orden.
  * 4. Estado optimista: las mutaciones de la carta solo invalidan la consulta,
  *    así que sin él la fila salta a su sitio anterior hasta que vuelve el GET y
  *    parece que el arrastre no se guardó.
@@ -28,9 +32,12 @@ import { hayCambio, indiceSoltar, moverElemento } from "./reorder";
 
 interface Arrastre {
   id: string;
+  /** Orden al empezar. Cada movimiento recompone DESDE aquí, nunca encadenando. */
+  orden: string[];
+  /** Posición del elemento en `orden`. Fija durante todo el arrastre. */
   desde: number;
+  /** Centro vertical de cada hueco, medido una vez al empezar. */
   centros: number[];
-  puntero: number;
 }
 
 export function useReordenArrastre({
@@ -95,7 +102,7 @@ export function useReordenArrastre({
         return r.top + r.height / 2;
       });
 
-      setArrastre({ id, desde: orden.indexOf(id), centros, puntero: e.clientY });
+      setArrastre({ id, orden, desde: orden.indexOf(id), centros });
     },
     [habilitado, ids, ordenLocal],
   );
@@ -104,14 +111,24 @@ export function useReordenArrastre({
     (e: React.PointerEvent) => {
       if (!arrastre) return;
 
-      const base = ordenLocal ?? ids;
+      /*
+        Siempre desde el orden INICIAL y el índice INICIAL. Recomponer sobre el
+        resultado anterior hacía que, tras el primer salto, el índice actual del
+        elemento dejara de corresponder con el hueco que miden los centros: al
+        volver hacia arriba el cálculo daba "quédate donde estás" y la fila se
+        quedaba clavada abajo.
+      */
       const destino = indiceSoltar(e.clientY, arrastre.centros);
-      const siguiente = moverElemento(base, base.indexOf(arrastre.id), destino);
+      const siguiente = moverElemento(arrastre.orden, arrastre.desde, destino);
 
-      if (hayCambio(base, siguiente)) setOrdenLocal(siguiente);
-      setArrastre({ ...arrastre, puntero: e.clientY });
+      // Solo se repinta si el orden cambia de verdad: si no, cada píxel de
+      // movimiento provocaría un renderizado de la lista entera.
+      setOrdenLocal((actual) => {
+        const previo = actual ?? arrastre.orden;
+        return hayCambio(previo, siguiente) ? siguiente : actual;
+      });
     },
-    [arrastre, ids, ordenLocal],
+    [arrastre],
   );
 
   const soltar = useCallback(() => {

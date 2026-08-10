@@ -7,16 +7,37 @@
  * y eso es lo que vive aquí.
  */
 
-/** Mueve un elemento de una posición a otra. No muta la lista original. */
+/**
+ * Mueve un elemento a una posición. No muta la lista original.
+ *
+ * `hasta` es una posición de INSERCIÓN medida sobre la lista ORIGINAL, con el
+ * elemento arrastrado todavía dentro: 0 = delante de todos, `length` = detrás de
+ * todos. Es lo que devuelve `indiceSoltar`, que cuenta cuántos centros de fila
+ * han quedado por encima del puntero.
+ *
+ * De ahí el ajuste al bajar, que es donde estuvo el fallo. Al sacar el elemento
+ * de su sitio, todo lo que estaba por debajo sube un puesto, así que insertar en
+ * el índice sin corregir lo deja UNA posición más abajo de donde se soltó.
+ * Arrastrar la primera fila justo por debajo del centro de la segunda daba
+ * `B, C, A, D` en vez de `B, A, C, D`.
+ *
+ * El síntoma era desconcertante justamente porque solo pasaba en un sentido:
+ * subiendo el índice de inserción no se ve afectado —lo que se quita está por
+ * debajo del destino— y funcionaba bien. Media función correcta se siente como
+ * "va a ratos", que es peor que no ir.
+ */
 export function moverElemento<T>(lista: T[], desde: number, hasta: number): T[] {
-  if (desde === hasta) return lista;
   if (desde < 0 || desde >= lista.length) return lista;
+
+  // Bajando, el hueco que deja el propio elemento corre un puesto el destino.
+  const ajustado = hasta > desde ? hasta - 1 : hasta;
+  if (ajustado === desde) return lista;
 
   const copia = [...lista];
   const [elemento] = copia.splice(desde, 1);
-  // `hasta` se recorta DESPUÉS de sacar el elemento: soltar más allá del final
-  // debe dejarlo el último, no descolocar la lista ni crear un hueco.
-  const destino = Math.max(0, Math.min(hasta, copia.length));
+  // Se recorta DESPUÉS de sacarlo: soltar más allá del final debe dejarlo el
+  // último, no descolocar la lista ni crear un hueco.
+  const destino = Math.max(0, Math.min(ajustado, copia.length));
   copia.splice(destino, 0, elemento!);
   return copia;
 }
