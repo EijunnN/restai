@@ -55,6 +55,18 @@ export const menuItems = pgTable("menu_items", {
   dietary_tags: jsonb("dietary_tags").$type<string[]>().default([]).notNull(),
   /** Nivel de picante 0–3 (null = no aplica). */
   spice_level: integer("spice_level"),
+  /**
+   * Anclado arriba de la carta del punto de venta (migración 0021).
+   *
+   * Lo marca una persona, no un ranking: lo que hace rápida una caja es que la
+   * mano vaya sola, y una fila que se reordena sola obliga a leerla otra vez
+   * cada semana. El ranking real vive en la pantalla de carta como sugerencia
+   * con los números delante — el sistema propone qué entra, el dueño decide
+   * cuándo cambia.
+   *
+   * NO afecta a la carta del comensal: es una ayuda para quien cobra.
+   */
+  is_featured: boolean("is_featured").default(false).notNull(),
   deleted_at: timestamp("deleted_at", { withTimezone: true }),
 }, (table) => [
   index("idx_menu_items_branch").on(table.branch_id),

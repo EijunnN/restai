@@ -122,6 +122,14 @@ export const createMenuItemSchema = z.object({
   allergens: z.array(z.enum(ALLERGENS)).max(15).optional(),
   dietaryTags: z.array(z.enum(DIETARY_TAGS)).max(9).optional(),
   spiceLevel: z.number().int().min(0).max(3).nullable().optional(),
+  /**
+   * Anclado arriba de la carta del punto de venta.
+   *
+   * No toca la carta del comensal: es una ayuda para quien cobra, para que los
+   * seis platos que se cantan cada noche no se busquen igual que un postre que
+   * se pide dos veces por semana.
+   */
+  isFeatured: z.boolean().optional(),
 });
 
 /**
@@ -167,6 +175,14 @@ export const bulkUpdateMenuItemsSchema = z.object({
     allergens: z.array(z.enum(ALLERGENS)).max(15).optional(),
     dietaryTags: z.array(z.enum(DIETARY_TAGS)).max(9).optional(),
     price: priceAdjustmentSchema.optional(),
+    /**
+     * Destacar o quitar el destacado a varios platos de golpe.
+     *
+     * Es lo que aplica la sugerencia de "tus diez más vendidos" de una vez y con
+     * atomicidad: diez peticiones sueltas pueden fallar por la mitad y dejar la
+     * caja con media lista nueva y media vieja.
+     */
+    isFeatured: z.boolean().optional(),
   }),
 });
 

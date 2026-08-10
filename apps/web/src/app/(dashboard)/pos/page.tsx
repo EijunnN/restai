@@ -67,6 +67,8 @@ export interface PosMenuItem {
    * un diálogo en vez de añadirlo directo al carrito.
    */
   modifier_group_count?: number;
+  /** Anclado arriba de la carta de la caja (migración 0021). */
+  is_featured?: boolean;
 }
 
 /** Cliente identificado en la venta: sin su id, la venta no otorga puntos. */

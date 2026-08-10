@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, Plus, Search } from "lucide-react";
+import { ExternalLink, Plus, Search, TrendingUp } from "lucide-react";
 import { Button } from "@restai/ui/components/button";
 
 /**
@@ -20,6 +20,8 @@ export function MenuToolbar({
   busqueda,
   onBusqueda,
   puedeCrear,
+  puedeVerVentas,
+  onVerMasVendidos,
   onCrear,
   urlCarta,
 }: {
@@ -31,6 +33,13 @@ export function MenuToolbar({
   busqueda: string;
   onBusqueda: (v: string) => void;
   puedeCrear: boolean;
+  /**
+   * Puede leer cifras de venta (`reports:read`). Lo tienen todos los que pueden
+   * editar la carta, pero se comprueba igual: montar el botón sin permiso sería
+   * ofrecer algo que responde 403.
+   */
+  puedeVerVentas?: boolean;
+  onVerMasVendidos?: () => void;
   onCrear: () => void;
   /** Dirección pública de la carta. Sin ella el botón no se pinta. */
   urlCarta?: string | null;
@@ -106,6 +115,21 @@ export function MenuToolbar({
           <ExternalLink className="h-[15px] w-[15px]" />
           Ver carta
         </a>
+      )}
+
+      {/*
+        Qué se vende de verdad. Solo en la vista de productos: sobre los grupos de
+        modificadores no significa nada.
+      */}
+      {enProductos && puedeVerVentas && onVerMasVendidos && (
+        <button
+          type="button"
+          onClick={onVerMasVendidos}
+          className="flex h-9 items-center gap-1.5 rounded-xl bg-muted px-3 text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <TrendingUp className="h-[15px] w-[15px]" />
+          Más vendidos
+        </button>
       )}
 
       {puedeCrear && (

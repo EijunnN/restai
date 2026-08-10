@@ -452,6 +452,9 @@ menu.patch(
     if (patch.spiceLevel !== undefined) updateData.spice_level = patch.spiceLevel;
     if (patch.allergens !== undefined) updateData.allergens = patch.allergens;
     if (patch.dietaryTags !== undefined) updateData.dietary_tags = patch.dietaryTags;
+    // Aplicar de una vez la sugerencia de "tus más vendidos": diez peticiones
+    // sueltas pueden fallar por la mitad y dejar la caja con media lista nueva.
+    if (patch.isFeatured !== undefined) updateData.is_featured = patch.isFeatured;
 
     // El precio se calcula EN LA BASE, fila a fila, dentro de la transacción.
     // Traerlo, multiplicarlo en JavaScript y devolverlo abriría una ventana en
@@ -669,6 +672,7 @@ menu.post(
         allergens: body.allergens ?? [],
         dietary_tags: body.dietaryTags ?? [],
         spice_level: body.spiceLevel ?? null,
+        is_featured: body.isFeatured ?? false,
       })
       .returning();
 
@@ -699,6 +703,7 @@ menu.patch(
     if (body.allergens !== undefined) updateData.allergens = body.allergens;
     if (body.dietaryTags !== undefined) updateData.dietary_tags = body.dietaryTags;
     if (body.spiceLevel !== undefined) updateData.spice_level = body.spiceLevel;
+    if (body.isFeatured !== undefined) updateData.is_featured = body.isFeatured;
 
     // Un `null` explícito VACÍA el campo. Antes el esquema lo rechazaba y no
     // había manera de quitarle la foto a un plato una vez puesta.

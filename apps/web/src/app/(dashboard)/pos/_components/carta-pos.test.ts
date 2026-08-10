@@ -251,3 +251,87 @@ describe("comandas ya enviadas", () => {
     expect(original.map((c) => c.clave)).toEqual(["b", "a"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+import { seccionAnclada } from "./carta-pos";
+
+describe("los platos anclados", () => {
+  const CARTA_CON_ANCLADOS = [
+    plato({ id: "f1", name: "Lomo saltado", category_id: "fon", is_featured: true, sort_order: 1 }),
+    plato({ id: "b1", name: "Inca Kola", category_id: "beb", is_featured: true, sort_order: 0 }),
+    plato({ id: "e1", name: "Causa limeña", category_id: "ent" }),
+  ];
+
+  test("van los primeros de todo, delante de las categorías", () => {
+    const secciones = componerSecciones({
+      platos: CARTA_CON_ANCLADOS,
+      categorias: CATEGORIAS,
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    expect(secciones[0]!.titulo).toBe("Los de siempre");
+    expect(secciones[0]!.anclada).toBe(true);
+  });
+
+  test("el plato anclado sale TAMBIÉN en su categoría: la fila de arriba es un atajo, no un traslado", () => {
+    // Quien busca el lomo en "Fondos" tiene que encontrarlo en Fondos.
+    const secciones = componerSecciones({
+      platos: CARTA_CON_ANCLADOS,
+      categorias: CATEGORIAS,
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    const fondos = secciones.find((s) => s.titulo === "Fondos")!;
+    expect(fondos.platos.map((p) => p.id)).toContain("f1");
+  });
+
+  test("al elegir una categoría desaparece: quien pulsa Bebidas quiere bebidas", () => {
+    const secciones = componerSecciones({
+      platos: CARTA_CON_ANCLADOS,
+      categorias: CATEGORIAS,
+      categoriaElegida: "beb",
+      busqueda: "",
+    });
+    expect(secciones.every((s) => !s.anclada)).toBe(true);
+  });
+
+  test("buscando también desaparece: compite con lo que se busca", () => {
+    const secciones = componerSecciones({
+      platos: CARTA_CON_ANCLADOS,
+      categorias: CATEGORIAS,
+      categoriaElegida: null,
+      busqueda: "lomo",
+    });
+    expect(secciones.every((s) => !s.anclada)).toBe(true);
+  });
+
+  test("sin ninguno anclado no hay cabecera vacía", () => {
+    const secciones = componerSecciones({
+      platos: [plato({ id: "x", name: "Causa", category_id: "ent" })],
+      categorias: CATEGORIAS,
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    expect(secciones.every((s) => !s.anclada)).toBe(true);
+  });
+
+  test("un anclado agotado no se ancla: no se puede vender", () => {
+    const seccion = seccionAnclada({
+      platos: [plato({ id: "x", name: "Ceviche", is_featured: true, is_available: false })],
+      categoriaElegida: null,
+      busqueda: "",
+    });
+    expect(seccion).toBeNull();
+  });
+
+  test("el orden de los anclados lo manda el dueño, no el alfabeto", () => {
+    // Reutiliza el `sort_order` que ya se arrastra en la pantalla de carta.
+    const seccion = seccionAnclada({
+      platos: CARTA_CON_ANCLADOS,
+      categoriaElegida: null,
+      busqueda: "",
+    })!;
+    expect(seccion.platos.map((p) => p.name)).toEqual(["Inca Kola", "Lomo saltado"]);
+  });
+});

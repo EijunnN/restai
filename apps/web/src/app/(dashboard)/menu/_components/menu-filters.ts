@@ -38,6 +38,13 @@ export interface Producto {
   dietaryTags: string[];
   spiceLevel: number | null;
   sortOrder: number;
+  /**
+   * Anclado arriba de la carta del PUNTO DE VENTA (migración 0021).
+   *
+   * No tiene nada que ver con la carta del comensal: es un atajo para quien
+   * cobra, con los seis platos que se cantan cada noche.
+   */
+  isFeatured: boolean;
 }
 
 /** Número o nulo. Descarta `""`, `NaN` y `undefined` sin convertirlos en cero. */
@@ -67,6 +74,7 @@ export function normalizarProducto(crudo: any): Producto {
     dietaryTags: listaDeTextos(crudo.dietary_tags ?? crudo.dietaryTags),
     spiceLevel: numeroONulo(crudo.spice_level ?? crudo.spiceLevel),
     sortOrder: Number(crudo.sort_order ?? crudo.sortOrder ?? 0),
+    isFeatured: crudo.is_featured ?? crudo.isFeatured ?? false,
   };
 }
 

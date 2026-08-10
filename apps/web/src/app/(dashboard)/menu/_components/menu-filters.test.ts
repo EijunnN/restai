@@ -41,6 +41,7 @@ function producto(sobre: Partial<Producto> = {}): Producto {
     dietaryTags: [],
     spiceLevel: null,
     sortOrder: 0,
+    isFeatured: false,
     ...sobre,
   };
 }

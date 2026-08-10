@@ -26,9 +26,23 @@ export interface SalesReportData {
 }
 
 export interface TopItemReport {
+  /**
+   * Id del plato en la carta.
+   *
+   * Antes este informe agrupaba por el TEXTO del nombre guardado en la línea del
+   * pedido, así que no había forma de casar una fila con su plato —y un plato
+   * renombrado a mitad de mes salía partido en dos filas que no sumaban.
+   */
+  menuItemId: string;
+  /** Nombre ACTUAL del plato, no el que tenía cuando se vendió. */
   name: string;
   totalQuantity: number;
+  /** En céntimos. */
   totalRevenue: number;
+  /** Ya está anclado arriba de la caja. */
+  isFeatured: boolean;
+  /** Se puede anclar: sigue en la carta y no está agotado. */
+  isSellable: boolean;
 }
 
 function rangeQuery(startDate?: string, endDate?: string, extra?: Record<string, string>) {

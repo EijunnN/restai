@@ -22,6 +22,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { tenantMiddleware, requireBranch, getAccessibleBranchIds } from "../middleware/tenant.js";
 import { requirePermission } from "../middleware/rbac.js";
 import { peruStartOfDay, peruCivilDayStart, peruCivilDayEnd } from "../lib/timezone.js";
+import { platosMasVendidos } from "../services/menu-ranking.service.js";
 
 const reports = new Hono<AppEnv>();
 
@@ -106,7 +107,11 @@ reports.get("/dashboard", requireBranch, requirePermission("reports:read"), asyn
   const totalTables = allTables.length;
   const occupiedTables = allTables.filter((t) => t.status === "occupied").length;
 
-  // El ticket promedio se calcula sobre lo efectivamente cobrado.
+  // El ticket promedio sale de `orders.total` de las órdenes COMPLETADAS, que no
+  // es lo mismo que lo efectivamente cobrado —como decía este comentario hasta
+  // ahora—: una mesa se puede liberar con saldo pendiente (`force`) y su orden
+  // queda completada sin haber pasado por caja. Lo cobrado de verdad vive en
+  // `payments` con el criterio `status='completed' AND voided_at IS NULL`.
   const avgOrderValue = averageTicket(
     Number(revenueStats.totalRevenue || 0),
     revenueStats.completedOrders,
@@ -237,38 +242,29 @@ reports.get(
     const limitParam = c.req.query("limit");
     const limit = limitParam ? Math.min(parseInt(limitParam, 10) || 10, 50) : 10;
 
-    // Se cruzan ítems y órdenes con un JOIN y se descartan las líneas anuladas
-    // ("86" de cocina): un plato que nunca salió no es un plato vendido.
-    const topItems = await db
-      .select({
-        name: schema.orderItems.name,
-        totalQuantity: sum(schema.orderItems.quantity),
-        totalRevenue: sum(schema.orderItems.total),
-      })
-      .from(schema.orderItems)
-      .innerJoin(schema.orders, eq(schema.orderItems.order_id, schema.orders.id))
-      .where(
-        and(
-          eq(schema.orders.organization_id, tenant.organizationId),
-          eq(schema.orders.branch_id, tenant.branchId),
-          gte(schema.orders.created_at, start),
-          lt(schema.orders.created_at, end),
-          eq(schema.orders.status, "completed"),
-          ne(schema.orderItems.status, "cancelled"),
-        ),
-      )
-      .groupBy(schema.orderItems.name)
-      .orderBy(desc(sum(schema.orderItems.quantity)))
-      .limit(limit);
+    /*
+      El cálculo vive en un servicio porque lo consume también la pantalla de
+      carta, para sugerir qué platos anclar en la caja. Dos consultas parecidas
+      en dos sitios acaban divergiendo, y entonces el mismo plato tiene dos
+      cifras distintas según dónde lo mires: a partir de ahí nadie se fía de
+      ninguna de las dos.
 
-    return c.json({
-      success: true,
-      data: topItems.map((item) => ({
-        name: item.name,
-        totalQuantity: Number(item.totalQuantity || 0),
-        totalRevenue: Number(item.totalRevenue || 0),
-      })),
+      Ojo con lo que cambió aquí respecto a la versión anterior, porque los
+      números suben: se agrupa por PLATO en vez de por el texto del nombre (un
+      plato renombrado ya no sale partido en dos) y cuentan las órdenes no
+      anuladas en vez de solo las `completed` —que dejaba fuera la venta de
+      mostrador cobrada cuya comanda nadie tocó en cocina—. Ver
+      `menu-ranking.service.ts` para el razonamiento completo.
+    */
+    const topItems = await platosMasVendidos({
+      organizationId: tenant.organizationId,
+      branchId: tenant.branchId,
+      desde: start,
+      hasta: end,
+      limite: limit,
     });
+
+    return c.json({ success: true, data: topItems });
   },
 );
 

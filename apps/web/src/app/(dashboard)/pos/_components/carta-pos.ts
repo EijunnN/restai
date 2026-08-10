@@ -22,6 +22,8 @@ export interface PlatoDeCarta {
   sort_order?: number;
   /** Cuántos grupos de opciones cuelgan del plato. 0 = se añade de un toque. */
   modifier_group_count?: number;
+  /** Anclado arriba de la carta de la caja. No afecta a la del comensal. */
+  is_featured?: boolean;
 }
 
 export interface CategoriaDeCarta {
@@ -43,6 +45,8 @@ export interface SeccionDeCarta {
   nota: string;
   /** La categoría no está publicada en la carta del comensal. */
   oculta: boolean;
+  /** Es la sección anclada de destacados, no una categoría de la carta. */
+  anclada?: boolean;
   platos: PlatoDeCarta[];
 }
 
@@ -101,6 +105,10 @@ export function contarPorCategoria(platos: PlatoDeCarta[]): Map<string, number> 
  *
  * Con búsqueda activa las secciones se mantienen: saber que "criollo" aparece en
  * Fondos y en Bebidas es parte de la respuesta.
+ *
+ * Delante de todas va la sección ANCLADA con los platos destacados —ver
+ * `seccionAnclada` para cuándo aparece y por qué se permite que un plato salga
+ * dos veces.
  */
 export function componerSecciones({
   platos,
@@ -151,7 +159,55 @@ export function componerSecciones({
     });
   }
 
-  return secciones;
+  const anclada = seccionAnclada({ platos, categoriaElegida, busqueda: termino });
+  return anclada ? [anclada, ...secciones] : secciones;
+}
+
+/**
+ * Los platos anclados arriba de la carta.
+ *
+ * Solo aparece en la vista completa: sin búsqueda y sin categoría elegida. Si
+ * el cajero acaba de pulsar "Bebidas" quiere bebidas, y repetirle arriba dos que
+ * ya están abajo es ruido; si está buscando, la sección anclada compite con lo
+ * que busca. En la vista completa, en cambio, es exactamente el atajo que
+ * justifica su existencia.
+ *
+ * SÍ, el plato anclado sale TAMBÉN dentro de su categoría, y eso es deliberado.
+ * La fila de arriba es un atajo; las categorías siguen siendo el índice completo,
+ * y quien busca el lomo en "Fondos" tiene que encontrarlo ahí. La duplicación
+ * solo estorba cuando la fila de arriba se mueve —entonces hay que releerla cada
+ * vez— y estos no se mueven: los fija una persona. El contador de unidades en el
+ * carrito se calcula por `menuItemId`, así que las dos apariciones enseñan la
+ * misma cifra; no hay nada que reconciliar.
+ */
+export function seccionAnclada({
+  platos,
+  categoriaElegida,
+  busqueda,
+}: {
+  platos: PlatoDeCarta[];
+  categoriaElegida: string | null;
+  busqueda: string;
+}): SeccionDeCarta | null {
+  if (categoriaElegida !== null || busqueda.trim()) return null;
+
+  const anclados = platos
+    .filter((p) => p.is_featured && p.is_available)
+    .sort((a, b) => {
+      const posicion = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+      return posicion !== 0 ? posicion : a.name.localeCompare(b.name, "es");
+    });
+
+  if (anclados.length === 0) return null;
+
+  return {
+    id: "anclados",
+    titulo: "Los de siempre",
+    nota: `${anclados.length} ${anclados.length === 1 ? "plato" : "platos"}`,
+    oculta: false,
+    anclada: true,
+    platos: anclados,
+  };
 }
 
 /** Cuántas unidades de este plato hay ya en el carrito, sumando sus líneas. */

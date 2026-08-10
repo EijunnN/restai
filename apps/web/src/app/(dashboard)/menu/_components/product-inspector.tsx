@@ -20,6 +20,7 @@ import {
   Unlink,
   UtensilsCrossed,
   X,
+  Star,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatCurrency } from "@/lib/utils";
@@ -56,6 +57,8 @@ export function ProductInspector({
   puedeCrear,
   puedeAlternar,
   alternandoDisponible,
+  alternandoDestacado,
+  onAlternarDestacado,
   onCerrar,
   onAlternarDisponible,
   onPedirBorrado,
@@ -69,6 +72,9 @@ export function ProductInspector({
   puedeCrear: boolean;
   puedeAlternar: boolean;
   alternandoDisponible: boolean;
+  /** Hay un cambio de "destacado" en vuelo para este plato. */
+  alternandoDestacado?: boolean;
+  onAlternarDestacado?: () => void;
   onCerrar: () => void;
   onAlternarDisponible: () => void;
   onPedirBorrado: () => void;
@@ -371,6 +377,46 @@ export function ProductInspector({
               {producto.isAvailable ? "Se puede pedir" : "No se puede pedir"}
             </span>
           </div>
+
+          {/*
+            Anclado en la caja.
+
+            Es lo ÚNICO de esta ficha que no toca la carta del comensal: no cambia
+            qué se vende ni a qué precio, solo dónde lo encuentra quien cobra. Por
+            eso lo dice en voz alta —"solo en el punto de venta"— en vez de dejar
+            que alguien crea que está destacando el plato de cara al cliente.
+          */}
+          {puedeEditar && onAlternarDestacado && (
+            <button
+              type="button"
+              onClick={onAlternarDestacado}
+              disabled={alternandoDestacado}
+              aria-pressed={producto.isFeatured}
+              className={`mt-2 flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
+                producto.isFeatured
+                  ? "bg-amber-500/10 hover:bg-amber-500/[0.15]"
+                  : "bg-muted/60 hover:bg-muted"
+              }`}
+            >
+              <Star
+                className={`h-4 w-4 shrink-0 ${
+                  producto.isFeatured ? "fill-amber-500 text-amber-500" : "text-muted-foreground"
+                }`}
+              />
+              <span className="min-w-0 flex-1">
+                <span
+                  className={`block text-[12.5px] font-semibold ${
+                    producto.isFeatured ? "text-amber-600 dark:text-amber-400" : ""
+                  }`}
+                >
+                  {producto.isFeatured ? "Anclado en la caja" : "Anclar en la caja"}
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  Solo en el punto de venta · no cambia la carta del comensal
+                </span>
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Modificadores */}

@@ -19,12 +19,14 @@ import {
   useModifierGroups,
   useReorderCategories,
   useReorderMenuItems,
+  useUpdateMenuItem,
 } from "@/hooks/use-menu";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CategoryDialog } from "./_components/category-dialog";
 import { ProductDialog } from "./_components/product-dialog";
 import { ModifierGroupDialog } from "./_components/modifier-group-dialog";
 import { MenuToolbar } from "./_components/menu-toolbar";
+import { DestacadosDialog } from "./_components/destacados-dialog";
 import { FilterChips } from "./_components/filter-chips";
 import { CategoryChips, CategoryRail } from "./_components/category-rail";
 import { ProductsTable } from "./_components/products-table";
@@ -86,6 +88,45 @@ export default function MenuPage() {
   const borrarProducto = useDeleteMenuItem();
   const borrarGrupo = useDeleteModifierGroup();
   const { alternar, enCambio } = useToggleMenuAvailability();
+
+  /*
+    Anclar un plato en la caja.
+
+    Va por el PATCH normal del plato y no por el atajo de disponibilidad: no es
+    una decisión de servicio que se toma cincuenta veces por noche, es una
+    decisión de carta que se toma una vez al mes.
+  */
+  /*
+    Ver cifras de venta exige `reports:read`. Da la casualidad de que lo tienen
+    TODOS los que pueden editar la carta (org_admin y branch_manager) y nadie
+    más, pero se comprueba igual: ofrecer un botón que responde 403 es peor que
+    no ofrecerlo.
+  */
+  const puedeVerVentas = hasPermission(role, "reports:read");
+  const [dialogoDestacados, setDialogoDestacados] = useState(false);
+
+  const destacar = useUpdateMenuItem();
+  const alternarDestacado = (p: Producto) => {
+    const anclar = !p.isFeatured;
+    destacar.mutate(
+      { id: p.id, isFeatured: anclar },
+      {
+        onSuccess: () =>
+          toast.success(
+            anclar
+              ? `«${p.name}» anclado arriba de la caja`
+              : `«${p.name}» ya no está anclado`,
+            {
+              description: anclar
+                ? "Quien cobra lo verá en «Los de siempre», siempre en el mismo sitio."
+                : undefined,
+            },
+          ),
+        onError: (err: any) =>
+          toast.error("No se pudo cambiar", { description: err?.message }),
+      },
+    );
+  };
   const reordenarCategorias = useReorderCategories();
   const reordenarProductos = useReorderMenuItems();
 
@@ -283,6 +324,8 @@ export default function MenuPage() {
           onAlternarDisponible={() =>
             alternar(productoActivo.id, productoActivo.name, !productoActivo.isAvailable)
           }
+          alternandoDestacado={destacar.isPending}
+          onAlternarDestacado={() => alternarDestacado(productoActivo)}
           onPedirBorrado={() =>
             setPorBorrar({
               tipo: "producto",
@@ -332,6 +375,13 @@ export default function MenuPage() {
         puedeCrear={puedeCrear}
         onCrear={() => (vista === "productos" ? setDialogoProducto(true) : setDialogoGrupo(true))}
         urlCarta={urlCarta}
+        puedeVerVentas={puedeVerVentas}
+        onVerMasVendidos={() => setDialogoDestacados(true)}
+      />
+
+      <DestacadosDialog
+        abierto={dialogoDestacados}
+        onCerrar={() => setDialogoDestacados(false)}
       />
 
       {vista === "productos" ? (

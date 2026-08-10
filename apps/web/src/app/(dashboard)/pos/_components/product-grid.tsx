@@ -10,6 +10,7 @@ import {
   Loader2,
   RefreshCw,
   Search,
+  Star,
   UtensilsCrossed,
   X,
 } from "lucide-react";
@@ -293,7 +294,14 @@ function ProductGridComponent({
                     nombres para saber dónde acaban las entradas.
                   */}
                   <div className="mb-2 flex items-center gap-2.5">
-                    <span className="text-[11px] font-extrabold uppercase tracking-[0.16em] text-muted-foreground">
+                    {seccion.anclada && (
+                      <Star className="h-3.5 w-3.5 shrink-0 fill-amber-500 text-amber-500" />
+                    )}
+                    <span
+                      className={`text-[11px] font-extrabold uppercase tracking-[0.16em] ${
+                        seccion.anclada ? "text-foreground" : "text-muted-foreground"
+                      }`}
+                    >
                       {seccion.titulo}
                     </span>
                     {seccion.oculta && (
