@@ -1,4 +1,4 @@
-import { db, schema } from "./index";
+import { db, schema, whenDbReady } from "./index";
 import { hash } from "@node-rs/argon2";
 import { eq } from "drizzle-orm";
 
@@ -414,7 +414,19 @@ async function seed() {
   process.exit(0);
 }
 
-seed().catch((err) => {
-  console.error("❌ Seed failed:", err);
-  process.exit(1);
-});
+/*
+ * `whenDbReady()` antes de tocar `db`, y no es opcional.
+ *
+ * La conexión de módulo se construye con `.then` y NO con top-level await, a
+ * propósito: un TLA en este paquete hace que Cloudflare rechace el Worker con
+ * "Top-level await in module is unsettled". El precio es que cualquier script
+ * suelto que importe `db` y consulte de inmediato revienta con "La conexión de DB
+ * aún no está lista" — que es justo lo que le pasaba a `bun run db:seed` desde
+ * ese cambio, en cualquier máquina.
+ */
+whenDbReady()
+  .then(seed)
+  .catch((err) => {
+    console.error("❌ Seed failed:", err);
+    process.exit(1);
+  });

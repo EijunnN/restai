@@ -141,6 +141,20 @@
       "when": 1786314919307,
       "tag": "0019_order_status_clock",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786314979307,
+      "tag": "0020_modifier_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1786315039307,
+      "tag": "0021_featured_items",
+      "breakpoints": true
     }
   ]
 }
