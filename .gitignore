@@ -79,3 +79,9 @@ docker-compose.override.yml
 *.tgz
 .cache/
 .mcp.json
+
+# Skills de agente instaladas con `npx skills add`. NO se versionan: son
+# contenido de terceros sin licencia declarada en el paquete, y este repositorio
+# es publico. Para tenerlas:
+#   npx skills@latest add emilkowalski/skills
+.agents/skills/

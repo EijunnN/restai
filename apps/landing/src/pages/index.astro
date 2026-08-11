@@ -1,45 +1,114 @@
 ---
+/*
+  Landing de RestAI.
+
+  Rehecha siguiendo el marco de decisión de animación de Emil Kowalski. Las
+  reglas no se versionan aquí (son de terceros); se instalan con
+  `npx skills@latest add emilkowalski/skills`. Tres decisiones cargan con todo:
+
+  1. SIN GSAP. La versión anterior enviaba 116 KB de JavaScript para unos
+     fundidos y un parallax. Aquí todo lo hace CSS y un IntersectionObserver de
+     quince líneas. No es solo peso: las animaciones CSS corren fuera del hilo
+     principal, así que siguen fluidas mientras la página carga — justo cuando
+     un JS de animación pierde fotogramas. El publico de esta pagina abre desde
+     un movil con 4G.
+
+  2. LA VERDAD NO DEPENDE DE UNA ANIMACIÓN. Las cifras se renderizaban a "0" y
+     solo subían con un contador al hacer scroll: quien pedía menos movimiento,
+     quien tenía el JS caído y CUALQUIER RASTREADOR leían "0 canales de venta" y
+     "0 % comprobantes listos para SUNAT" — lo contrario de lo que la página
+     quiere decir. Ahora el número está en el HTML y no se anima: son datos que
+     se leen, y los datos que se leen no se mueven por estética.
+
+  3. UNA SOLA ANIMACIÓN LARGA, Y EXPLICA ALGO. El marco permite duraciones
+     largas en marketing solo cuando la animación EXPLICA. Esa es la secuencia
+     del héroe: QR → comanda en cocina → boleta. Todo lo demás es entrada
+     discreta. Fuera la flotación infinita (coste perpetuo de batería sin
+     propósito) y el parallax por scroll (decoración que salta en móvil).
+*/
 const SITE = "https://restai.bezenti.com";
 const APP_URL = "https://app.restai.bezenti.com";
 const API_HEALTH = "https://api.restai.bezenti.com/health";
 const OG_IMAGE = `${SITE}/og.png`;
 const DESC =
-  "RestAI es el sistema todo-en-uno para restaurantes: POS multicanal, comandas a cocina en tiempo real, carta por QR, facturación electrónica SUNAT, inventario, fidelidad y multi-sucursal.";
+  "Sistema de gestión para restaurantes: punto de venta, comandas a cocina en tiempo real, carta por QR, pedidos por voz y facturación electrónica SUNAT. Multi-sede, en español.";
 
-const steps = [
-  { n: "01", title: "El cliente escanea el QR", desc: "Abre la carta en su celular, arma su pedido y lo envía. Sin apps, sin esperas." },
-  { n: "02", title: "La cocina lo recibe al instante", desc: "La comanda aparece en el tablero Kanban en tiempo real, lista para preparar." },
-  { n: "03", title: "El equipo despacha y cobra", desc: "Mozos y caja gestionan el servicio, los pagos y el estado de cada mesa." },
-  { n: "04", title: "Se emite el comprobante", desc: "Boleta o factura electrónica enviada a SUNAT, sin pasos manuales." },
+/* Los tres momentos del servicio que la secuencia del héroe representa. */
+const secuencia = [
+  { clave: "qr", titulo: "El comensal pide", detalle: "Escanea el QR de su mesa" },
+  { clave: "cocina", titulo: "La cocina lo ve", detalle: "La comanda entra en el pase" },
+  { clave: "boleta", titulo: "Se cobra y se declara", detalle: "Boleta electrónica a SUNAT" },
 ];
 
-const features = [
-  { icon: "🧾", title: "POS multicanal", desc: "Toma pedidos para mesa, mostrador o delivery desde una sola pantalla, con carrito completo y cobro ágil.", benefit: "Un solo flujo para todo el servicio." },
-  { icon: "🍳", title: "Cocina en tiempo real", desc: "Las comandas llegan a un tablero Kanban al instante; la cocina ve, prepara y marca cada plato.", benefit: "Cero papel y menos errores de pedido." },
-  { icon: "📱", title: "Carta digital por QR", desc: "El comensal escanea el QR de su mesa, navega el menú con fotos y pide desde su propio teléfono.", benefit: "Menos carga para los mozos, más rotación." },
-  { icon: "🔔", title: "Llamar al mozo y pedir la cuenta", desc: "El cliente solicita atención o la cuenta con un toque; el personal lo ve en su panel al momento.", benefit: "Mejor atención, mesas que rotan más rápido." },
-  { icon: "🧮", title: "Facturación electrónica SUNAT", desc: "Emisión de boletas y facturas, con envío y resúmenes diarios a SUNAT integrados en el cobro.", benefit: "Cumples la norma sin fricción ni reprocesos." },
-  { icon: "🏢", title: "Multi-sucursal", desc: "Varias sedes bajo una misma cuenta, con aislamiento de datos por sucursal y configuración propia.", benefit: "Escala a nuevas sedes sin rehacer nada." },
-  { icon: "📦", title: "Inventario inteligente", desc: "Control de stock con descuento automático por venta y manejo de concurrencia para evitar sobreventa.", benefit: "Tu stock siempre refleja la realidad." },
-  { icon: "🎁", title: "Fidelidad y cupones", desc: "Programa de puntos y cupones para premiar y traer de vuelta a tus clientes recurrentes.", benefit: "Más clientes que regresan." },
-  { icon: "👥", title: "Personal y roles", desc: "Cuentas para tu equipo con permisos por rol y por sede; cada quien ve solo lo que le corresponde.", benefit: "Operación ordenada y segura." },
-  { icon: "📊", title: "Reportes y pagos", desc: "Ventas, productos y cobros a la vista para tomar decisiones con datos reales del día a día.", benefit: "Decisiones con información, no a ciegas." },
-  { icon: "⚡", title: "Tiempo real, en todo", desc: "Mensajería en vivo (WebSocket/Ably) que sincroniza pedidos, cocina y mesas al instante.", benefit: "Todos ven el mismo estado, siempre." },
-  { icon: "🛡️", title: "Seguro por diseño", desc: "Multi-tenant con aislamiento estricto, sesiones con expiración y borrado lógico de datos.", benefit: "Tu información protegida de extremo a extremo." },
+/*
+  Cifras COMPROBABLES. Las anteriores eran de relleno —"−Horas", "+Clientes",
+  "∞ sucursales"— y una cifra que nadie puede verificar no convence: resta.
+*/
+const cifras = [
+  { valor: "3", etiqueta: "canales en la misma pantalla", nota: "mesa · mostrador · reparto" },
+  { valor: "5", etiqueta: "roles con permisos propios", nota: "dueño, gerente, cajero, mozo, cocina" },
+  { valor: "IGV", etiqueta: "y comprobantes ante SUNAT", nota: "boleta, factura y nota de crédito" },
 ];
 
-const benefits = [
-  { stat: "−Horas", title: "Menos tiempo perdido", desc: "Pedidos que fluyen del QR a la cocina sin intermediarios ni comandas en papel." },
-  { stat: "−Errores", title: "Menos platos mal pedidos", desc: "La cocina recibe exactamente lo que el cliente eligió, sin malentendidos." },
-  { stat: "100% SUNAT", title: "Cumplimiento automático", desc: "Cada venta puede convertirse en comprobante electrónico válido, sin pasos extra." },
-  { stat: "+Clientes", title: "Más fidelidad", desc: "Puntos, cupones y una experiencia de pedido moderna que invita a volver." },
+const pasos = [
+  {
+    n: "01",
+    titulo: "El comensal escanea el QR de su mesa",
+    desc: "Abre la carta en su propio teléfono. Puede pedir desde ahí, o solo mirar: tú decides si la carta es interactiva o solo de lectura.",
+  },
+  {
+    n: "02",
+    titulo: "La cocina la recibe en el acto",
+    desc: "La comanda aparece en el pase, con el tiempo que lleva esperando cada plato. Si algo se acaba, se anula desde ahí y todos se enteran.",
+  },
+  {
+    n: "03",
+    titulo: "El salón cobra sin buscar la cuenta",
+    desc: "Las cuentas abiertas del local están en una lista, ordenadas por lo que necesita algo de ti. Cobrar es un toque.",
+  },
+  {
+    n: "04",
+    titulo: "El comprobante sale solo",
+    desc: "Boleta o factura electrónica firmada y declarada ante SUNAT, sin salir del cobro ni volver a teclear nada.",
+  },
 ];
 
-const stats = [
-  { value: 3, suffix: "", label: "canales de venta (mesa · mostrador · delivery)" },
-  { value: 100, suffix: "%", label: "comprobantes listos para SUNAT" },
-  { value: null, display: "<1s", label: "para reflejar un pedido en cocina" },
-  { value: null, display: "∞", label: "sucursales bajo una sola cuenta" },
+/*
+  Seis bloques, no doce tarjetas con emoji. Doce tarjetas iguales no se leen: se
+  hojean, y el que hojea no distingue lo que este producto tiene de distinto.
+*/
+const bloques = [
+  {
+    titulo: "El comensal pide hablando",
+    destacado: true,
+    desc: "Un agente de voz atiende al comensal en su mesa: le dice qué hay, resuelve dudas y arma el pedido conversando. Lo cierra hablando, no tocando la pantalla.",
+    puntos: ["Carta digital por QR", "Interactiva o solo lectura", "Llamar al mozo y pedir la cuenta"],
+  },
+  {
+    titulo: "El punto de venta",
+    desc: "Todas las cuentas abiertas del local en una lista que cabe entera. El botón grande cambia según el tipo: en salón manda a cocina, en mostrador cobra.",
+    puntos: ["Mesa, mostrador y reparto", "Ampliar una cuenta con otra ronda", "Cobro rápido o dividido por producto"],
+  },
+  {
+    titulo: "La cocina y el salón",
+    desc: "El pase en tiempo real, y un plano del local que dibujas como es de verdad: juntar mesas, mover una visita, ver quién lleva más rato esperando.",
+    puntos: ["Tablero del pase en vivo", "Plano de sala editable", "Avisos de mesa persistentes"],
+  },
+  {
+    titulo: "El dinero",
+    desc: "Cobros por orden o por producto, propinas, anulaciones con rastro, y arqueo de caja al cerrar el turno con la diferencia calculada.",
+    puntos: ["Efectivo, tarjeta, Yape, Plin", "Arqueo por turno", "Facturación electrónica SUNAT"],
+  },
+  {
+    titulo: "La carta",
+    desc: "Categorías y platos que ordenas arrastrando, opciones con lo que el plato lleva de serie ya marcado, y el ranking real de lo que más se vende.",
+    puntos: ["Opciones y modificadores", "Agotar un plato desde cocina", "Los más vendidos, con cifras"],
+  },
+  {
+    titulo: "El negocio",
+    desc: "Inventario que se descuenta solo con cada venta, fidelización con puntos, cupones, campañas y reportes del día a día.",
+    puntos: ["Multi-sede bajo una cuenta", "Permisos por rol y por sede", "Auditoría de quién cambió qué"],
+  },
 ];
 
 const jsonLd = {
@@ -68,15 +137,26 @@ const jsonLd = {
       operatingSystem: "Web",
       url: SITE,
       description: DESC,
-      offers: { "@type": "Offer", price: "0", priceCurrency: "PEN", availability: "https://schema.org/InStock" },
-      featureList: features.map((f) => f.title),
+      /*
+        SIN bloque `offers`. El anterior declaraba `price: "0"` mientras la
+        pagina no dice una palabra de precio: Google publicaba "gratis" en los
+        resultados y el visitante llegaba sin saberlo. Declarar un precio falso
+        es peor que no declarar ninguno; cuando haya tarifa publica, vuelve.
+      */
+      featureList: bloques.map((b) => b.titulo),
     },
   ],
 };
 ---
 
 <!doctype html>
-<html lang="es">
+<!--
+  `sin-js` viaja en el HTML y el script en linea la quita. Es lo que garantiza
+  que sin JavaScript la pagina se vea: los elementos que animan nacen con
+  `opacity: 0`, y si nada les quitara esa opacidad quedaria una pagina en blanco.
+  Al reves —anadir una clase `js`— el contenido parpadearia de visible a oculto.
+-->
+<html lang="es" class="sin-js">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -85,9 +165,12 @@ const jsonLd = {
     <meta name="theme-color" content="#0b0f17" />
     <meta name="generator" content={Astro.generator} />
 
-    <title>RestAI — Sistema de gestión todo-en-uno para restaurantes</title>
+    <title>RestAI — Sistema de gestión para restaurantes</title>
     <meta name="description" content={DESC} />
-    <meta name="keywords" content="software para restaurantes, POS restaurante, comandas en tiempo real, carta QR, facturación electrónica SUNAT, sistema multisucursal, punto de venta, gestión de restaurante Perú" />
+    <meta
+      name="keywords"
+      content="software para restaurantes, POS restaurante, comandas en tiempo real, carta QR, pedido por voz, facturación electrónica SUNAT, sistema multisucursal, punto de venta, gestión de restaurante Perú"
+    />
     <meta name="author" content="RestAI" />
 
     <!-- Open Graph -->
@@ -95,7 +178,7 @@ const jsonLd = {
     <meta property="og:site_name" content="RestAI" />
     <meta property="og:locale" content="es_PE" />
     <meta property="og:url" content={SITE} />
-    <meta property="og:title" content="RestAI — Gestión todo-en-uno para restaurantes" />
+    <meta property="og:title" content="RestAI — Sistema de gestión para restaurantes" />
     <meta property="og:description" content={DESC} />
     <meta property="og:image" content={OG_IMAGE} />
     <meta property="og:image:width" content="1200" />
@@ -104,18 +187,16 @@ const jsonLd = {
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="RestAI — Gestión todo-en-uno para restaurantes" />
+    <meta name="twitter:title" content="RestAI — Sistema de gestión para restaurantes" />
     <meta name="twitter:description" content={DESC} />
     <meta name="twitter:image" content={OG_IMAGE} />
 
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%BD%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%BD%EF%B8%8F%3C/text%3E%3C/svg%3E"
+    />
 
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
-
-    <!-- Marca la presencia de JS para ocultar elementos solo cuando podremos animarlos. -->
-    <script is:inline>
-      document.documentElement.classList.add("js");
-    </script>
   </head>
 
   <body>
@@ -123,365 +204,595 @@ const jsonLd = {
       <a class="brand" href="/"><span aria-hidden="true">🍽️</span> RestAI</a>
       <nav class="nav-links" aria-label="Principal">
         <a href="#como-funciona">Cómo funciona</a>
-        <a href="#features">Características</a>
-        <a href="#beneficios">Beneficios</a>
+        <a href="#producto">Qué hace</a>
       </nav>
       <a class="btn btn-primary" href={APP_URL}>Ingresar al panel</a>
     </header>
 
     <main>
-      <!-- HERO -->
+      <!-- ── HÉROE ─────────────────────────────────────────────────────── -->
       <section class="hero">
-        <div class="blob blob-a" aria-hidden="true"></div>
-        <div class="blob blob-b" aria-hidden="true"></div>
         <div class="hero-grid">
           <div class="hero-copy">
-            <p class="eyebrow reveal">Sistema de gestión para restaurantes</p>
-            <h1 class="reveal">Todo tu restaurante,<br /><span class="grad">en una sola plataforma.</span></h1>
-            <p class="lead reveal">{DESC}</p>
-            <div class="cta reveal">
-              <a class="btn btn-primary btn-lg" href={APP_URL}>Ingresar al panel →</a>
-              <a class="btn btn-ghost btn-lg" href="#features">Ver todo lo que hace</a>
+            <p class="eyebrow entra">Para restaurantes del Perú</p>
+            <h1 class="entra">
+              El pedido llega a cocina<br />
+              <span class="grad">antes de que el mozo se dé la vuelta.</span>
+            </h1>
+            <p class="lead entra">
+              Punto de venta, comandas en vivo, carta por QR —y un agente de voz que
+              toma el pedido hablando—. Con la boleta declarada ante SUNAT sin teclear
+              nada dos veces.
+            </p>
+            <div class="cta entra">
+              <a class="btn btn-primary btn-lg" href={APP_URL}>Ingresar al panel</a>
+              <a class="btn btn-ghost btn-lg" href="#como-funciona">Ver cómo funciona</a>
             </div>
-            <p class="microcopy reveal">Del QR a la cocina y a SUNAT, sin papel y en tiempo real.</p>
           </div>
 
-          <!-- Mockup flotante -->
-          <div class="hero-art" aria-hidden="true">
-            <div class="ui-card ui-ticket float">
-              <div class="ui-head"><span class="dot"></span> Comanda · Mesa 4</div>
-              <div class="ui-row"><span>2× Lomo saltado</span><span class="tag">En cocina</span></div>
-              <div class="ui-row"><span>1× Ceviche</span><span class="tag warn">Pendiente</span></div>
-              <div class="ui-row"><span>3× Chicha morada</span><span class="tag ok">Listo</span></div>
-            </div>
-            <div class="ui-card ui-qr float float-delay">
-              <div class="qr"></div>
-              <div class="ui-sub">Escanea y pide</div>
-            </div>
-            <div class="ui-card ui-bill float float-delay2">
-              <div class="ui-head">Boleta electrónica</div>
-              <div class="ui-total">S/ 128.00</div>
-              <div class="ui-sub ok-text">✓ Enviada a SUNAT</div>
-            </div>
+          <!--
+            La ÚNICA animación larga de la página, y existe porque explica: el
+            recorrido de un pedido, de la mesa a SUNAT. Se reproduce una vez al
+            llegar; no vuelve a moverse. Una animación de héroe en bucle cobra
+            batería para siempre a cambio de nada.
+          -->
+          <div class="demo" aria-hidden="true">
+            <div class="demo-linea"></div>
+
+            <figure class="paso paso-qr">
+              <div class="tarjeta">
+                <div class="qr"></div>
+                <p class="tarjeta-pie">Mesa 4 · escanea y pide</p>
+              </div>
+            </figure>
+
+            <figure class="paso paso-cocina">
+              <div class="tarjeta">
+                <p class="tarjeta-tit"><span class="punto"></span> Comanda · Mesa 4</p>
+                <p class="linea"><span>2× Lomo saltado</span><span class="chip">En cocina</span></p>
+                <p class="linea"><span>1× Ceviche</span><span class="chip chip-espera">4 min</span></p>
+                <p class="linea"><span>3× Chicha morada</span><span class="chip chip-ok">Listo</span></p>
+              </div>
+            </figure>
+
+            <figure class="paso paso-boleta">
+              <div class="tarjeta">
+                <p class="tarjeta-tit">Boleta electrónica</p>
+                <p class="total">S/ 128.00</p>
+                <p class="tarjeta-pie ok">Aceptada por SUNAT</p>
+              </div>
+            </figure>
           </div>
         </div>
 
-        <!-- STATS -->
-        <div class="stats reveal" id="stats">
-          {stats.map((s) => (
-            <div class="stat">
-              <div class="stat-value" data-count={s.value ?? ""} data-suffix={s.suffix ?? ""}>
-                {s.display ?? `0${s.suffix ?? ""}`}
-              </div>
-              <div class="stat-label">{s.label}</div>
+        <!--
+          Las cifras están en el HTML y NO se animan. Antes se renderizaban a
+          "0" y solo subían con un contador al hacer scroll: quien pedía menos
+          movimiento, quien no ejecutaba el JS y los rastreadores leían
+          "0 canales de venta". Un dato que se lee no se mueve por estética.
+        -->
+        <dl class="cifras entra">
+          {cifras.map((c) => (
+            <div class="cifra">
+              <dt class="cifra-valor grad">{c.valor}</dt>
+              <dd class="cifra-etiqueta">
+                {c.etiqueta}
+                <span class="cifra-nota">{c.nota}</span>
+              </dd>
             </div>
           ))}
-        </div>
+        </dl>
       </section>
 
-      <!-- CÓMO FUNCIONA -->
-      <section id="como-funciona" class="section">
-        <header class="section-head reveal">
+      <!-- ── CÓMO FUNCIONA ─────────────────────────────────────────────── -->
+      <section id="como-funciona" class="seccion">
+        <header class="seccion-cabecera revela">
           <p class="kicker">Cómo funciona</p>
-          <h2>Del pedido al comprobante, en cuatro pasos</h2>
+          <h2>De la mesa al comprobante, sin papel por el medio</h2>
         </header>
-        <ol class="steps">
-          {steps.map((s) => (
-            <li class="step reveal">
-              <span class="step-n">{s.n}</span>
-              <h3>{s.title}</h3>
-              <p>{s.desc}</p>
+        <ol class="pasos">
+          {pasos.map((p) => (
+            <li class="paso-fila revela">
+              <span class="paso-n">{p.n}</span>
+              <div>
+                <h3>{p.titulo}</h3>
+                <p>{p.desc}</p>
+              </div>
             </li>
           ))}
         </ol>
       </section>
 
-      <!-- FEATURES -->
-      <section id="features" class="section">
-        <header class="section-head reveal">
-          <p class="kicker">Características</p>
-          <h2>Todo lo que tu restaurante necesita</h2>
-          <p class="section-sub">Cada módulo resuelve un dolor real de la operación — y suma un beneficio concreto.</p>
+      <!-- ── QUÉ HACE ──────────────────────────────────────────────────── -->
+      <section id="producto" class="seccion">
+        <header class="seccion-cabecera revela">
+          <p class="kicker">Qué hace</p>
+          <h2>Un sistema, no doce módulos sueltos</h2>
+          <p class="seccion-sub">
+            Todo comparte los mismos datos: lo que cambia la cocina lo ve la caja, y lo
+            que cobra la caja lo ve el dueño.
+          </p>
         </header>
-        <div class="features">
-          {features.map((f) => (
-            <article class="card reveal" itemscope itemtype="https://schema.org/Service">
-              <div class="card-icon" aria-hidden="true">{f.icon}</div>
-              <h3 itemprop="name">{f.title}</h3>
-              <p itemprop="description">{f.desc}</p>
-              <p class="benefit"><span aria-hidden="true">✓</span> {f.benefit}</p>
-            </article>
-          ))}
-        </div>
-      </section>
 
-      <!-- BENEFICIOS -->
-      <section id="beneficios" class="section">
-        <header class="section-head reveal">
-          <p class="kicker">Beneficios</p>
-          <h2>Lo que ganas al usar RestAI</h2>
-        </header>
-        <div class="benefits">
-          {benefits.map((b) => (
-            <article class="benefit-card reveal">
-              <div class="benefit-stat grad">{b.stat}</div>
-              <h3>{b.title}</h3>
+        <div class="bloques">
+          {bloques.map((b) => (
+            <article class={b.destacado ? "bloque bloque-destacado revela" : "bloque revela"}>
+              {b.destacado && <p class="insignia">Lo que no tiene nadie más</p>}
+              <h3>{b.titulo}</h3>
               <p>{b.desc}</p>
+              <ul class="puntos">
+                {b.puntos.map((punto) => (
+                  <li>{punto}</li>
+                ))}
+              </ul>
             </article>
           ))}
         </div>
       </section>
 
-      <!-- CTA FINAL -->
-      <section class="closing reveal">
-        <h2>Ordena tu operación, <span class="grad">hoy mismo.</span></h2>
-        <p>Entra al panel y empieza a gestionar tu restaurante de punta a punta.</p>
-        <a class="btn btn-primary btn-lg" href={APP_URL}>Ingresar al panel →</a>
+      <!-- ── CIERRE ────────────────────────────────────────────────────── -->
+      <section class="cierre revela">
+        <h2>Tu local, ordenado <span class="grad">desde el primer servicio.</span></h2>
+        <p>Entra al panel y monta tu carta, tus mesas y tu equipo en una tarde.</p>
+        <a class="btn btn-primary btn-lg" href={APP_URL}>Ingresar al panel</a>
       </section>
     </main>
 
-    <footer class="foot">
-      <div class="foot-brand"><span aria-hidden="true">🍽️</span> RestAI</div>
-      <nav class="foot-links" aria-label="Pie">
-        <a href="#features">Características</a>
-        <a href="#beneficios">Beneficios</a>
+    <footer class="pie">
+      <div class="pie-marca"><span aria-hidden="true">🍽️</span> RestAI</div>
+      <nav class="pie-enlaces" aria-label="Pie">
+        <a href="#como-funciona">Cómo funciona</a>
+        <a href="#producto">Qué hace</a>
         <a href={APP_URL}>Panel</a>
-        <a href={API_HEALTH}>Estado de la API</a>
+        <a href={API_HEALTH}>Estado del servicio</a>
       </nav>
-      <span class="foot-copy">© {new Date().getFullYear()} RestAI</span>
+      <span>© {new Date().getFullYear()} RestAI</span>
     </footer>
 
     <style is:global>
       :root {
         --bg: #0b0f17;
-        --bg-soft: #121826;
-        --bg-card: #141b2b;
+        --bg-suave: #111827;
+        --bg-tarjeta: #141b2b;
         --fg: #e9edf5;
-        --muted: #98a3b8;
-        --accent: #ff7849;
-        --accent-2: #ffb347;
-        --border: #1f2937;
-        --radius: 1rem;
-        --max: 1140px;
+        --tenue: #98a3b8;
+        --acento: #ff7849;
+        --acento-2: #ffb347;
+        --borde: #1f2937;
+        --radio: 1rem;
+        --max: 1120px;
+
+        /*
+          Curvas propias. Las de serie de CSS son flojas: les falta el empuje que
+          hace que un movimiento parezca intencionado y no un desvanecimiento.
+          `ease-in` no aparece en ninguna parte a propósito — empieza lento justo
+          en el instante que el ojo más mira, y hace sentir lenta la interfaz.
+        */
+        --sale: cubic-bezier(0.23, 1, 0.32, 1);
+        --entra-sale: cubic-bezier(0.77, 0, 0.175, 1);
       }
+
       * { box-sizing: border-box; }
+
       html { scroll-behavior: smooth; }
       @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
       body {
         margin: 0;
-        background:
-          radial-gradient(900px 480px at 80% -8%, rgba(255, 179, 71, 0.10), transparent 60%),
-          radial-gradient(1000px 520px at 12% 2%, rgba(255, 120, 73, 0.14), transparent 55%),
-          var(--bg);
+        background: var(--bg);
         color: var(--fg);
-        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
         line-height: 1.6;
         -webkit-font-smoothing: antialiased;
-        overflow-x: hidden;
       }
+
+      h1, h2, h3 { line-height: 1.15; letter-spacing: -0.025em; font-weight: 750; }
       a { color: inherit; text-decoration: none; }
-      h1, h2, h3 { letter-spacing: -0.03em; line-height: 1.1; }
       .grad {
-        background: linear-gradient(120deg, var(--accent), var(--accent-2));
-        -webkit-background-clip: text; background-clip: text; color: transparent;
+        background: linear-gradient(100deg, var(--acento), var(--acento-2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
       }
 
-      /* Reveal: solo se ocultan si hay JS y no hay reduce-motion. */
-      .js .reveal { opacity: 0; transform: translateY(26px); }
-      @media (prefers-reduced-motion: reduce) { .js .reveal { opacity: 1; transform: none; } }
-
+      /* ── Botones ──────────────────────────────────────────────────────
+         `:active` con escala es la regla que más se nota y la que más se
+         olvida: sin ella el botón no confirma que la interfaz oyó el toque.
+         El hover va tras `hover: hover` porque en una pantalla táctil el
+         navegador dispara hovers falsos al tocar, y el botón se queda
+         "iluminado" después de soltarlo. */
       .btn {
-        display: inline-flex; align-items: center; gap: .4rem;
-        padding: .7rem 1.2rem; border-radius: .7rem; font-weight: 650; font-size: .95rem;
-        border: 1px solid transparent; cursor: pointer;
-        transition: transform .14s ease, box-shadow .14s ease, background .14s ease;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 0.7rem 1.2rem;
+        border-radius: 0.7rem;
+        font-weight: 650;
+        font-size: 0.95rem;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: transform 140ms var(--sale), background-color 140ms var(--sale),
+          border-color 140ms var(--sale);
       }
-      .btn-lg { padding: .9rem 1.5rem; font-size: 1.02rem; }
-      .btn:hover { transform: translateY(-2px); }
-      .btn-primary {
-        background: linear-gradient(135deg, var(--accent), var(--accent-2));
-        color: #19120a; box-shadow: 0 10px 30px rgba(255, 120, 73, .28);
+      .btn:active { transform: scale(0.97); }
+      .btn-lg { padding: 0.9rem 1.5rem; font-size: 1rem; }
+      .btn-primary { background: var(--acento); color: #180a04; }
+      .btn-ghost { border-color: var(--borde); color: var(--fg); }
+      @media (hover: hover) and (pointer: fine) {
+        .btn-primary:hover { background: #ff8d63; }
+        .btn-ghost:hover { border-color: #33415a; background: rgba(255, 255, 255, 0.03); }
       }
-      .btn-ghost { border-color: var(--border); color: var(--fg); }
-      .btn-ghost:hover { background: var(--bg-soft); }
+      .btn:focus-visible { outline: 2px solid var(--acento-2); outline-offset: 2px; }
 
-      /* NAV */
+      /* ── Cabecera ─────────────────────────────────────────────────── */
       .nav {
-        position: sticky; top: 0; z-index: 50;
-        display: flex; align-items: center; gap: 1rem;
-        max-width: var(--max); margin: 0 auto; padding: .9rem 1.25rem;
-        transition: background .2s ease, border-color .2s ease, backdrop-filter .2s ease;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        max-width: var(--max);
+        margin: 0 auto;
+        padding: 0.9rem 1.25rem;
+        background: rgba(11, 15, 23, 0.75);
+        backdrop-filter: blur(12px);
         border-bottom: 1px solid transparent;
+        transition: border-color 200ms var(--sale);
       }
-      .nav.scrolled {
-        background: rgba(11, 15, 23, .72); backdrop-filter: blur(12px);
-        border-bottom-color: var(--border);
+      .nav.posado { border-bottom-color: var(--borde); }
+      .brand { font-weight: 750; letter-spacing: -0.02em; }
+      .nav-links { display: flex; gap: 1.4rem; margin-left: auto; font-size: 0.92rem; color: var(--tenue); }
+      /*
+        En movil se encogen, no desaparecen. Antes eran `display: none` sin
+        menu que los sustituyera: la mitad de la navegacion dejaba de existir
+        justo en el dispositivo desde el que se lee esta pagina.
+      */
+      @media (max-width: 720px) {
+        .nav { gap: 0.9rem; padding: 0.75rem 1rem; }
+        .nav-links { gap: 0.9rem; font-size: 0.82rem; }
       }
-      .brand { font-weight: 750; font-size: 1.2rem; }
-      .nav-links { margin-left: auto; display: flex; gap: 1.4rem; }
-      .nav-links a { color: var(--muted); font-size: .95rem; }
-      .nav-links a:hover { color: var(--fg); }
-      .nav .btn-primary { padding: .55rem 1rem; }
-      @media (max-width: 760px) { .nav-links { display: none; } }
+      @media (max-width: 420px) { .nav-links { display: none; } }
+      @media (hover: hover) and (pointer: fine) { .nav-links a:hover { color: var(--fg); } }
 
+      /* ── Estructura ───────────────────────────────────────────────── */
       main { max-width: var(--max); margin: 0 auto; padding: 0 1.25rem; }
-      .section { padding: 5rem 0; }
-      .section-head { max-width: 60ch; margin: 0 auto 2.5rem; text-align: center; }
-      .kicker { text-transform: uppercase; letter-spacing: .18em; font-size: .76rem; color: var(--accent-2); margin: 0 0 .6rem; }
-      .section-head h2 { font-size: clamp(1.8rem, 4.5vw, 2.7rem); margin: 0; }
-      .section-sub { color: var(--muted); margin: .8rem auto 0; }
-
-      /* HERO */
-      .hero { position: relative; padding: 3.5rem 0 2rem; }
-      .hero-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 2.5rem; align-items: center; }
-      @media (max-width: 920px) { .hero-grid { grid-template-columns: 1fr; } .hero-art { order: -1; } }
-      .eyebrow { text-transform: uppercase; letter-spacing: .18em; font-size: .8rem; color: var(--accent-2); margin: 0 0 1rem; }
-      .hero h1 { font-size: clamp(2.4rem, 6.4vw, 4rem); margin: 0 0 1.1rem; }
-      .lead { color: var(--muted); font-size: 1.15rem; max-width: 54ch; margin: 0 0 1.8rem; }
-      .cta { display: flex; gap: .8rem; flex-wrap: wrap; }
-      .microcopy { color: var(--muted); font-size: .9rem; margin: 1.1rem 0 0; }
-
-      .blob { position: absolute; border-radius: 50%; filter: blur(60px); opacity: .5; z-index: -1; pointer-events: none; }
-      .blob-a { width: 420px; height: 420px; background: rgba(255,120,73,.5); top: -120px; left: -120px; }
-      .blob-b { width: 360px; height: 360px; background: rgba(255,179,71,.4); bottom: -140px; right: -100px; }
-
-      /* HERO ART (mockup) */
-      .hero-art { position: relative; min-height: 360px; }
-      .ui-card {
-        position: absolute; background: var(--bg-card); border: 1px solid var(--border);
-        border-radius: 1rem; padding: 1rem 1.1rem; box-shadow: 0 24px 60px rgba(0,0,0,.45);
-        width: 280px;
+      .seccion { padding: 5.5rem 0; }
+      .seccion-cabecera { max-width: 46rem; margin-bottom: 2.5rem; }
+      .kicker {
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        font-size: 0.74rem;
+        color: var(--acento-2);
+        margin: 0 0 0.7rem;
       }
-      .ui-ticket { top: 10px; right: 0; }
-      .ui-qr { top: 150px; left: 0; width: 150px; text-align: center; }
-      .ui-bill { bottom: 0; right: 40px; width: 210px; }
-      .ui-head { font-weight: 650; font-size: .9rem; margin-bottom: .7rem; display: flex; align-items: center; gap: .4rem; }
-      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
-      .ui-row { display: flex; justify-content: space-between; align-items: center; font-size: .82rem; color: var(--muted); padding: .28rem 0; }
-      .tag { font-size: .68rem; padding: .12rem .5rem; border-radius: 999px; background: #20283a; color: var(--muted); }
-      .tag.ok { background: rgba(74,222,128,.14); color: #6ee7a8; }
-      .tag.warn { background: rgba(255,179,71,.16); color: var(--accent-2); }
-      .qr { width: 84px; height: 84px; margin: .2rem auto .5rem; border-radius: .5rem;
-        background:
-          conic-gradient(from 0deg, #0000 0 25%, #fff0 0) ,
-          repeating-conic-gradient(#e9edf5 0 90deg, #141b2b 0 180deg);
-        background-size: 100% 100%, 21px 21px; outline: 6px solid #e9edf5; outline-offset: -6px; }
-      .ui-sub { font-size: .78rem; color: var(--muted); }
-      .ui-total { font-size: 1.6rem; font-weight: 750; margin: .2rem 0 .3rem; }
-      .ok-text { color: #6ee7a8; }
+      .seccion-cabecera h2 { font-size: clamp(1.75rem, 4vw, 2.5rem); margin: 0; }
+      .seccion-sub { color: var(--tenue); margin: 0.9rem 0 0; font-size: 1.02rem; }
 
-      /* STATS */
-      .stats {
-        display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;
-        margin-top: 3.5rem; padding: 1.5rem; background: var(--bg-soft);
-        border: 1px solid var(--border); border-radius: var(--radius);
+      /* ── Héroe ────────────────────────────────────────────────────── */
+      .hero { padding: 4rem 0 1rem; }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 3rem;
+        align-items: center;
       }
-      @media (max-width: 760px) { .stats { grid-template-columns: repeat(2, 1fr); } }
-      .stat { text-align: center; }
-      .stat-value { font-size: clamp(1.8rem, 4vw, 2.4rem); font-weight: 780; letter-spacing: -.03em;
-        background: linear-gradient(120deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-      .stat-label { color: var(--muted); font-size: .82rem; margin-top: .25rem; }
+      @media (max-width: 940px) {
+        .hero-grid { grid-template-columns: 1fr; gap: 2.5rem; }
+      }
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        font-size: 0.78rem;
+        color: var(--acento-2);
+        margin: 0 0 1rem;
+      }
+      .hero h1 { font-size: clamp(2.1rem, 5.6vw, 3.5rem); margin: 0 0 1.2rem; }
+      .lead { color: var(--tenue); font-size: 1.1rem; max-width: 52ch; margin: 0 0 2rem; }
+      .cta { display: flex; gap: 0.8rem; flex-wrap: wrap; }
 
-      /* STEPS */
-      .steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; counter-reset: s; }
-      @media (max-width: 880px) { .steps { grid-template-columns: repeat(2, 1fr); } }
-      @media (max-width: 480px) { .steps { grid-template-columns: 1fr; } }
-      .step { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.4rem; }
-      .step-n { font-weight: 800; font-size: 1.1rem; color: var(--accent); }
-      .step h3 { font-size: 1.05rem; margin: .6rem 0 .4rem; }
-      .step p { margin: 0; color: var(--muted); font-size: .92rem; }
+      /* ── La secuencia explicativa ─────────────────────────────────── */
+      .demo { position: relative; display: grid; gap: 0.9rem; }
+      .demo-linea {
+        position: absolute;
+        left: 1.4rem;
+        top: 1.5rem;
+        bottom: 1.5rem;
+        width: 2px;
+        background: linear-gradient(var(--acento), transparent);
+        transform-origin: top;
+        opacity: 0.35;
+      }
+      .paso { margin: 0; }
+      .tarjeta {
+        background: var(--bg-tarjeta);
+        border: 1px solid var(--borde);
+        border-radius: var(--radio);
+        padding: 1rem 1.15rem;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+      }
+      .paso-qr .tarjeta { max-width: 13rem; }
+      .paso-cocina { margin-left: 2.5rem; }
+      .paso-boleta { margin-left: 5rem; max-width: 15rem; }
 
-      /* FEATURES */
-      .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
-      .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem;
-        transition: transform .16s ease, border-color .16s ease; }
-      .card:hover { transform: translateY(-4px); border-color: #2b3a52; }
-      .card-icon { font-size: 1.9rem; }
-      .card h3 { margin: .7rem 0 .45rem; font-size: 1.12rem; }
-      .card p { margin: 0; color: var(--muted); font-size: .95rem; }
-      .benefit { margin-top: .9rem !important; color: #cdd6e6 !important; font-size: .88rem !important; font-weight: 600; }
-      .benefit span { color: var(--accent-2); margin-right: .35rem; }
+      .tarjeta-tit { font-weight: 650; font-size: 0.9rem; margin: 0 0 0.7rem; display: flex; align-items: center; gap: 0.45rem; }
+      .punto { width: 8px; height: 8px; border-radius: 50%; background: var(--acento); }
+      .linea { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; font-size: 0.82rem; color: var(--tenue); margin: 0; padding: 0.3rem 0; }
+      .chip { font-size: 0.68rem; padding: 0.12rem 0.5rem; border-radius: 999px; background: #20283a; color: var(--tenue); white-space: nowrap; }
+      .chip-ok { background: rgba(74, 222, 128, 0.14); color: #6ee7a8; }
+      .chip-espera { background: rgba(255, 179, 71, 0.16); color: var(--acento-2); }
+      .qr {
+        width: 5rem;
+        height: 5rem;
+        margin: 0 auto 0.6rem;
+        border-radius: 0.5rem;
+        background: repeating-conic-gradient(#e9edf5 0 90deg, #141b2b 0 180deg);
+        background-size: 20px 20px;
+        outline: 6px solid #e9edf5;
+        outline-offset: -6px;
+      }
+      .tarjeta-pie { font-size: 0.78rem; color: var(--tenue); margin: 0; text-align: center; }
+      .tarjeta-pie.ok { color: #6ee7a8; text-align: left; }
+      .total { font-size: 1.5rem; font-weight: 750; margin: 0.2rem 0 0.3rem; letter-spacing: -0.03em; }
 
-      /* BENEFITS */
-      .benefits { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
-      .benefit-card { background: linear-gradient(180deg, var(--bg-soft), var(--bg-card));
-        border: 1px solid var(--border); border-radius: var(--radius); padding: 1.6rem; }
-      .benefit-stat { font-size: 1.7rem; font-weight: 800; }
-      .benefit-card h3 { margin: .5rem 0 .4rem; font-size: 1.12rem; }
-      .benefit-card p { margin: 0; color: var(--muted); font-size: .93rem; }
+      /* ── Cifras ───────────────────────────────────────────────────── */
+      .cifras {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1rem;
+        margin: 4rem 0 0;
+        padding: 1.6rem;
+        background: var(--bg-suave);
+        border: 1px solid var(--borde);
+        border-radius: var(--radio);
+      }
+      @media (max-width: 720px) { .cifras { grid-template-columns: 1fr; gap: 1.4rem; } }
+      .cifra { margin: 0; }
+      .cifra-valor { font-size: clamp(1.7rem, 3.5vw, 2.2rem); font-weight: 780; letter-spacing: -0.03em; }
+      .cifra-etiqueta { margin: 0.2rem 0 0; color: var(--fg); font-size: 0.92rem; }
+      .cifra-nota { display: block; color: var(--tenue); font-size: 0.82rem; margin-top: 0.15rem; }
 
-      /* CLOSING */
-      .closing { text-align: center; background: linear-gradient(135deg, rgba(255,120,73,.12), rgba(255,179,71,.08));
-        border: 1px solid var(--border); border-radius: 1.4rem; padding: 4rem 1.5rem; margin: 1rem 0 4rem; }
-      .closing h2 { font-size: clamp(1.9rem, 5vw, 2.8rem); margin: 0 0 .6rem; }
-      .closing p { color: var(--muted); margin: 0 0 1.6rem; }
+      /* ── Pasos ────────────────────────────────────────────────────── */
+      .pasos { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
+      .paso-fila {
+        display: grid;
+        grid-template-columns: 3rem 1fr;
+        gap: 1rem;
+        align-items: start;
+        padding: 1.4rem 1.5rem;
+        background: var(--bg-suave);
+        border: 1px solid var(--borde);
+        border-radius: var(--radio);
+      }
+      .paso-n { font-weight: 800; font-size: 1rem; color: var(--acento); font-variant-numeric: tabular-nums; }
+      .paso-fila h3 { font-size: 1.08rem; margin: 0 0 0.35rem; }
+      .paso-fila p { margin: 0; color: var(--tenue); font-size: 0.95rem; }
 
-      /* FOOTER */
-      .foot { max-width: var(--max); margin: 0 auto; padding: 2.2rem 1.25rem 3.5rem;
-        display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-        border-top: 1px solid var(--border); color: var(--muted); font-size: .9rem; }
-      .foot-brand { font-weight: 700; color: var(--fg); }
-      .foot-links { display: flex; gap: 1.3rem; margin: 0 auto; flex-wrap: wrap; }
-      .foot-links a:hover { color: var(--fg); }
+      /* ── Bloques de producto ──────────────────────────────────────── */
+      .bloques { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1rem; }
+      .bloque {
+        background: var(--bg-tarjeta);
+        border: 1px solid var(--borde);
+        border-radius: var(--radio);
+        padding: 1.6rem;
+        transition: transform 180ms var(--sale), border-color 180ms var(--sale);
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .bloque:hover { transform: translateY(-2px); border-color: #2b3a52; }
+      }
+      .bloque-destacado {
+        grid-column: 1 / -1;
+        background: linear-gradient(140deg, rgba(255, 120, 73, 0.09), var(--bg-tarjeta) 60%);
+        border-color: rgba(255, 120, 73, 0.28);
+      }
+      .insignia {
+        display: inline-block;
+        margin: 0 0 0.7rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 999px;
+        background: rgba(255, 120, 73, 0.16);
+        color: var(--acento-2);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .bloque h3 { font-size: 1.2rem; margin: 0 0 0.5rem; }
+      .bloque > p { margin: 0; color: var(--tenue); font-size: 0.96rem; }
+      .bloque-destacado > p { max-width: 46ch; font-size: 1.02rem; }
+      .puntos { list-style: none; padding: 0; margin: 1.1rem 0 0; display: flex; flex-wrap: wrap; gap: 0.45rem; }
+      .puntos li {
+        font-size: 0.82rem;
+        color: var(--tenue);
+        padding: 0.25rem 0.65rem;
+        border: 1px solid var(--borde);
+        border-radius: 999px;
+      }
+
+      /* ── Cierre ───────────────────────────────────────────────────── */
+      .cierre {
+        text-align: center;
+        background: linear-gradient(135deg, rgba(255, 120, 73, 0.12), rgba(255, 179, 71, 0.06));
+        border: 1px solid var(--borde);
+        border-radius: 1.4rem;
+        padding: 4rem 1.5rem;
+        margin: 1rem 0 4rem;
+      }
+      .cierre h2 { font-size: clamp(1.8rem, 4.5vw, 2.6rem); margin: 0 0 0.6rem; }
+      .cierre p { color: var(--tenue); margin: 0 0 1.8rem; }
+
+      /* ── Pie ──────────────────────────────────────────────────────── */
+      .pie {
+        max-width: var(--max);
+        margin: 0 auto;
+        padding: 2.2rem 1.25rem 3.5rem;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+        border-top: 1px solid var(--borde);
+        color: var(--tenue);
+        font-size: 0.9rem;
+      }
+      .pie-marca { font-weight: 700; color: var(--fg); }
+      .pie-enlaces { display: flex; gap: 1.3rem; margin: 0 auto; flex-wrap: wrap; }
+      @media (hover: hover) and (pointer: fine) { .pie-enlaces a:hover { color: var(--fg); } }
+
+      /* ══ MOVIMIENTO ═══════════════════════════════════════════════════
+         Todo con `transform` y `opacity`, las dos únicas propiedades que se
+         saltan el cálculo de posición y el pintado y corren en la GPU. Animar
+         `top`, `height` o `margin` dispara las tres etapas en cada fotograma.
+
+         Y todo con CSS, no con JavaScript: una animación CSS sigue fluida
+         mientras la página carga y ejecuta scripts, que es exactamente cuando
+         una animación por JavaScript pierde fotogramas. Aquí eso importa más
+         que en ningún sitio — quien abre esta página lo hace desde un móvil.
+
+         El desplazamiento es de 10–14px, no de 26: un elemento que aparece
+         desde muy lejos parece que venía de fuera de la pantalla, y a la
+         tercera sección cansa. */
+
+      .entra,
+      .revela { will-change: transform, opacity; }
+
+      /* Entrada del héroe: se ve una vez, al llegar. */
+      .entra {
+        opacity: 0;
+        transform: translateY(12px);
+        animation: aparecer 480ms var(--sale) forwards;
+      }
+      /* Escalonado de 60ms. Por debajo de 30 no se percibe; por encima de 80 se
+         nota la espera del último. */
+      .hero-copy .entra:nth-child(1) { animation-delay: 40ms; }
+      .hero-copy .entra:nth-child(2) { animation-delay: 100ms; }
+      .hero-copy .entra:nth-child(3) { animation-delay: 160ms; }
+      .hero-copy .entra:nth-child(4) { animation-delay: 220ms; }
+      .cifras.entra { animation-delay: 620ms; }
+
+      @keyframes aparecer {
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      /*
+        La secuencia que explica el recorrido del pedido.
+
+        Es la única animación larga de la página y se la ha ganado: no decora,
+        cuenta cómo funciona el producto. Cada paso entra cuando el anterior ya
+        se lee, con 700ms entre uno y otro — el tiempo de leer cuatro palabras.
+        No se repite: en bucle cobraría batería para siempre a cambio de nada.
+      */
+      .paso {
+        opacity: 0;
+        transform: translateY(14px) scale(0.98);
+        animation: aparecer-paso 520ms var(--sale) forwards;
+      }
+      .paso-qr { animation-delay: 320ms; }
+      .paso-cocina { animation-delay: 1020ms; }
+      .paso-boleta { animation-delay: 1720ms; }
+
+      @keyframes aparecer-paso {
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+
+      /* La línea crece acompañando a los pasos: es el hilo del recorrido. */
+      .demo-linea {
+        transform: scaleY(0);
+        animation: crecer 1900ms var(--entra-sale) 320ms forwards;
+      }
+      @keyframes crecer {
+        to { transform: scaleY(1); }
+      }
+
+      /* Aparición al hacer scroll. La clase la pone un IntersectionObserver. */
+      .revela {
+        opacity: 0;
+        transform: translateY(10px);
+        transition: opacity 420ms var(--sale), transform 420ms var(--sale);
+      }
+      .revela.dentro { opacity: 1; transform: none; }
+
+      /*
+        Sin JavaScript no hay observador, así que nada quitaría la opacidad y la
+        página quedaría en blanco. Este respaldo la deja visible: el contenido
+        nunca depende de que una animación llegue a ejecutarse.
+      */
+      .sin-js .revela,
+      .sin-js .entra,
+      .sin-js .paso { opacity: 1; transform: none; animation: none; }
+
+      /*
+        Menos movimiento: una versión SUAVE, no cero.
+        Antes se apagaba todo con un `if`, y como las cifras subían con un
+        contador, quien pedía menos movimiento se quedaba leyendo "0" para
+        siempre. Aquí se conserva el fundido —que no marea— y se quita el
+        desplazamiento, que es lo que molesta.
+      */
+      @media (prefers-reduced-motion: reduce) {
+        .entra, .paso {
+          transform: none;
+          animation: fundir 200ms linear forwards;
+        }
+        .revela { transform: none; transition: opacity 200ms linear; }
+        .demo-linea { animation: none; transform: scaleY(1); }
+        .btn, .bloque { transition: none; }
+      }
+
+      /*
+        Fuera de la consulta de medios a proposito. Anidado dentro seguia siendo
+        CSS valido, pero de este keyframes depende que la pagina llegue a verse
+        para quien pide menos movimiento: si un minificador o un reordenado lo
+        pierde, esas personas se quedan con la pagina en blanco y nadie se
+        entera. No es sitio para correr riesgos de compatibilidad.
+      */
+      @keyframes fundir {
+        to { opacity: 1; }
+      }
     </style>
 
-    <!-- GSAP: entrada del hero, reveals por scroll, contadores, nav y parallax. -->
-    <script>
-      import gsap from "gsap";
-      import { ScrollTrigger } from "gsap/ScrollTrigger";
+    <script is:inline>
+      /*
+        Todo el JavaScript de la página. Sustituye a los 116 KB de GSAP +
+        ScrollTrigger que enviaba la versión anterior para hacer justo esto.
 
-      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        Va en línea y sin `defer` para que la clase se aplique antes del primer
+        pintado: si se aplicara después, habría un parpadeo del contenido visible
+        al contenido oculto.
+      */
+      document.documentElement.classList.remove("sin-js");
 
-      // Nav con fondo al hacer scroll (siempre, es barato y sin animación intrusiva).
-      const nav = document.getElementById("nav");
-      const onScroll = () => nav?.classList.toggle("scrolled", window.scrollY > 8);
-      onScroll();
-      window.addEventListener("scroll", onScroll, { passive: true });
+      var nav = document.getElementById("nav");
+      var alHacerScroll = function () {
+        if (nav) nav.classList.toggle("posado", window.scrollY > 8);
+      };
+      alHacerScroll();
+      addEventListener("scroll", alHacerScroll, { passive: true });
 
-      if (!reduce) {
-        gsap.registerPlugin(ScrollTrigger);
-
-        // Entrada del hero.
-        gsap.timeline({ defaults: { ease: "power3.out", duration: 0.8 } })
-          .to(".hero .reveal", { opacity: 1, y: 0, stagger: 0.1 })
-          .to(".hero-art .ui-card", { opacity: 1, y: 0, stagger: 0.12, duration: 0.7 }, "-=0.5");
-
-        // Flotación continua de las tarjetas del mockup.
-        gsap.utils.toArray<HTMLElement>(".hero-art .float").forEach((el, i) => {
-          gsap.to(el, { y: "+=14", duration: 2.4 + i * 0.4, ease: "sine.inOut", yoyo: true, repeat: -1 });
+      /*
+        Aparición al entrar en pantalla. Se deja de observar en cuanto ocurre:
+        una sección que se desvanece al volver a subir es un efecto que nadie
+        pidió y que hace la página inestable al leerla.
+      */
+      var elementos = document.querySelectorAll(".revela");
+      if ("IntersectionObserver" in window) {
+        var observador = new IntersectionObserver(
+          function (entradas) {
+            entradas.forEach(function (entrada, i) {
+              if (!entrada.isIntersecting) return;
+              // 40ms de escalonado entre hermanos que entran juntos.
+              entrada.target.style.transitionDelay = i * 40 + "ms";
+              entrada.target.classList.add("dentro");
+              observador.unobserve(entrada.target);
+            });
+          },
+          { rootMargin: "0px 0px -12% 0px" },
+        );
+        elementos.forEach(function (el) {
+          observador.observe(el);
         });
-
-        // Parallax suave de los blobs.
-        gsap.to(".blob-a", { yPercent: 30, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
-        gsap.to(".blob-b", { yPercent: -20, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
-
-        // Reveals por scroll (cualquier .reveal fuera del hero).
-        gsap.utils.toArray<HTMLElement>(".section .reveal, .closing.reveal, #stats.reveal").forEach((el) => {
-          gsap.to(el, {
-            opacity: 1, y: 0, duration: 0.7, ease: "power3.out",
-            scrollTrigger: { trigger: el, start: "top 85%" },
-          });
-        });
-
-        // Stagger especial para grupos de tarjetas.
-        ["#features .card", ".steps .step", ".benefits .benefit-card"].forEach((sel) => {
-          gsap.to(sel, {
-            opacity: 1, y: 0, duration: 0.6, ease: "power3.out", stagger: 0.08,
-            scrollTrigger: { trigger: sel, start: "top 88%" },
-          });
-        });
-
-        // Contadores numéricos.
-        gsap.utils.toArray<HTMLElement>(".stat-value").forEach((el) => {
-          const target = parseFloat(el.dataset.count || "");
-          if (Number.isNaN(target)) return; // valores como "<1s" o "∞" quedan estáticos
-          const suffix = el.dataset.suffix || "";
-          const obj = { v: 0 };
-          gsap.to(obj, {
-            v: target, duration: 1.4, ease: "power1.out",
-            scrollTrigger: { trigger: "#stats", start: "top 85%" },
-            onUpdate: () => { el.textContent = Math.round(obj.v) + suffix; },
-          });
+      } else {
+        elementos.forEach(function (el) {
+          el.classList.add("dentro");
         });
       }
     </script>
